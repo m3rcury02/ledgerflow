@@ -1,55 +1,60 @@
 # ADR 0005: Enforce an Immutable Balanced Double-Entry Ledger
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-11
+- Accepted: 2026-07-13
 - Decision owners: LedgerFlow maintainers
 
 ## Context
 
 A captured payment must create balanced debit and credit entries exactly once. Application-only validation can be bypassed by defects, concurrent code, scripts, or later integrations. A row-level `CHECK` constraint cannot validate totals across all entries in a ledger transaction.
 
-The MVP does not establish that LedgerFlow is merchant-of-record, so recognizing revenue would be an unsupported accounting assumption.
+The MVP does not establish that LedgerFlow is merchant-of-record, so recognizing revenue would be an unsupported accounting assumption. The ledger-only milestone must also preserve the later meaning of final payment state `CAPTURED`, which includes order and outbox work that is not yet approved.
 
 ## Decision
 
-Represent each confirmed capture as one immutable ledger transaction containing exactly two positive INR entries:
+Represent a journal transaction as an immutable header with two or more positive INR entries. Domain construction requires all entries to use the transaction currency and uses overflow-checked integer minor-unit arithmetic to prove total debits equal total credits before persistence.
+
+Each provider-confirmed capture produces exactly two entries:
 
 - debit `PAYMENT_CLEARING` (asset); and
 - credit `MERCHANT_PAYABLE` (liability).
 
-The entries have equal integer minor-unit amounts and the same currency as the order and payment. Unique `(source_type, source_id)` and a unique payment reference make local posting idempotent.
+Both entries equal the payment amount. Every journal transaction has real payment and order foreign keys, a source identity, UTC posting time, validated correlation ID, and actor. Unique `(source_type, source_id)` plus a partial unique payment-capture index make local capture posting idempotent.
 
-Domain code validates the posting before persistence. PostgreSQL also enforces:
+PostgreSQL also enforces:
 
-- positive exact amounts and allowed sides;
-- account, transaction, and entry currency equality;
-- exactly two MVP entries, one debit and one credit;
-- equal debit and credit totals at transaction commit; and
-- rejection of update/delete for posted transactions and entries.
+- positive exact amounts, allowed sides, and INR currency;
+- account, transaction, entry, payment, and order consistency;
+- two or more entries and equal debit/credit totals at transaction commit;
+- exactly the two seeded accounts and sides for a payment-capture journal; and
+- rejection of updates and deletes for posted transaction and entry rows.
 
-The payment-capture source is a real foreign key to the payment, its order must match the ledger transaction, and the two entries must use the exact seeded accounts/sides above. Account code, type, and currency become immutable once referenced.
+Because aggregate checks span rows, Flyway creates `DEFERRABLE INITIALLY DEFERRED` constraint triggers on both journal-header insertion and entry insert/update/delete. The shared commit-time validator therefore rejects empty and one-entry journals as well as unbalanced journals. The application runtime role must not receive DDL or trigger-bypass authority.
 
-Because aggregate checks span rows, Flyway creates a `DEFERRABLE INITIALLY DEFERRED` constraint-trigger validator. Constraint triggers on both ledger-transaction insertion and entry insert/update/delete invoke the commit-time validator, so zero-entry and one-entry transactions also fail.
+Corrections append one `CORRECTION` transaction that exactly reverses every entry in its original payment-capture journal. A unique reversal reference makes the correction command replayable. Posted rows are never repaired in place.
 
-Corrections use new reversing/adjusting transactions rather than mutation. Implementing reversal commands is outside MVP scope.
+The ledger-only transaction runs at PostgreSQL `READ COMMITTED`. It locks the payment row with `SELECT ... FOR UPDATE`, verifies `CAPTURE_CONFIRMED`, inserts the journal header and entries, and transitions the payment to the interim `CAPTURE_ACCOUNTED` state. Deferred validation runs before commit. Any error rolls back both the ledger and payment state. Same-payment writers serialize on the row lock; database uniqueness is the final duplicate backstop.
 
-The ledger transaction and entries commit in the same local transaction as payment `CAPTURED`, order `COMPLETED`, and the outbox event.
+Provider I/O never occurs in this transaction. `CAPTURE_ACCOUNTED` means only that provider-confirmed money has an immutable local journal. Final `CAPTURED`, order completion, HTTP finalization, and transactional outbox insertion remain a separate unapproved milestone.
 
 ## Consequences
 
 ### Positive
 
-- The database cannot commit an unbalanced or incomplete ledger transaction.
-- Duplicate finalization converges on one logical posting.
-- Audit history remains immutable.
+- The database cannot commit an unbalanced, incomplete, mismatched, or duplicate capture journal.
+- Concurrent duplicate posting converges on one logical result.
+- Payment accounting status cannot commit without its journal, or vice versa.
+- Audit and correction history remains append-only.
 - The account choice avoids premature revenue-recognition semantics.
 
 ### Costs and risks
 
 - Deferred trigger logic is PostgreSQL-specific and requires direct integration tests.
-- Bulk data operations must respect commit-time validation.
-- The two-entry rule is MVP-specific and must evolve before fees, taxes, settlement, or split accounting.
-- Corrective accounting requires new records rather than convenient updates.
+- `READ COMMITTED` correctness depends on every capture posting locking the payment first; uniqueness remains necessary as defense in depth.
+- The exact two-entry shape is capture-specific; the journal model itself permits additional balanced entries for future approved posting types.
+- The current schema supports one exact reversal of an original capture. Partial refunds, fees, adjustments, and reversal-of-reversal behavior require a later accounting design.
+- A schema owner can bypass runtime protections; production must use the separately documented least-privilege runtime role.
 
 ## Alternatives considered
 
@@ -57,13 +62,17 @@ The ledger transaction and entries commit in the same local transaction as payme
 
 Rejected because the financial invariant should survive application defects and direct database access.
 
+### Use serializable isolation for all posting
+
+Rejected because a per-payment row lock plus unique business keys gives the required same-payment serialization with less abort/retry complexity. Broader cross-payment invariants do not exist in this milestone.
+
 ### Store one row with debit and credit columns
 
 Rejected because it is not extensible to future multi-entry postings and hides account-oriented double entry.
 
 ### Use PostgreSQL `money` or floating point
 
-Rejected because repository governance requires integer minor units and explicit currency.
+Rejected because repository governance requires integer minor units and an explicit currency.
 
 ### Credit an order-revenue account
 

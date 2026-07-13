@@ -19,6 +19,7 @@ class PaymentStateMachineTest {
     Payment authorized = authorizing.authorizationSucceeded("auth-provider-1", NOW);
     Payment capturing = authorized.startCapture(captureRequestId, NOW);
     Payment confirmed = capturing.captureSucceeded("capture-provider-1", NOW);
+    Payment accounted = confirmed.captureAccounted(NOW.plusSeconds(1));
 
     assertThat(authorizing.state()).isEqualTo(PaymentState.AUTHORIZING);
     assertThat(authorized.state()).isEqualTo(PaymentState.AUTHORIZED);
@@ -26,6 +27,7 @@ class PaymentStateMachineTest {
     assertThat(capturing.captureRequestId()).isEqualTo(captureRequestId);
     assertThat(confirmed.state()).isEqualTo(PaymentState.CAPTURE_CONFIRMED);
     assertThat(confirmed.providerCaptureId()).isEqualTo("capture-provider-1");
+    assertThat(accounted.state()).isEqualTo(PaymentState.CAPTURE_ACCOUNTED);
     assertThat(PaymentState.values()).extracting(Enum::name).doesNotContain("CAPTURED");
   }
 

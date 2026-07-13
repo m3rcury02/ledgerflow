@@ -8,7 +8,7 @@
 
 This threat model covers the MVP public API, operator API, modular-monolith process, mock payment-provider boundary, PostgreSQL, Kafka topics, OpenTelemetry export, and administrative retry flow.
 
-The active scope includes the Create Order HTTP/PostgreSQL boundary and the non-public payment/provider integration harness. Implemented payment controls include explicit state guards, stable independent provider request IDs, optimistic locking, short database transactions, append-only attempt history, bounded retry classification, explicit HTTP timeouts, and lookup-first recovery. Ledger, Kafka, notification, and operator controls below are launch requirements for future milestones, not claims about current behavior.
+The active scope includes the Create Order HTTP/PostgreSQL boundary, the non-public payment/provider integration harness, and non-public payment-capture ledger posting. Implemented ledger controls include a framework-independent balance invariant, positive integer minor units, payment/order foreign keys, same-payment row locking, unique source/payment indexes, deferred database validation, append-only transaction/entry triggers, exact compensating journals, correlation IDs, actors, and UTC timestamps. Kafka, notification, public financial orchestration, and operator controls below are launch requirements for future milestones, not claims about current behavior.
 
 It does not certify PCI DSS compliance or cover a real payment provider, identity-provider implementation, host/container hardening, Kafka/PostgreSQL control planes, or internet-scale denial-of-service protection.
 
@@ -103,6 +103,16 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 - Exception headers are bounded and sanitized; stack traces are not copied into DLT headers or the failure projection.
 - A malformed DLT record stores only bounded size/hash and safe parse metadata in PostgreSQL; raw poison bytes remain access-controlled by Kafka retention and are not exposed through the operator API.
 
+## Ledger integrity and audit safety
+
+- Only a provider-confirmed payment can enter the accounting transaction. The transaction locks that payment, inserts its complete balanced journal, and changes the payment to `CAPTURE_ACCOUNTED`; a failed deferred check rolls back every effect.
+- Concurrent and repeated requests converge on the same journal because the payment row serializes writers and PostgreSQL independently enforces unique capture source/payment keys.
+- Domain code rejects fewer than two entries, mixed currencies, non-positive amounts, overflow, and unequal totals before SQL. PostgreSQL rechecks row and aggregate invariants at commit and verifies the capture's exact accounts, amount, payment, and order.
+- Posted transaction and entry rows reject update/delete. Corrections append an exact linked reversal and retain the original evidence.
+- Correlation ID, actor, source, and posting timestamp are required, bounded, and stored on each journal transaction. They are audit metadata, not authorization decisions.
+- The current ledger use case is module-internal. Until an authenticated coordinator/operator boundary exists, its `actor` value must be supplied only by trusted application code and must not be exposed as a client-controlled field.
+- Local and integration environments use a schema-owner credential for convenience. Production launch requires a separate non-owner runtime role that cannot disable triggers, run DDL, or mutate immutable rows; owner compromise remains outside application-level protection.
+
 ## Telemetry safety
 
 - W3C trace context propagates across HTTP and Kafka. Invalid trace context starts a new trace.
@@ -131,6 +141,7 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 - Multi-instance retry-worker claim, expired-lease takeover, and stale-worker completion-rejection tests.
 - Provider contract tests for malformed IDs, wrong amount/currency, oversized body, timeout, and unknown outcome.
 - Direct PostgreSQL tests proving balance, immutability, unique source, and state constraints.
+- Concurrent ledger-posting tests proving one payment produces one journal and one payment accounting transition.
 - Database-role tests proving the runtime user cannot perform DDL or update/delete immutable ledger/audit rows while Flyway can migrate.
 - Kafka tests for malformed event, unknown version, duplicate delivery, poison record, retry exhaustion, and DLT publication failure.
 - DLT-catalog PostgreSQL outage tests proving no offset commit, idempotent redelivery, alerting, and no recursive DLT.
@@ -142,6 +153,7 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 - Rate limiting and volumetric DDoS protection depend partly on the deployment edge and must be selected before internet exposure.
 - A real payment provider requires a new threat review, token-storage decision, provider-specific reconciliation, and PCI assessment.
 - Data retention for idempotency, audit, outbox, inbox, notification, DLT, logs, and traces must be approved before production launch.
+- Database-owner compromise can bypass trigger-based ledger protection; production role separation, privileged-access audit, and restore testing remain launch conditions.
 - Backup/restore, disaster recovery, key rotation, vulnerability management, and broker/database hardening require deployment runbooks outside this MVP implementation plan.
 
 ## References

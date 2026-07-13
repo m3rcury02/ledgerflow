@@ -13,6 +13,8 @@ public interface PaymentStore {
 
   Optional<Payment> find(UUID paymentId);
 
+  Payment lock(UUID paymentId);
+
   Payment save(Payment expected, Payment updated);
 
   Payment saveWithHistory(Payment expected, Payment updated, AttemptHistory history);

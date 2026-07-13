@@ -33,7 +33,16 @@ public abstract class PostgreSqlIntegrationTest {
   @BeforeEach
   void clearOrderData() {
     jdbcClient
-        .sql("TRUNCATE TABLE payment_attempt_history, payments, idempotency_records, orders")
+        .sql(
+            """
+            TRUNCATE TABLE
+                ledger_entries,
+                ledger_transactions,
+                payment_attempt_history,
+                payments,
+                idempotency_records,
+                orders
+            """)
         .update();
   }
 }

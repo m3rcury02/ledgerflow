@@ -35,4 +35,14 @@ class PackageArchitectureTest {
           .dependOnClassesThat()
           .resideInAnyPackage(
               "org.springframework..", "java.net..", "java.sql..", "tools.jackson..");
+
+  @ArchTest
+  static final ArchRule ledgerDomainIsIndependentOfFrameworkAndAdapters =
+      noClasses()
+          .that()
+          .resideInAPackage("com.ledgerflow.ledger.internal.domain..")
+          .should()
+          .dependOnClassesThat()
+          .resideInAnyPackage(
+              "org.springframework..", "java.net..", "java.sql..", "tools.jackson..");
 }

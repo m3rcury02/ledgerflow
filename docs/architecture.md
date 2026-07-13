@@ -2,7 +2,7 @@
 
 ## Status
 
-This document defines the architectural constraints for LedgerFlow. Milestones 1 and 2 established the application and local infrastructure, Milestone 3 added the Create Order HTTP/persistence slice, and Milestone 4 adds the non-public payment/provider boundary. Financial posting and messaging remain unimplemented.
+This document defines the architectural constraints for LedgerFlow. Milestones 1 and 2 established the application and local infrastructure, Milestone 3 added the Create Order HTTP/persistence slice, Milestone 4 added the non-public payment/provider boundary, and Milestone 5A adds non-public immutable ledger posting. Order/payment orchestration, final capture state, outbox, and messaging remain unimplemented.
 
 ## Architectural goals
 
@@ -63,7 +63,13 @@ The `orders` slice keeps framework-free money, key, fingerprint, and order types
 
 The `payments` module uses a hexagonal boundary because provider I/O is replaceable and unreliable, while the payment state machine must remain independently testable. Its application-owned `PaymentProvider` and `PaymentStore` ports isolate a JDK HTTP adapter and guarded JDBC adapter. The workflow itself is deliberately not transactional: each persistence call opens one short transaction, and no provider call or retry delay runs with a database transaction open.
 
+The `ledger` module keeps a framework-independent journal model because balance, immutability, and compensation rules need focused unit tests. Its small `ledger.api` is the only cross-module posting surface. Ledger posting uses the `payments.api` accounting boundary; it does not import payment internals or query payment tables. Spring transactions and JDBC remain internal adapters, and ArchUnit verifies that the ledger domain does not depend on them.
+
+Milestone 5A intentionally introduces one directed feature dependency: `ledger -> payments.api`. A capture-posting transaction locks the payment through that API, inserts the ledger transaction and entries, and marks it `CAPTURE_ACCOUNTED`. The payments module never calls ledger, so the dependency remains acyclic. A later coordinator may call both public APIs but must not bypass either module's internals.
+
 ADR 0004 accepts one narrow database-boundary exception: the payment-owned `V002` constraint trigger reads only an order's ID, amount, and currency to reject a payment whose copied money differs from its referenced order. Application code still cannot query another module's tables, and a PostgreSQL integration test verifies this invariant. This exception does not authorize general cross-module SQL.
+
+ADR 0005 accepts a second narrow database-integrity exception: `V003` adds the payment-owned `CAPTURE_ACCOUNTED` state constraints, and the ledger's deferred validator reads only the referenced payment's state, order ID, amount, and currency. This is necessary to prevent payment accounting status and its journal from diverging at commit. Ledger application code still uses `payments.api` and never queries the payment table. Any expansion of this trigger contract requires a new ADR review.
 
 ## HTTP contracts
 
@@ -93,7 +99,21 @@ Migration rules:
 - destructive or long-running migrations require an ExecPlan with compatibility, recovery, and rollout details; and
 - a module accesses only tables it owns unless an accepted ADR defines a controlled exception.
 
-The current local, production-design, and integration-test baseline is PostgreSQL 18. Migrations use ordered `VNNN__description.sql` names. `V001` owns orders and HTTP idempotency; `V002` owns payments and append-only payment attempt history.
+The current local, production-design, and integration-test baseline is PostgreSQL 18. Migrations use ordered `VNNN__description.sql` names. `V001` owns orders and HTTP idempotency; `V002` owns payments and append-only payment attempt history; `V003` owns ledger accounts, journal transactions, entries, deferred balance checks, and the interim payment accounting state required by their atomic boundary.
+
+### Ledger transaction and isolation boundary
+
+Payment-provider I/O completes before accounting starts. `LedgerPosting.postPaymentCapture` then opens one PostgreSQL `READ COMMITTED` transaction and performs this sequence:
+
+1. lock the payment row through `payments.api` using `SELECT ... FOR UPDATE`;
+2. accept `CAPTURE_CONFIRMED`, or verify and replay an existing `CAPTURE_ACCOUNTED` journal;
+3. insert one journal header and all entries;
+4. transition the locked payment to `CAPTURE_ACCOUNTED` with its expected version; and
+5. let deferred ledger constraints validate the complete journal before commit.
+
+The payment row is the same-payment serialization point. Under `READ COMMITTED`, a concurrent writer waits, then observes `CAPTURE_ACCOUNTED` and returns the existing matching journal. Unique source and payment indexes prevent duplicates even if a future caller fails to follow the lock convention. A constraint or state failure rolls back the payment transition and every ledger row. This reasoning does not cover future cross-payment or account-period invariants; such behavior must reassess isolation in an ADR.
+
+Posted ledger rows reject update and delete. Corrections append an exact reversing transaction linked to the original rather than mutating history. Production privileges must prevent the application role from disabling triggers or applying DDL; the current local/test owner credential is a development convenience, not the production authorization model.
 
 ## Money and time
 
@@ -150,7 +170,7 @@ Spring Modulith verifies logical application modules, API/internal access, and c
 
 Keycloak stores its data in a separate database on the local PostgreSQL instance; embedded H2 is not used. Valkey is an ephemeral Redis-compatible cache service and is not an approved application datastore. Local Kafka is a single combined broker/controller in KRaft mode. Prometheus, Grafana, Tempo, Loki, and OpenTelemetry Collector provide a self-contained observability path without committing credentials or choosing a production observability vendor.
 
-The Create Order slice accepts ADR 0003's scoped idempotency decision and validates JWTs against an issuer/JWK configuration. The non-public payment harness accepts ADR 0004 and exercises a separate deterministic provider fixture over HTTP; no public route invokes it. Selecting development containers still does not authorize messaging integration. Production identity, real payment provider, broker, cache, observability, persistence roles, deployment topology, TLS, retention, backup, and sizing remain subject to approved implementation or deployment milestones.
+The Create Order slice accepts ADR 0003's scoped idempotency decision and validates JWTs against an issuer/JWK configuration. The non-public payment harness accepts ADR 0004 and exercises a separate deterministic provider fixture over HTTP; no public route invokes it. The ledger slice accepts ADR 0005 and is exercised through module APIs in PostgreSQL integration tests; it adds no public route. Selecting development containers still does not authorize messaging integration. Production identity, real payment provider, broker, cache, observability, persistence roles, deployment topology, TLS, retention, backup, and sizing remain subject to approved implementation or deployment milestones.
 
 ## Decisions intentionally deferred
 

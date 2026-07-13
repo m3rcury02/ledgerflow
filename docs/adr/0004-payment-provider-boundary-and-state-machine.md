@@ -26,7 +26,7 @@ Persisted states distinguish:
 - unknown timeout outcome requiring reconciliation; and
 - non-retryable invalid provider response.
 
-Capture is permitted only after authorization. Provider capture success enters `CAPTURE_CONFIRMED`; `CAPTURED` is reserved for the later transaction that also posts a balanced ledger transaction and outbox event. All transitions use an expected source state plus optimistic version. Invalid or stale transitions make no change.
+Capture is permitted only after authorization. Provider capture success enters `CAPTURE_CONFIRMED`. The ledger-only milestone then transitions it to interim `CAPTURE_ACCOUNTED` in the same local transaction as the balanced journal. Final `CAPTURED` remains reserved for later order and outbox finalization. All transitions use an expected source state plus optimistic version or a payment-row lock. Invalid or stale transitions make no change.
 
 The payment table copies order money so every provider call has immutable stage-local input. A payment-owned constraint trigger may read only `orders.id`, `orders.amount_minor`, and `orders.currency` during payment insert/update to reject a mismatch. This is a narrow accepted exception to the no-cross-module-SQL rule; application repositories still do not query another module's tables.
 
@@ -36,7 +36,7 @@ If the process stops after provider success but before local persistence, recove
 
 The fake payment-method reference is stored only through authorization recovery and cleared after authorization succeeds or becomes terminal. The mock provider offers deterministic opaque tokens for success, bounded latency, timeout-after-processing, authorization/capture decline, temporary failure, and deliberately invalid response. It accepts no card data. Mock service code exists only in the integration-test fixture. No public or production workflow invokes the payment use case in this milestone; a real provider requires a separately approved decision.
 
-A malformed or contradictory provider response is non-retryable and moves the payment to `FAILED` with a sanitized code. Public order/error mapping and amount/currency echo validation are deferred until the order and financial-finalization flow is connected in Milestone 5. No ledger or outbox effect exists in this milestone.
+A malformed or contradictory provider response is non-retryable and moves the payment to `FAILED` with a sanitized code. Public order/error mapping and amount/currency echo validation are deferred until the order and financial-finalization flow is connected. The later accepted ledger milestone adds no provider I/O or public route; it accounts only an already confirmed capture.
 
 ## Consequences
 

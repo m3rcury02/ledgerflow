@@ -59,6 +59,7 @@ public class PaymentWorkflowService {
     validateCorrelationId(correlationId);
     Payment current = get(paymentId);
     if (current.state() == PaymentState.CAPTURE_CONFIRMED
+        || current.state() == PaymentState.CAPTURE_ACCOUNTED
         || current.state() == PaymentState.CAPTURE_DECLINED) {
       return current;
     }

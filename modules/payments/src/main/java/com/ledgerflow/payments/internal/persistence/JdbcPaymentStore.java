@@ -2,6 +2,7 @@ package com.ledgerflow.payments.internal.persistence;
 
 import com.ledgerflow.payments.internal.application.ConcurrentPaymentModificationException;
 import com.ledgerflow.payments.internal.application.CreatePaymentCommand;
+import com.ledgerflow.payments.internal.application.PaymentNotFoundException;
 import com.ledgerflow.payments.internal.application.PaymentStore;
 import com.ledgerflow.payments.internal.application.StartedAttempt;
 import com.ledgerflow.payments.internal.domain.AttemptActivity;
@@ -21,6 +22,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Repository
@@ -65,6 +67,17 @@ public class JdbcPaymentStore implements PaymentStore {
         .param("paymentId", paymentId)
         .query(this::mapPayment)
         .optional();
+  }
+
+  @Override
+  @Transactional(propagation = Propagation.MANDATORY)
+  public Payment lock(UUID paymentId) {
+    return jdbcClient
+        .sql("SELECT * FROM payments WHERE id = :paymentId FOR UPDATE")
+        .param("paymentId", paymentId)
+        .query(this::mapPayment)
+        .optional()
+        .orElseThrow(PaymentNotFoundException::new);
   }
 
   @Override

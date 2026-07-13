@@ -1,11 +1,11 @@
-# Payment Recovery Runbook
+# Payment and Ledger Recovery Runbook
 
-- Status: Milestone 4 development runbook
+- Status: Milestone 5A development runbook
 - Last updated: 2026-07-13
 
 ## Scope and current limitation
 
-This runbook covers authorization/capture failures and crash recovery for the non-public payment workflow. Milestone 4 provides a tested recovery use case but intentionally exposes no public or operator endpoint: funds must not be publicly capturable before Milestone 5 can finalize ledger and outbox effects atomically. The secured inspection/retry API and audit trail remain Milestone 7 work.
+This runbook covers authorization/capture failures, crash recovery, and non-public ledger accounting for provider-confirmed captures. Milestone 5A provides tested module use cases but intentionally exposes no public or operator endpoint: final order and outbox effects do not exist yet. The secured inspection/retry API and operator audit trail remain later work.
 
 In a deployed environment, support staff may perform the read-only inspection below and escalate with the payment ID and correlation ID. They must not invoke the test fixture, update payment rows, delete attempt history, or resend a provider request with a new request ID.
 
@@ -18,7 +18,8 @@ In a deployed environment, support staff may perform the read-only inspection be
 | `AUTHORIZATION_RETRY_PENDING`, `CAPTURE_RETRY_PENDING` | Confirmed temporary failures exhausted the one automatic retry | Wait for an approved explicit retry using the same request ID |
 | `DECLINED`, `CAPTURE_DECLINED` | Provider confirmed a business decline | Terminal; never retry automatically or manually as the same operation |
 | `AUTHORIZED` | Authorization is confirmed | Capture may start once, with its independent persisted request ID |
-| `CAPTURE_CONFIRMED` | Provider capture is confirmed but ledger/outbox finalization does not exist yet | Do not expose as `CAPTURED`; Milestone 5 must finalize it idempotently |
+| `CAPTURE_CONFIRMED` | Provider capture is confirmed but no capture journal committed | Invoke the approved internal ledger posting use case; do not resend provider capture |
+| `CAPTURE_ACCOUNTED` | Exactly one matching balanced capture journal committed with this state | Treat ledger posting as complete; a repeated internal posting returns the original journal |
 | `FAILED` | Provider response was invalid or contradictory | Investigate configuration/provider contract; do not retry automatically |
 
 ## Read-only inspection
@@ -45,6 +46,8 @@ ORDER BY recorded_at, id;
 
 Confirm that every row for a stage uses the same provider request ID, attempt numbers are bounded as expected, and the latest state agrees with the latest classified result. Preserve the correlation ID for structured-log and trace lookup. Attempt history is append-only; PostgreSQL rejects updates and deletes.
 
+For an accounted payment, inspect the immutable ledger with the read-only statements in [`docs/sql/ledger-queries.sql`](sql/ledger-queries.sql). The payment history query shows every journal and compensating transaction; the balance queries aggregate debit and credit without changing stored rows. A `CAPTURE_ACCOUNTED` payment with no matching journal, a `CAPTURE_CONFIRMED` payment with a journal, an unbalanced transaction, or more than one capture journal is an integrity incident.
+
 ## Unknown outcome and crash recovery
 
 The recovery use case follows this protocol:
@@ -58,6 +61,20 @@ The recovery use case follows this protocol:
 7. If lookup is contradictory or malformed, enter `FAILED` with a sanitized code and investigate.
 
 This same path closes the crash window in which the provider committed success after the local `STARTED` event but the process stopped before saving the result.
+
+## Capture accounting recovery
+
+Ledger posting has one local `READ COMMITTED` transaction after provider success:
+
+1. lock the payment row;
+2. verify `CAPTURE_CONFIRMED` or a matching replay in `CAPTURE_ACCOUNTED`;
+3. insert the journal header and entries;
+4. transition payment to `CAPTURE_ACCOUNTED`; and
+5. allow deferred balance/source validation to run at commit.
+
+If the process stops before commit, PostgreSQL rolls back both state and journal; retry the same internal posting command. If commit completed but the response was lost, retry finds `CAPTURE_ACCOUNTED` and returns the original journal. Same-payment calls serialize on the row lock, and unique source/payment indexes prevent duplicate journal transactions.
+
+Do not interpret `CAPTURE_ACCOUNTED` as final order completion or an emitted event. If deferred validation fails, do not disable triggers or patch rows: preserve the error and correlation ID, contain further financial processing, and fix the code/schema forward. If business evidence requires a correction, use the approved compensation command with a specific reason; never update or delete the posted transaction or entries. The current command creates one exact reversal and does not call the provider or imply a refund.
 
 ## Retry policy and timeouts
 
@@ -92,7 +109,9 @@ Do not:
 - update/delete `payment_attempt_history` or disable its trigger;
 - create a new request ID to work around uncertainty;
 - retry a confirmed decline;
-- call capture again after `CAPTURE_CONFIRMED`; or
-- describe `CAPTURE_CONFIRMED` as financially finalized.
+- resend provider capture after `CAPTURE_CONFIRMED` or `CAPTURE_ACCOUNTED`;
+- update/delete ledger transactions or entries, disable ledger triggers, or alter a posted account identity;
+- repair a financial error in place instead of appending an approved correction; or
+- describe `CAPTURE_CONFIRMED` as accounted, or `CAPTURE_ACCOUNTED` as final order/outbox completion.
 
 If the tested recovery use case is not available through an approved secured operational entry point, contain and escalate rather than improvising direct database or provider changes.

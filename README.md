@@ -1,6 +1,6 @@
 # LedgerFlow
 
-LedgerFlow is a Java 25 and Spring Boot 4.1 modular-monolith portfolio project. Its public vertical slice exposes contract-first, JWT-secured create/read order APIs with durable PostgreSQL idempotency. A non-public payment slice implements explicit authorization/capture states, an external-provider port and HTTP adapter, safe timeout reconciliation, bounded retries, and append-only attempt history. Ledger, Kafka, notification, and operator APIs are not implemented yet.
+LedgerFlow is a Java 25 and Spring Boot 4.1 modular-monolith portfolio project. Its public vertical slice exposes contract-first, JWT-secured create/read order APIs with durable PostgreSQL idempotency. Non-public payment and ledger slices implement explicit provider states, safe timeout reconciliation, immutable balanced capture journals, idempotent posting, and compensating entries. Kafka, notification, operator, and public financial orchestration are not implemented yet.
 
 ## Prerequisites
 
@@ -83,7 +83,7 @@ export LEDGERFLOW_OAUTH2_JWK_SET_URI=http://localhost:8081/realms/ledgerflow/pro
 ./gradlew :application:bootRun
 ```
 
-Flyway applies `V001__create_orders_and_idempotency.sql` and `V002__create_payment_tables.sql` at startup. Kafka and the other services are available for later milestones, but the application has no producer, consumer, cache integration, ledger posting, or public payment route.
+Flyway applies `V001__create_orders_and_idempotency.sql`, `V002__create_payment_tables.sql`, and `V003__create_immutable_ledger.sql` at startup. Kafka and the other services are available for later milestones, but the application has no producer, consumer, cache integration, or public payment/ledger route.
 
 ## Create Order API
 
@@ -113,9 +113,15 @@ The complete schemas, examples, validation rules, problem details, and status co
 
 ## Payment provider test harness
 
-Payment authorization and capture are intentionally not connected to the public order routes yet: capture cannot be exposed until ledger and outbox finalization are atomic. Integration tests start a deterministic external HTTP fixture from `application/src/integrationTest`, validate its separate contract, and cover success, decline, temporary failure, timeout-after-processing, slow response, invalid response, crash recovery, and concurrent transitions.
+Payment authorization and capture are intentionally not connected to the public order routes yet: final order and outbox behavior remains unimplemented. Integration tests start a deterministic external HTTP fixture from `application/src/integrationTest`, validate its separate contract, and cover success, decline, temporary failure, timeout-after-processing, slow response, invalid response, crash recovery, and concurrent transitions.
 
 Provider timeouts and the bounded retry policy use `LEDGERFLOW_PAYMENT_PROVIDER_*` configuration. The default application has no provider base URL, so no provider client/workflow bean starts accidentally. See [the payment recovery runbook](docs/runbook.md) for state interpretation and safe recovery constraints.
+
+## Ledger accounting slice
+
+The internal ledger use case posts an already `CAPTURE_CONFIRMED` payment once. One `READ COMMITTED` transaction locks the payment, inserts a clearing debit and merchant-payable credit in INR minor units, and transitions it to `CAPTURE_ACCOUNTED`. Deferred PostgreSQL constraints reject incomplete, unbalanced, or mismatched journals at commit; repeated and concurrent posting returns the original transaction. Posted rows cannot be updated or deleted, and corrections append an exact compensating transaction.
+
+This slice deliberately adds no HTTP endpoint, provider call, order completion, or Kafka effect. Use [the read-only ledger SQL](docs/sql/ledger-queries.sql) for account balances and payment transaction history, and [the payment and ledger runbook](docs/runbook.md) for recovery boundaries.
 
 ## Project structure
 

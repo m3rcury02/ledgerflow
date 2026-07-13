@@ -14,7 +14,7 @@
 | `notifications` | Kafka inbox and notification records | Idempotent payment-captured event handling |
 | `operations` | Sanitized failed-operation projection, retry requests, audit | Inspect failures and dispatch authorized retry commands |
 
-The modules are packages in one deployable application. Cross-module calls use each module's `api` package. The successful capture finalization deliberately spans module APIs inside one local PostgreSQL transaction; no module reads another module's tables directly.
+The modules are packages in one deployable application. Cross-module calls use each module's `api` package. Ledger accounting deliberately spans `ledger.api` and `payments.api` inside one local PostgreSQL transaction; application code in neither module queries the other's tables directly. ADR 0005 separately permits the deferred database validator's narrow payment-state/money consistency read. The later order/outbox finalization remains unimplemented.
 
 The `payments` module uses hexagonal architecture because it owns a non-trivial state machine and a replaceable external HTTP provider. Other modules use simpler package-by-feature structures unless their implementation evidence justifies additional ports.
 
@@ -116,7 +116,8 @@ stateDiagram-v2
     CAPTURE_UNKNOWN --> FAILED: non-retryable recovery result
     DECLINED --> [*]
     CAPTURE_DECLINED --> [*]
-    CAPTURE_CONFIRMED --> [*]: waits for Milestone 5 finalization
+    CAPTURE_CONFIRMED --> CAPTURE_ACCOUNTED: balanced journal commits atomically
+    CAPTURE_ACCOUNTED --> [*]: waits for order/outbox finalization
     FAILED --> [*]
 ```
 
@@ -130,7 +131,8 @@ stateDiagram-v2
 | `CAPTURING` | `CAPTURE_CONFIRMED`, `CAPTURE_DECLINED`, `CAPTURE_RETRY_PENDING`, `CAPTURE_UNKNOWN`, `FAILED` | Provider response or reconciled lookup result |
 | `CAPTURE_RETRY_PENDING` | `CAPTURING` | Explicit retry with the same capture request ID |
 | `CAPTURE_UNKNOWN` | `CAPTURE_CONFIRMED`, `CAPTURE_DECLINED`, `CAPTURING`, `FAILED` | Lookup result; resend only after `NOT_FOUND`, using the same request ID |
-| `CAPTURE_CONFIRMED` | None in Milestone 4 | Provider capture reference exists; later finalization may transition to `CAPTURED` with ledger/outbox evidence |
+| `CAPTURE_CONFIRMED` | `CAPTURE_ACCOUNTED` | Provider capture reference exists; payment row and balanced journal commit together |
+| `CAPTURE_ACCOUNTED` | None in Milestone 5A | Exactly one matching capture journal exists; later finalization may transition to `CAPTURED` with order/outbox evidence |
 | `DECLINED`, `CAPTURE_DECLINED`, `FAILED` | None | Sanitized terminal reason exists |
 
 Every transition validates its source in the domain and compares the persisted version and expected state in SQL. Illegal transitions throw a domain error; stale concurrent transitions throw an optimistic-concurrency error and make no change. Provider I/O and retry delay happen after a committed transition to `AUTHORIZING` or `CAPTURING`, and each classified result is committed later with an append-only history event.
@@ -152,7 +154,7 @@ The MVP seeds two INR accounts:
 - `PAYMENT_CLEARING`, an asset account debited when cash is captured; and
 - `MERCHANT_PAYABLE`, a liability account credited for captured funds owed to the merchant.
 
-One successful capture produces one immutable transaction:
+One provider-confirmed capture produces one immutable `PAYMENT_CAPTURE` transaction:
 
 | Account | Side | Amount |
 | --- | --- | --- |
@@ -161,13 +163,17 @@ One successful capture produces one immutable transaction:
 
 Ledger invariants:
 
-- a transaction contains exactly two MVP entries;
+- every journal transaction contains two or more entries;
+- the payment-capture posting contains exactly the two MVP entries shown above;
 - each amount is positive and uses the transaction currency;
 - total debits equal total credits per currency;
 - account currency matches entry currency;
-- `(source_type, source_id)` is unique, making capture posting idempotent;
-- entries and transactions are immutable; corrections use new reversing transactions in a future milestone; and
+- every transaction carries its payment/order link, source identity, correlation ID, actor, and UTC posting time;
+- `(source_type, source_id)` and a payment-capture partial unique index make capture posting idempotent;
+- entries and transactions are immutable; one replayable `CORRECTION` transaction reverses the original entries exactly; and
 - the database rechecks the aggregate balance at commit through a deferred constraint trigger.
+
+Capture posting locks the payment, accepts only `CAPTURE_CONFIRMED` or a matching replay in `CAPTURE_ACCOUNTED`, and makes the state transition and journal one atomic local transaction. A correction changes ledger balances through new debit/credit evidence; it does not rewind the provider payment state or imply a refund.
 
 ## Outbox lifecycle
 
@@ -212,23 +218,24 @@ Only `OPEN` retryable operations accept retry commands. A unique retry idempoten
 
 ## Transaction boundaries and crash recovery
 
-Only the first row is implemented. Remaining boundaries are planned for later milestones.
+Rows explicitly marked future remain planned for later milestones.
 
 | Boundary | Atomic work | Important crash behavior |
 | --- | --- | --- |
 | Accept order | Idempotency claim, `CREATED` order, immutable `201` snapshot | All commit or roll back; unique key prevents a second order |
-| Start provider stage | Guarded payment/order transition and attempt | Recovery sees durable work before external call |
-| Record decline/retry pending | Payment, order, failed operation, cached HTTP result | Replay returns the same outcome |
-| Finalize capture | Payment `CAPTURED`, order `COMPLETED`, ledger transaction/entries, outbox, cached HTTP result | All local effects commit or roll back together |
-| Publish outbox | Lease claim, then broker send, then published marker | Duplicate publication is possible; event loss is not accepted |
-| Consume event | Inbox and notification | Duplicate delivery is a successful no-op |
-| Accept operator retry | Retry request, operation status, audit | Duplicate command does not schedule duplicate work |
+| Start provider stage | Guarded payment transition and durable attempt evidence | Recovery sees durable work before external call |
+| Record provider result | Payment transition and append-only result evidence | Optimistic guard accepts one classified outcome |
+| Account confirmed capture | Payment `CAPTURE_ACCOUNTED`, ledger transaction and entries | Payment row lock serializes duplicates; deferred checks commit all or roll back all |
+| Finalize capture (future) | Payment `CAPTURED`, order `COMPLETED`, outbox, cached HTTP result | Requires existing accounted journal; all remaining local effects commit or roll back together |
+| Publish outbox (future) | Lease claim, then broker send, then published marker | Duplicate publication is possible; event loss is not accepted |
+| Consume event (future) | Inbox and notification | Duplicate delivery is a successful no-op |
+| Accept operator retry (future) | Retry request, operation status, audit | Duplicate command does not schedule duplicate work |
 
-Provider capture and PostgreSQL cannot be one transaction. If capture succeeds but local finalization fails, recovery looks up the stable capture operation key, confirms the provider outcome, and retries the idempotent finalization transaction.
+Provider capture and PostgreSQL cannot be one transaction. If capture succeeds but local persistence fails, recovery looks up the stable capture operation key and restores `CAPTURE_CONFIRMED`. Ledger posting can then be retried safely: either it atomically creates the journal and `CAPTURE_ACCOUNTED`, or it returns the already matching journal.
 
 ## Domain events
 
-The MVP emits event type `com.ledgerflow.payment.captured` with event version `1` after local capture finalization. Its data contains only:
+The future messaging milestone will emit event type `com.ledgerflow.payment.captured` with event version `1` after local capture finalization. Its data contains only:
 
 - order ID;
 - payment ID;
