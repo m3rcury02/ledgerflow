@@ -8,7 +8,7 @@
 - Last updated: 2026-07-13
 - Approved by: LedgerFlow maintainer
 - Approval date: 2026-07-13
-- Current milestone: Milestone 1 — repository and application scaffolding (`Complete`); no later milestone is approved
+- Current milestone: Milestone 2 — local development infrastructure (`Complete`); no later milestone is approved
 - Canonical plan path: `docs/plans/mvp-execplan.md` by explicit maintainer request
 
 ## Purpose and outcome
@@ -37,7 +37,7 @@ The normative requirements and designs are:
 
 ## Current state
 
-The repository now contains the verified Milestone 1 application foundation:
+The repository now contains the verified Milestone 1 application foundation and completed Milestone 2 local infrastructure:
 
 - `AGENTS.md` establishes Java 25, Spring Boot 4.1, Gradle Kotlin DSL, modular-monolith, PostgreSQL, Flyway, OpenAPI, money/time, idempotency, observability, scope, and quality rules.
 - `.agent/PLANS.md` defines ExecPlan structure and one-approved-milestone discipline.
@@ -45,7 +45,8 @@ The repository now contains the verified Milestone 1 application foundation:
 - `application/src/main/java/com/ledgerflow/LedgerFlowApplication.java` is the minimal Spring Boot 4.1 entry point; there are no business controllers, services, migrations, producers, or consumers.
 - `application/src/integrationTest` proves context loading, Flyway startup, and JDBC access against PostgreSQL 18.4 Testcontainers.
 - `application/src/architectureTest` verifies exactly six Spring Modulith modules and complementary ArchUnit package rules.
-- `build.gradle.kts` provides the stable formatting, static-analysis, unit, integration, architecture, OpenAPI, documentation, and aggregate `verify` tasks.
+- `compose.yaml`, `.env.example`, `infra`, and `scripts/dev-*` provide the pinned nine-service local environment, safe placeholder defaults, provisioning, and lifecycle commands.
+- `build.gradle.kts` provides the stable formatting, static-analysis, unit, integration, architecture, OpenAPI, Compose, documentation, and aggregate `verify` tasks.
 - `docs/architecture.md`, `docs/development-workflow.md`, `README.md`, and this plan record the approved bootstrap choices and developer commands.
 - ADR 0001 establishes the ADR process.
 
@@ -68,18 +69,25 @@ The maintainer explicitly requested this ExecPlan at `docs/plans/mvp-execplan.md
 - Transactional outbox, Kafka publication, inbox deduplication, notification persistence, retry topics, DLT catalog, and operator replay.
 - Correlation IDs, structured logs, OpenTelemetry HTTP/Kafka propagation, metrics, health, and sanitized failure records.
 - Unit, integration, contract, architecture, concurrency, crash-window, security, and end-to-end tests.
+- A laptop-sized Docker Compose environment for PostgreSQL, Kafka, Valkey, Keycloak, OpenTelemetry Collector, Prometheus, Grafana, Tempo, and Loki, controlled by repository scripts.
 
 ### Non-goals
 
 - Real payment credentials/provider, PCI scope, notification delivery, inventory, line items, tax, discounts, refunds, voids, disputes, partial/multiple capture, FX, settlement, or payouts.
 - A browser/mobile/operator UI or identity-provider implementation.
-- Microservices, distributed transactions, Kafka exactly-once claims, event sourcing, Debezium, Redis, H2, JPA/Hibernate, or additional datastores.
+- Microservices, distributed transactions, Kafka exactly-once claims, event sourcing, Debezium, application use of Redis/Valkey, H2, JPA/Hibernate, or additional application datastores. The local Valkey service does not authorize application integration.
 - Production cloud/IaC, backup/restore, disaster recovery, or a final data-retention policy.
 - OpenAPI-generated server code. The MVP validates the contract and tests implementation conformance without generation.
 
 Any non-goal requires a separate proposed milestone and, where significant, an ADR.
 
 ## Interfaces and data
+
+### Local development infrastructure
+
+`compose.yaml` is the source of truth for local dependencies. `.env.example` contains local-only placeholder defaults and may be overridden by an ignored `.env`. The environment exposes only the documented developer ports and stores durable local state in named volumes for PostgreSQL, Kafka, Prometheus, Grafana, Tempo, and Loki. Valkey is intentionally ephemeral; Keycloak persists in its own PostgreSQL database and never uses embedded H2.
+
+The `scripts/dev-up`, `scripts/dev-down`, `scripts/dev-reset`, and `scripts/dev-status` commands validate and operate the environment. They do not build or start LedgerFlow itself.
 
 ### HTTP interfaces
 
@@ -147,7 +155,7 @@ Secrets come only from environment/secret injection. Local/test defaults contain
 
 ## Milestones
 
-All milestones are `Proposed`. After the plan is approved, the maintainer approves only one milestone at a time. Completing a milestone does not approve the next.
+Only the current milestone is approved or in progress. Later milestones remain `Proposed`; completing a milestone does not approve the next.
 
 ### Milestone 1 — Scaffold the verified repository and application
 
@@ -173,17 +181,44 @@ All milestones are `Proposed`. After the plan is approved, the maintainer approv
   - Kafka and Redis-compatible Testcontainers support resolves from test-only configurations without introducing either as an application datastore.
   - No H2, application business endpoint, or mock production bypass exists.
 
-### Milestone 2 — Build the order and idempotency core behind an inactive route
+### Milestone 2 — Provide local development infrastructure
+
+- Status: Complete
+- Intended outcome: One command starts a pinned, laptop-sized local dependency stack; Compose reports every service healthy and developers can discover every host port without introducing application functionality.
+- Implementation work:
+  - Add `compose.yaml` with PostgreSQL 18.4, Kafka 4.3.1 in single-node KRaft mode without ZooKeeper, Valkey 9.1.0, Keycloak 26.7.0, OpenTelemetry Collector Contrib 0.156.0, Prometheus 3.5.5 LTS, Grafana 13.1.0, Tempo 2.10.7, and Loki 3.7.3.
+  - Add health checks, bounded CPU/memory, useful named volumes only, safe local placeholder configuration, and explicit host port variables.
+  - Configure a separate PostgreSQL database/role for Keycloak so the identity service never falls back to embedded H2.
+  - Add a Keycloak `ledgerflow` realm import with `customer` and `operator` realm roles but no users, tokens, or credentials.
+  - Configure OTLP ingestion and routing to Tempo, Loki, and a Prometheus scrape endpoint; provision Grafana data sources for all three backends.
+  - Add `.env.example`, ignore `.env`, add `scripts/dev-up`, `scripts/dev-down`, `scripts/dev-reset`, and `scripts/dev-status`, and expose them through the Makefile.
+  - Document commands, destructive reset behavior, resource expectations, local-only security limitations, and every exposed port.
+- Validation commands:
+  - `docker compose --env-file .env.example -f compose.yaml config --quiet`
+  - `scripts/dev-up`
+  - `scripts/dev-status`
+  - targeted PostgreSQL, Kafka, Valkey, Keycloak, OpenTelemetry, Prometheus, Grafana, Tempo, and Loki readiness checks documented in `README.md`
+  - `./gradlew clean verify`
+- Observable acceptance:
+  - `docker compose ps` reports all nine services running and healthy.
+  - Kafka reports a broker through its KRaft listener and no ZooKeeper service or configuration exists.
+  - PostgreSQL accepts the LedgerFlow database connection and Keycloak uses a separate PostgreSQL database.
+  - Valkey responds to `PING`; Keycloak publishes the `ledgerflow` realm metadata with customer/operator roles imported.
+  - OpenTelemetry Collector validates and exposes healthy OTLP receivers; Prometheus, Grafana, Tempo, and Loki readiness endpoints respond successfully.
+  - Grafana provisions Prometheus, Tempo, and Loki data sources without manual UI setup.
+  - No actual secret, application behavior, Flyway migration, API operation, producer, or consumer is added.
+
+### Milestone 3 — Build the order and idempotency core behind an inactive route
 
 - Status: Proposed
-- Intended outcome: The complete future order contract and durable idempotency/order core are verified through internal integration tests, while public order routes remain unregistered until capture accounting/outbox is safe in Milestone 4.
+- Intended outcome: The complete future order contract and durable idempotency/order core are verified through internal integration tests, while public order routes remain unregistered until capture accounting/outbox is safe in Milestone 5.
 - Implementation work:
   - Complete order and common problem schemas in OpenAPI.
   - Add JWT resource-server validation, order scopes, subject ownership, correlation filter, and structured HTTP logs.
   - Apply `V001` for orders, idempotency records with ownership leases, payments, and attempts.
   - Implement normalized typed-request fingerprints, hashed keys, in-progress recovery, original-response snapshots, current GET representation, and concurrency guards.
   - Implement order/payment initial states and state-machine unit tests without provider calls.
-  - Keep create/read controllers disabled and readiness non-production until Milestone 4; do not expose a stub success response.
+  - Keep create/read controllers disabled and readiness non-production until Milestone 5; do not expose a stub success response.
 - Validation commands:
   - `./gradlew openApiValidate test`
   - `./gradlew integrationTest --tests '*OrderIdempotencyIntegrationTest'`
@@ -197,7 +232,7 @@ All milestones are `Proposed`. After the plan is approved, the maintainer approv
   - One subject cannot read another subject's order.
   - No public order route is active, preventing a success path without payment finalization.
 
-### Milestone 3 — Implement the external mock provider and payment state machine
+### Milestone 4 — Implement the external mock provider and payment state machine
 
 - Status: Proposed
 - Intended outcome: Normal, latency, authorization-decline, temporary-failure, timeout/unknown, and invalid-response scenarios verify the provider adapter and payment state machine through a non-public integration harness without a database transaction across HTTP.
@@ -206,7 +241,7 @@ All milestones are `Proposed`. After the plan is approved, the maintainer approv
   - Add and validate `application/src/testFixtures/openapi/mock-payment-provider.yaml`, then implement a local/test-only JDK HTTP fixture and run task against it; it supports deterministic scenario tokens and provider-side idempotency/lookup.
   - Implement every allowed/forbidden payment transition with optimistic version checks and durable attempt history.
   - Apply `V002` and create sanitized payment failed-operation records through `operations.api`.
-  - Keep public order routes inactive. Provider capture is invoked only by tests until Milestone 4 can finalize accounting/outbox atomically.
+  - Keep public order routes inactive. Provider capture is invoked only by tests until Milestone 5 can finalize accounting/outbox atomically.
 - Validation commands:
   - `./gradlew test --tests '*PaymentStateMachineTest'`
   - `./gradlew integrationTest --tests '*PaymentProviderIntegrationTest'`
@@ -221,7 +256,7 @@ All milestones are `Proposed`. After the plan is approved, the maintainer approv
   - Captured provider outcome followed by local process failure is discoverable for the next milestone's finalization.
   - No production/public route can capture funds without ledger/outbox finalization.
 
-### Milestone 4 — Activate the atomic order, capture, ledger, and outbox flow
+### Milestone 5 — Activate the atomic order, capture, ledger, and outbox flow
 
 - Status: Proposed
 - Intended outcome: Confirmed provider capture converges to one completed order, captured payment, immutable balanced ledger transaction, replayable HTTP result, and logical outbox event in one PostgreSQL commit.
@@ -246,7 +281,7 @@ All milestones are `Proposed`. After the plan is approved, the maintainer approv
   - Provider capture plus local rollback later converges without a second provider capture.
   - Every documented create-order response, including replayed `502`, matches OpenAPI and creates only its permitted effects.
 
-### Milestone 5 — Publish, consume, retry, dead-letter, and notify
+### Milestone 6 — Publish, consume, retry, dead-letter, and notify
 
 - Status: Proposed
 - Intended outcome: The committed event reaches Kafka at least once and creates exactly one notification despite duplicates; failures follow bounded retry topics and become cataloged DLT operations.
@@ -270,7 +305,7 @@ All milestones are `Proposed`. After the plan is approved, the maintainer approv
   - Malformed records catalog safe hash/size/coordinates without raw bytes and are not replayable.
   - DLT-catalog database failure commits no offset, retries with alerting, and creates no recursive DLT.
 
-### Milestone 6 — Add secured operator recovery and end-to-end observability
+### Milestone 7 — Add secured operator recovery and end-to-end observability
 
 - Status: Proposed
 - Intended outcome: Authorized operators can safely inspect and retry payment, outbox, and DLT failures, and a trace/correlation chain explains every synchronous and asynchronous attempt.
@@ -294,7 +329,7 @@ All milestones are `Proposed`. After the plan is approved, the maintainer approv
   - HTTP server/client, provider, outbox publisher, Kafka producer/consumer, database, and operator-retry spans are connected or explicitly linked.
   - Seeded secret markers never appear in logs, traces, event headers, DLT metadata, or API responses.
 
-### Milestone 7 — Prove the complete MVP and operational failure matrix
+### Milestone 8 — Prove the complete MVP and operational failure matrix
 
 - Status: Proposed
 - Intended outcome: One reproducible demonstration and automated suite proves all product acceptance criteria and leaves implementation/operations documentation accurate.
@@ -462,6 +497,9 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - [x] `2026-07-13 08:21Z` — Recorded the maintainer's explicit approval of Milestone 1 as repository and application scaffolding, requiring a multi-project Gradle build and no business behavior; ADRs 0002–0008 remain proposed.
 - [x] `2026-07-13 08:21Z` — Created the Java 25/Spring Boot 4.1 multi-project foundation, Gradle 9.6.1 Wrapper, six feature boundaries, command interface, OpenAPI skeleton, and README without business behavior.
 - [x] `2026-07-13 08:21Z` — Ran `./gradlew clean verify`; all 45 actionable formatting, static-analysis, unit, PostgreSQL integration, architecture, OpenAPI, and documentation tasks completed successfully.
+- [x] `2026-07-13 09:27Z` — Implemented the approved Milestone 2 nine-service local Compose environment, pinned images, laptop resource limits, PostgreSQL-backed Keycloak realm, observability provisioning, lifecycle scripts, Compose verification task, and port/setup documentation without application behavior.
+- [x] `2026-07-13 09:27Z` — Started the environment with temporary host overrides for occupied local ports, confirmed all nine containers healthy, verified the KRaft quorum and absence of ZooKeeper, checked PostgreSQL/Valkey/Keycloak, and sent OTLP trace, log, and metric records end-to-end through Tempo, Loki, and Prometheus. Grafana reported all three data sources provisioned.
+- [x] `2026-07-13 09:30Z` — Ran `./gradlew clean verify`; all 45 actionable formatting, static-analysis, unit, PostgreSQL integration, architecture, Compose, OpenAPI, and documentation tasks completed successfully.
 
 ## Surprises and discoveries
 
@@ -474,6 +512,10 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - Spring Boot 4.1's BOM imports the Testcontainers 2.0.5 BOM, so the PostgreSQL, Kafka, and Redis-compatible test modules remain versionless without declaring a second platform dependency.
 - Testcontainers 2 deprecates its legacy generic PostgreSQL container package. The integration test uses `org.testcontainers.postgresql.PostgreSQLContainer` and enables Java 25 native access for JNA-backed container discovery.
 - Architecture tests must live outside the `com.ledgerflow` application base package; otherwise Spring Modulith correctly interprets the test package as another application module.
+- PostgreSQL 18 changed the official image's persistent mount to `/var/lib/postgresql`; using the pre-18 `/var/lib/postgresql/data` target would create unintended storage. The Compose volume uses the version-correct parent path.
+- Docker Desktop was temporarily unavailable during the first check, then recovered. Existing host PostgreSQL and Valkey processes occupied ports 5432 and 6379, so runtime validation used temporary `POSTGRES_PORT=15432` and `VALKEY_PORT=16379` overrides while retaining documented defaults.
+- Kafka's JVM CLI and the OpenTelemetry Collector validation command can exceed ten seconds under the configured CPU ceilings. Their health-check timeouts allow thirty seconds to prevent false failures without increasing service resource caps.
+- Tempo and Loki deliberately delay readiness for fifteen seconds when an ingester becomes ready. Endpoint verification waits for actual `/ready` success rather than treating the image binary check alone as proof of backend readiness.
 
 ## Decision log
 
@@ -482,9 +524,12 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - **2026-07-11 — Initially propose one single-project Gradle modular monolith.** This proposal was superseded before implementation by the maintainer's explicit multi-project requirement on 2026-07-13.
 - **2026-07-13 — Use one deployable `application` project and six feature-library projects under base package `com.ledgerflow`.** The maintainer explicitly required a multi-project build; Spring Modulith and ArchUnit verify logical module rules while Gradle provides compile-time project boundaries. This bootstrap choice is documented in `docs/architecture.md`; the broader proposed ADR 0002 remains unaccepted.
 - **2026-07-13 — Use Checkstyle plus javac `-Xlint:all -Werror` as the Error Prone-equivalent static analysis.** This combination supports Java 25 without compiler-plugin coupling and provides deterministic style and compiler diagnostics. No ADR is required because the stable `staticAnalysis` lifecycle remains tool-independent.
+- **2026-07-13 — Keep local infrastructure operational and non-normative for production architecture.** The exact container images and single-node topology support development only, do not accept proposed ADRs 0002–0008, and do not authorize application integration.
+- **2026-07-13 — Use PostgreSQL for Keycloak, ephemeral Valkey, and six useful named volumes.** This honors the no-H2 rule, avoids treating the cache as an application datastore, and persists database, broker, and observability state while leaving reconstructable services stateless.
+- **2026-07-13 — Bind every host port to loopback and disable Grafana's default plugin preinstallation.** Loopback limits accidental network exposure; disabling unpinned background downloads keeps startup deterministic while built-in Prometheus, Tempo, and Loki data sources are provisioned from version-controlled configuration.
 - **2026-07-11 — Use Spring `JdbcClient`, not an ORM.** Explicit guarded SQL and PostgreSQL features are core to the correctness demonstration.
 - **2026-07-11 — Use synchronous normal provider orchestration and asynchronous Kafka/notification.** This produces an observable completed `201` while keeping messaging eventual.
-- **2026-07-11 — Keep public order routes inactive until Milestone 4.** Earlier milestones test idempotency and provider components internally so no approved intermediate milestone can capture without ledger/outbox finalization.
+- **2026-07-11 — Keep public order routes inactive until Milestone 5.** Earlier milestones test idempotency and provider components internally so no approved intermediate milestone can capture without ledger/outbox finalization.
 - **2026-07-11 — Use stable provider operation keys and explicit unknown states.** A timeout is not proof of failure.
 - **2026-07-11 — Use `PAYMENT_CLEARING` debit and `MERCHANT_PAYABLE` credit.** This balances the demo without assuming revenue ownership.
 - **2026-07-11 — Use PostgreSQL polling outbox plus Kafka inbox.** At-least-once behavior is explicit and does not require distributed transactions or Debezium.
@@ -497,7 +542,7 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 
 ## Outcome and follow-up
 
-Current outcome: Milestone 1 is complete. The repository has a verified multi-project application foundation and one PostgreSQL context-load integration test. No migration, public business operation, payment behavior, ledger behavior, messaging behavior, or notification behavior has been created. Later milestones remain proposed and require separate approval.
+Current outcome: Milestones 1 and 2 are complete. The repository has a verified multi-project application foundation, one PostgreSQL context-load integration test, and a validated local dependency/observability environment. No migration, public business operation, payment behavior, ledger behavior, messaging behavior, or notification behavior has been created. Later milestones remain proposed and require separate approval.
 
 When all milestones are complete, update this section with:
 

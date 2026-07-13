@@ -1,10 +1,14 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help run format check-format static-analysis test integration-test architecture-test openapi-check docs-check verify clean
+.PHONY: help run dev-up dev-down dev-reset dev-status format check-format static-analysis test integration-test architecture-test openapi-check compose-check docs-check verify clean
 
 help:
 	@echo "LedgerFlow developer commands"
 	@echo "  make run                Run the application (requires PostgreSQL configuration)"
+	@echo "  make dev-up             Start local dependencies and wait for health"
+	@echo "  make dev-down           Stop local dependencies and preserve data"
+	@echo "  make dev-reset          Delete local data and recreate dependencies"
+	@echo "  make dev-status         Show local dependency health"
 	@echo "  make format             Apply formatting"
 	@echo "  make check-format       Check formatting"
 	@echo "  make static-analysis    Run compiler lint and Checkstyle"
@@ -12,11 +16,24 @@ help:
 	@echo "  make integration-test   Run PostgreSQL Testcontainers tests"
 	@echo "  make architecture-test  Run Spring Modulith and ArchUnit checks"
 	@echo "  make openapi-check      Validate OpenAPI"
+	@echo "  make compose-check      Validate Docker Compose configuration"
 	@echo "  make docs-check         Validate documentation"
 	@echo "  make verify             Run the complete verification lifecycle"
 
 run:
 	./gradlew :application:bootRun
+
+dev-up:
+	./scripts/dev-up
+
+dev-down:
+	./scripts/dev-down
+
+dev-reset:
+	./scripts/dev-reset
+
+dev-status:
+	./scripts/dev-status
 
 format:
 	./gradlew spotlessApply
@@ -38,6 +55,9 @@ architecture-test:
 
 openapi-check:
 	./gradlew openApiValidate
+
+compose-check:
+	./gradlew composeValidate
 
 docs-check:
 	./gradlew documentationCheck

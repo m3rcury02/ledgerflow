@@ -1,0 +1,267 @@
+name: ${COMPOSE_PROJECT_NAME:-ledgerflow-local}
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-file: "3"
+    max-size: 10m
+
+services:
+  postgres:
+    image: postgres:18.4-alpine3.22
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ledgerflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-local-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-ledgerflow}
+      KEYCLOAK_DB_NAME: ${KEYCLOAK_DB_NAME:-keycloak}
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-change-me-local-keycloak-db}
+      KEYCLOAK_DB_USER: ${KEYCLOAK_DB_USER:-keycloak}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./infra/postgres/init/001-create-keycloak-database.sh:/docker-entrypoint-initdb.d/001-create-keycloak-database.sh:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready --username="$${POSTGRES_USER}" --dbname="$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    cpus: 1.0
+    mem_limit: 768m
+    pids_limit: 200
+    logging: *default-logging
+    networks: [ledgerflow]
+
+  kafka:
+    image: apache/kafka:4.3.1
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: CONTROLLER://:9093,INTERNAL://:29092,EXTERNAL://:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:${KAFKA_PORT:-9092}
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+    ports:
+      - "127.0.0.1:${KAFKA_PORT:-9092}:9092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list >/dev/null 2>&1
+      interval: 10s
+      timeout: 30s
+      retries: 18
+      start_period: 30s
+    cpus: 1.5
+    mem_limit: 1g
+    pids_limit: 300
+    logging: *default-logging
+    networks: [ledgerflow]
+
+  valkey:
+    image: valkey/valkey:9.1.0-alpine3.23
+    command: [valkey-server, --save, "", --appendonly, "no", --maxmemory, 96mb, --maxmemory-policy, allkeys-lru]
+    ports:
+      - "127.0.0.1:${VALKEY_PORT:-6379}:6379"
+    healthcheck:
+      test: [CMD, valkey-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    cpus: 0.5
+    mem_limit: 128m
+    pids_limit: 100
+    logging: *default-logging
+    networks: [ledgerflow]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.0
+    command: [start-dev, --import-realm]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${KEYCLOAK_DB_NAME:-keycloak}
+      KC_DB_USERNAME: ${KEYCLOAK_DB_USER:-keycloak}
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-change-me-local-keycloak-db}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-change-me-local-keycloak-admin}
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      JAVA_OPTS_KC_HEAP: -XX:InitialRAMPercentage=30 -XX:MaxRAMPercentage=70
+    ports:
+      - "127.0.0.1:${KEYCLOAK_PORT:-8081}:8080"
+    volumes:
+      - ./infra/keycloak/ledgerflow-realm.json:/opt/keycloak/data/import/ledgerflow-realm.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          bash -c 'exec 3<>/dev/tcp/127.0.0.1/9000;
+          printf "GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3;
+          grep -q "200 OK" <&3'
+      interval: 10s
+      timeout: 5s
+      retries: 24
+      start_period: 45s
+    cpus: 1.5
+    mem_limit: 1g
+    pids_limit: 300
+    logging: *default-logging
+    networks: [ledgerflow]
+
+  tempo:
+    image: grafana/tempo:2.10.7
+    command: [-config.file=/etc/tempo/tempo.yaml]
+    ports:
+      - "127.0.0.1:${TEMPO_PORT:-3200}:3200"
+    volumes:
+      - ./infra/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    healthcheck:
+      test: [CMD, /tempo, -version]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+    cpus: 0.75
+    mem_limit: 512m
+    pids_limit: 200
+    logging: *default-logging
+    networks: [ledgerflow]
+
+  loki:
+    image: grafana/loki:3.7.3
+    command: [-config.file=/etc/loki/loki.yaml]
+    ports:
+      - "127.0.0.1:${LOKI_PORT:-3100}:3100"
+    volumes:
+      - ./infra/loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+    healthcheck:
+      test: [CMD, /usr/bin/loki, -version]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+    cpus: 0.75
+    mem_limit: 512m
+    pids_limit: 200
+    logging: *default-logging
+    networks: [ledgerflow]
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.156.0
+    command: [--config=/etc/otelcol-contrib/config.yaml]
+    ports:
+      - "127.0.0.1:${OTEL_GRPC_PORT:-4317}:4317"
+      - "127.0.0.1:${OTEL_HTTP_PORT:-4318}:4318"
+    volumes:
+      - ./infra/otel/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    depends_on:
+      tempo:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, /otelcol-contrib, validate, --config=/etc/otelcol-contrib/config.yaml]
+      interval: 30s
+      timeout: 30s
+      retries: 8
+      start_period: 10s
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 150
+    logging: *default-logging
+    networks: [ledgerflow]
+
+  prometheus:
+    image: prom/prometheus:v3.5.5
+    command:
+      - --config.file=/etc/prometheus/prometheus.yaml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=3d
+      - --storage.tsdb.retention.size=1GB
+      - --web.enable-lifecycle
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      otel-collector:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, /bin/promtool, check, config, /etc/prometheus/prometheus.yaml]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+    cpus: 0.75
+    mem_limit: 512m
+    pids_limit: 200
+    logging: *default-logging
+    networks: [ledgerflow]
+
+  grafana:
+    image: grafana/grafana:13.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me-local-grafana-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./infra/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD-SHELL, wget --quiet --spider http://127.0.0.1:3000/api/health]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    cpus: 0.5
+    mem_limit: 384m
+    pids_limit: 200
+    logging: *default-logging
+    networks: [ledgerflow]
+
+networks:
+  ledgerflow:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  kafka-data:
+  prometheus-data:
+  grafana-data:
+  tempo-data:
+  loki-data:

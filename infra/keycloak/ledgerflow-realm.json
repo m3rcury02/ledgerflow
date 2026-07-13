@@ -1,0 +1,34 @@
+{
+  "realm": "ledgerflow",
+  "displayName": "LedgerFlow Local Development",
+  "enabled": true,
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "roles": {
+    "realm": [
+      {
+        "name": "customer",
+        "description": "LedgerFlow customer operations"
+      },
+      {
+        "name": "operator",
+        "description": "LedgerFlow operator recovery operations"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "ledgerflow-api",
+      "name": "LedgerFlow API",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "bearerOnly": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    }
+  ]
+}

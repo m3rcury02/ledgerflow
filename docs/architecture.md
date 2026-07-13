@@ -138,6 +138,14 @@ The Gradle `architectureTest` task must verify at least:
 
 Spring Modulith verifies logical application modules, API/internal access, and cycles. ArchUnit complements it with repository-specific package rules. Both run through `architectureTest`.
 
+## Local development infrastructure
+
+`compose.yaml` provides pinned local dependencies for development and demonstrations. It is not production topology or authorization guidance. Services bind only to `127.0.0.1`, have bounded laptop-oriented resources and health checks, and are operated through `scripts/dev-*`.
+
+Keycloak stores its data in a separate database on the local PostgreSQL instance; embedded H2 is not used. Valkey is an ephemeral Redis-compatible cache service and is not an approved application datastore. Local Kafka is a single combined broker/controller in KRaft mode. Prometheus, Grafana, Tempo, Loki, and OpenTelemetry Collector provide a self-contained observability path without committing credentials or choosing a production observability vendor.
+
+Selecting these development containers does not accept proposed ADRs 0002–0008 or authorize application integration. Production identity, broker, cache, observability, persistence roles, deployment topology, TLS, authentication, retention, backup, and sizing remain subject to their approved implementation or deployment milestones.
+
 ## Decisions intentionally deferred
 
 The following require product or operational evidence and are not selected by this document:

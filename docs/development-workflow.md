@@ -76,6 +76,7 @@ During development, run the smallest relevant checks:
 ./gradlew integrationTest
 ./gradlew architectureTest
 ./gradlew openApiValidate
+./gradlew composeValidate
 ./gradlew documentationCheck
 ```
 
@@ -87,10 +88,13 @@ Expected task responsibilities:
 - `integrationTest`: run PostgreSQL Testcontainers tests, including Flyway migrations.
 - `architectureTest`: enforce module and architectural constraints.
 - `openApiValidate`: validate every OpenAPI document.
+- `composeValidate`: resolve and validate `compose.yaml` using the non-secret `.env.example` defaults.
 - `documentationCheck`: check Markdown formatting, internal links, and required document structure.
 - `verify`: depend on every task above.
 
-`integrationTest` and `verify` require a working Docker-compatible container runtime.
+`integrationTest`, `composeValidate`, and `verify` require a working Docker-compatible container runtime with Docker Compose.
+
+Operate local dependencies through `scripts/dev-up`, `scripts/dev-down`, `scripts/dev-reset`, and `scripts/dev-status`. `dev-reset` is destructive and deletes all local named volumes; it never applies to a shared or production environment.
 
 Use `./gradlew spotlessApply` only as an intentional local edit, then inspect its diff. Never use automatic formatting to rewrite unrelated files.
 

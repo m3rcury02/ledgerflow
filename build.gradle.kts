@@ -91,6 +91,7 @@ extensions.configure<SpotlessExtension> {
     format("repositoryText") {
         target(
             ".gitignore",
+            ".env.example",
             "*.md",
             ".agent/**/*.md",
             "docs/**/*.md",
@@ -98,7 +99,9 @@ extensions.configure<SpotlessExtension> {
             "**/*.xml",
             "**/*.yaml",
             "**/*.yml",
+            "infra/**/*.json",
             "Makefile",
+            "scripts/dev-*",
         )
         targetExclude("**/build/**", ".gradle/**")
         trimTrailingWhitespace()
@@ -182,6 +185,25 @@ val openApiValidate =
         args("validate", "--input-spec", contract.asFile.absolutePath)
     }
 
+val composeValidate =
+    tasks.register<Exec>("composeValidate") {
+        group = "verification"
+        description = "Validates the local Docker Compose environment."
+        inputs.file(layout.projectDirectory.file("compose.yaml"))
+        inputs.file(layout.projectDirectory.file(".env.example"))
+        inputs.files(layout.projectDirectory.dir("infra"))
+        commandLine(
+            "docker",
+            "compose",
+            "--env-file",
+            ".env.example",
+            "--file",
+            "compose.yaml",
+            "config",
+            "--quiet",
+        )
+    }
+
 val documentationCheck =
     tasks.register("documentationCheck") {
         group = "verification"
@@ -202,6 +224,12 @@ val documentationCheck =
                 "docs/threat-model.md",
                 "docs/plans/mvp-execplan.md",
                 "docs/adr/0001-record-architecture-decisions.md",
+                "compose.yaml",
+                ".env.example",
+                "scripts/dev-up",
+                "scripts/dev-down",
+                "scripts/dev-reset",
+                "scripts/dev-status",
             )
         val markdownFiles =
             fileTree(rootDir) {
@@ -249,6 +277,7 @@ tasks.register("verify") {
         integrationTest,
         architectureTest,
         openApiValidate,
+        composeValidate,
         documentationCheck,
     )
 }

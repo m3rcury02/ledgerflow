@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ENV_FILE=${LEDGERFLOW_ENV_FILE:-"$ROOT_DIR/.env"}
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  ENV_FILE="$ROOT_DIR/.env.example"
+fi
+
+compose() {
+  docker compose --env-file "$ENV_FILE" --file "$ROOT_DIR/compose.yaml" "$@"
+}
+
+compose ps
+
+mapfile -t CONTAINER_IDS < <(compose ps --quiet)
+if [[ ${#CONTAINER_IDS[@]} -ne 9 ]]; then
+  echo "Expected 9 local dependency containers; found ${#CONTAINER_IDS[@]}." >&2
+  exit 1
+fi
+
+unhealthy=0
+for container_id in "${CONTAINER_IDS[@]}"; do
+  service=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$container_id")
+  health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id")
+  printf '%-20s %s\n' "$service" "$health"
+  if [[ "$health" != "healthy" ]]; then
+    unhealthy=1
+  fi
+done
+
+if [[ $unhealthy -ne 0 ]]; then
+  echo "One or more local dependencies are not healthy." >&2
+  exit 1
+fi
