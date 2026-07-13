@@ -1,0 +1,203 @@
+openapi: 3.1.0
+info:
+  title: LedgerFlow Mock Payment Provider
+  version: 1.0.0
+  description: Test-only external HTTP contract; it is not packaged as a LedgerFlow public API.
+servers:
+  - url: http://127.0.0.1:0
+paths:
+  /mock-provider/v1/authorizations:
+    post:
+      operationId: authorize
+      parameters:
+        - $ref: "#/components/parameters/ProviderRequestId"
+        - $ref: "#/components/parameters/CorrelationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthorizationRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "409":
+          $ref: "#/components/responses/IdempotencyConflict"
+        "422":
+          $ref: "#/components/responses/Decline"
+        "503":
+          $ref: "#/components/responses/TemporaryFailure"
+  /mock-provider/v1/captures:
+    post:
+      operationId: capture
+      parameters:
+        - $ref: "#/components/parameters/ProviderRequestId"
+        - $ref: "#/components/parameters/CorrelationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CaptureRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Success"
+        "409":
+          $ref: "#/components/responses/IdempotencyConflict"
+        "422":
+          $ref: "#/components/responses/Decline"
+        "503":
+          $ref: "#/components/responses/TemporaryFailure"
+  /mock-provider/v1/operations/{stage}/{requestId}:
+    get:
+      operationId: lookupOperation
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+        - name: stage
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [AUTHORIZATION, CAPTURE]
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          $ref: "#/components/responses/LookupResult"
+        "404":
+          description: No provider effect exists for this stage and request ID
+        "503":
+          $ref: "#/components/responses/TemporaryFailure"
+components:
+  parameters:
+    ProviderRequestId:
+      name: X-Provider-Request-Id
+      in: header
+      required: true
+      description: Stable idempotency identifier for exactly one logical provider operation.
+      schema:
+        type: string
+        format: uuid
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: true
+      description: Validated correlation identifier propagated across the provider boundary.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+        pattern: "^[A-Za-z0-9._-]+$"
+  schemas:
+    Money:
+      type: object
+      additionalProperties: false
+      required: [amountMinor, currency]
+      properties:
+        amountMinor:
+          type: integer
+          format: int64
+          minimum: 1
+        currency:
+          type: string
+          enum: [INR]
+    AuthorizationRequest:
+      type: object
+      additionalProperties: false
+      required: [paymentId, orderId, amount, paymentMethodReference]
+      properties:
+        paymentId:
+          type: string
+          format: uuid
+        orderId:
+          type: string
+          format: uuid
+        amount:
+          $ref: "#/components/schemas/Money"
+        paymentMethodReference:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: "^pm_mock_[a-z_]+$"
+          description: >-
+            Deterministic test scenario: success, authorization_decline, capture_decline,
+            authorization_timeout, capture_timeout, authorization_temporary_error,
+            capture_temporary_error, slow_response, or invalid_response. The last
+            scenario intentionally violates the response schema to test fail-closed handling.
+    CaptureRequest:
+      type: object
+      additionalProperties: false
+      required: [paymentId, orderId, amount, providerAuthorizationId]
+      properties:
+        paymentId:
+          type: string
+          format: uuid
+        orderId:
+          type: string
+          format: uuid
+        amount:
+          $ref: "#/components/schemas/Money"
+        providerAuthorizationId:
+          type: string
+          minLength: 1
+          maxLength: 100
+    ProviderResult:
+      type: object
+      additionalProperties: false
+      required: [outcome]
+      properties:
+        outcome:
+          type: string
+          enum: [AUTHORIZED, CAPTURED, DECLINED]
+        providerReference:
+          type: string
+          minLength: 1
+          maxLength: 100
+        failureCode:
+          type: string
+          minLength: 1
+          maxLength: 64
+    ProviderProblem:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code:
+          type: string
+          minLength: 1
+          maxLength: 64
+  responses:
+    Success:
+      description: Provider operation completed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProviderResult"
+    Decline:
+      description: Confirmed business decline; safe to treat as terminal
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProviderResult"
+    TemporaryFailure:
+      description: Confirmed temporary failure with no provider business effect
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProviderProblem"
+    IdempotencyConflict:
+      description: The request ID was reused for a different stage or payload
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProviderProblem"
+    LookupResult:
+      description: Confirmed prior success or decline
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProviderResult"

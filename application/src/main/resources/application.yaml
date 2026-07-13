@@ -39,3 +39,14 @@ logging:
   structured:
     format:
       console: ecs
+
+ledgerflow:
+  payment:
+    provider:
+      connect-timeout: ${LEDGERFLOW_PAYMENT_PROVIDER_CONNECT_TIMEOUT:1s}
+      request-timeout: ${LEDGERFLOW_PAYMENT_PROVIDER_REQUEST_TIMEOUT:2s}
+      max-attempts: ${LEDGERFLOW_PAYMENT_PROVIDER_MAX_ATTEMPTS:2}
+      base-backoff: ${LEDGERFLOW_PAYMENT_PROVIDER_BASE_BACKOFF:200ms}
+      max-backoff: ${LEDGERFLOW_PAYMENT_PROVIDER_MAX_BACKOFF:1s}
+      backoff-multiplier: ${LEDGERFLOW_PAYMENT_PROVIDER_BACKOFF_MULTIPLIER:2.0}
+      jitter-ratio: ${LEDGERFLOW_PAYMENT_PROVIDER_JITTER_RATIO:0.2}

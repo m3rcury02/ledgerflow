@@ -1,6 +1,6 @@
 # LedgerFlow
 
-LedgerFlow is a Java 25 and Spring Boot 4.1 modular-monolith portfolio project. Its current vertical slice exposes contract-first, JWT-secured create/read order APIs with durable PostgreSQL idempotency. Payment, ledger, Kafka, notification, and operator behavior are not implemented yet.
+LedgerFlow is a Java 25 and Spring Boot 4.1 modular-monolith portfolio project. Its public vertical slice exposes contract-first, JWT-secured create/read order APIs with durable PostgreSQL idempotency. A non-public payment slice implements explicit authorization/capture states, an external-provider port and HTTP adapter, safe timeout reconciliation, bounded retries, and append-only attempt history. Ledger, Kafka, notification, and operator APIs are not implemented yet.
 
 ## Prerequisites
 
@@ -83,7 +83,7 @@ export LEDGERFLOW_OAUTH2_JWK_SET_URI=http://localhost:8081/realms/ledgerflow/pro
 ./gradlew :application:bootRun
 ```
 
-Flyway applies `V001__create_orders_and_idempotency.sql` at startup. Kafka and the other services are available for later milestones, but the application has no producer, consumer, cache integration, payment workflow, or financial behavior.
+Flyway applies `V001__create_orders_and_idempotency.sql` and `V002__create_payment_tables.sql` at startup. Kafka and the other services are available for later milestones, but the application has no producer, consumer, cache integration, ledger posting, or public payment route.
 
 ## Create Order API
 
@@ -110,6 +110,12 @@ curl --fail-with-body "http://localhost:8080/api/v1/orders/${ORDER_ID}" \
 ```
 
 The complete schemas, examples, validation rules, problem details, and status codes live in `application/src/main/openapi/ledgerflow.yaml` and [the API design](docs/api-design.md).
+
+## Payment provider test harness
+
+Payment authorization and capture are intentionally not connected to the public order routes yet: capture cannot be exposed until ledger and outbox finalization are atomic. Integration tests start a deterministic external HTTP fixture from `application/src/integrationTest`, validate its separate contract, and cover success, decline, temporary failure, timeout-after-processing, slow response, invalid response, crash recovery, and concurrent transitions.
+
+Provider timeouts and the bounded retry policy use `LEDGERFLOW_PAYMENT_PROVIDER_*` configuration. The default application has no provider base URL, so no provider client/workflow bean starts accidentally. See [the payment recovery runbook](docs/runbook.md) for state interpretation and safe recovery constraints.
 
 ## Project structure
 

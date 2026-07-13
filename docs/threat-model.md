@@ -8,7 +8,7 @@
 
 This threat model covers the MVP public API, operator API, modular-monolith process, mock payment-provider boundary, PostgreSQL, Kafka topics, OpenTelemetry export, and administrative retry flow.
 
-The active scope is the Create Order HTTP/PostgreSQL boundary: JWT scope checks, subject ownership, bounded input, correlation, structured logs, idempotency hashing, unique-key concurrency, and safe problem responses. Provider, ledger, Kafka, notification, and operator controls below are launch requirements for their future milestones, not claims about current behavior.
+The active scope includes the Create Order HTTP/PostgreSQL boundary and the non-public payment/provider integration harness. Implemented payment controls include explicit state guards, stable independent provider request IDs, optimistic locking, short database transactions, append-only attempt history, bounded retry classification, explicit HTTP timeouts, and lookup-first recovery. Ledger, Kafka, notification, and operator controls below are launch requirements for future milestones, not claims about current behavior.
 
 It does not certify PCI DSS compliance or cover a real payment provider, identity-provider implementation, host/container hardening, Kafka/PostgreSQL control planes, or internet-scale denial-of-service protection.
 
@@ -62,8 +62,8 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 | T-05 | Guessing or leaking idempotency keys | Replay intelligence or cross-client collision | 8–128 bounded ASCII values, client guidance for ≥128-bit entropy, SHA-256 data minimization, no logging, owner/operation scope | Log/DB inspection and cross-scope tests |
 | T-06 | Concurrent requests race state transitions | Double authorization, capture, ledger, or outbox | Stable provider keys, optimistic versions, unique business references, guarded SQL | Concurrency and stale-version tests |
 | T-07 | Provider timeout hides a successful operation | Duplicate provider effect or missing local capture | Query by stable operation key before resend; idempotent provider contract; durable pre-call state | Timeout/crash-window tests |
-| T-08 | Malicious or compromised provider sends impossible data | Invalid state or amount committed | Strict response schema, amount/currency/reference validation, state guard, sanitized failure | Contract-fuzz and mismatch tests |
-| T-09 | SSRF through configurable provider URL | Access to internal services/metadata | Provider base URI comes only from trusted deployment config; allowed scheme/host policy; no request-supplied URL | Configuration tests and review |
+| T-08 | Malicious or compromised provider sends impossible data | Invalid payment state committed | Strict response outcome/reference validation, state guard, bounded body, sanitized failure | Invalid/contradictory-response tests; amount echo validation remains a real-provider requirement |
+| T-09 | SSRF through configurable provider URL | Access to internal services/metadata | Provider base URI comes only from trusted deployment config, must be absolute HTTP(S), and is never request-supplied; production egress allowlisting is required | Configuration tests, deployment policy, and review |
 | T-10 | SQL injection or mass assignment | Data compromise | Parameterized JDBC, typed commands, explicit field mapping, reject unknown JSON properties | Static analysis and hostile input tests |
 | T-11 | Unbalanced or mutable ledger data | Financial integrity loss | Positive integer checks, currency checks, deferred balance trigger, immutable rows, least-privilege DB role | Direct SQL constraint tests |
 | T-12 | Outbox/Kafka duplicate or reordered records | Duplicate notification or inconsistent projection | Unique event ID, order key, inbox idempotency, one event type per order in MVP | Duplicate/reorder tests |
@@ -72,7 +72,7 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 | T-15 | DLT/operator retry is abused | Repeated workload or financial effects | Operator retry scope, bounded pagination/concurrency, reason, idempotency, worker lease, current-state guard, audit | Concurrent command/worker and stale-lease tests |
 | T-16 | Sensitive values leak through logs/traces/events/errors | Credential or privacy breach | Attribute allowlist, redaction, no bodies/tokens/keys, stable safe error codes; stack traces only in access-restricted redacted server error logs | Capture exporters/logs and scan values |
 | T-17 | Untrusted correlation/trace headers cause log injection or oversized metadata | Log corruption or resource exhaustion | Validate correlation format/length; standards-compliant trace parser; replace invalid values | Fuzz boundary headers |
-| T-18 | Large bodies, slow provider, or high-cardinality metrics exhaust resources | Denial of service/cost | 16 KiB body limit, timeouts, bounded pools/queues/concurrency, deployment-edge rate limits before internet exposure, no IDs in metric labels | Load and resource-bound tests |
+| T-18 | Large bodies, slow provider, or high-cardinality metrics exhaust resources | Denial of service/cost | Implemented 16 KiB provider-response limit and connect/request timeouts; bounded pools/queues/concurrency, deployment-edge rate limits, and metric-label policy remain launch controls | Slow/timeout tests now; load and resource-bound tests before launch |
 | T-19 | Secrets committed or insecure defaults enabled in production | Infrastructure compromise | Environment/secret manager, secret scanning, local-only mock profile, production startup guard | CI scanning and profile tests |
 | T-20 | Operator sees raw stack trace, provider response, or event secret | Internal information disclosure | Sanitized failure projection and allowlisted retry payload; restricted audit API | Serialization snapshot tests |
 
@@ -83,14 +83,14 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 - JWT `sub` is the owner scope for order creation and reads.
 - The active order scopes map to the authorities documented in `docs/api-design.md`; operator scopes remain proposed.
 - Local/test uses ephemeral test signing keys or a test identity container and exercises key rotation. No authentication bypass exists in the main artifact.
-- Actuator and mock-provider control endpoints are not exposed on the public API. Mock support is a separate test fixture requiring explicit `local`, `test`, or `demo` activation; production rejects it and cannot launch until a real provider is approved.
+- Actuator and mock-provider control endpoints are not exposed on the public API. Mock service code is a separate integration-test fixture and is absent from the production artifact. The payment workflow has no public route, and a real provider must be approved before that changes.
 
 ## Input and external-service safety
 
 - Bean validation is not the only boundary: normalized commands, state guards, and database constraints revalidate critical invariants.
-- The active API rejects unknown fields and has no payment-method field. A future provider milestone may accept only opaque mock references and must reject raw primary-account-number-like input.
-- If a mock payment-method reference is later persisted for recovery, platform/database encryption at rest and restricted payment-module privileges must protect it; it must be cleared after authorization succeeds or becomes terminal and never be exposed or copied to operational data. A real provider requires a new token-vault/envelope-encryption decision and threat review.
-- Provider host, scheme, TLS policy, connect timeout, read timeout, and response-size limit are deployment configuration, not client input.
+- The active public API rejects unknown fields and has no payment-method field. The non-public integration harness accepts only opaque `pm_mock_*` references; no PAN or real credential is accepted.
+- The mock payment-method reference is persisted only while authorization may need recovery, then cleared after success or a terminal authorization result. It is never returned or copied to attempt history. A real provider requires a new token-vault/envelope-encryption decision, restricted database privileges, and threat review.
+- Provider host and timeout configuration are deployment input, never client input. The current adapter accepts HTTP for loopback integration tests; production TLS validation, egress allowlisting, credentials, and host policy require the real-provider milestone.
 - Provider errors are mapped to allowlisted classifications. Raw response bodies and headers are discarded after extracting validated fields.
 - Retry policies distinguish declines, temporary failures, and unknown outcomes; no blanket retry interceptor wraps provider calls.
 
@@ -135,7 +135,7 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 - Kafka tests for malformed event, unknown version, duplicate delivery, poison record, retry exhaustion, and DLT publication failure.
 - DLT-catalog PostgreSQL outage tests proving no offset commit, idempotent redelivery, alerting, and no recursive DLT.
 - Captured structured-log, in-memory trace-exporter, outbox-header, and DLT-record assertions that seeded secret markers never appear.
-- Production-profile startup tests proving mock provider and permissive authentication cannot be enabled.
+- Production-profile startup tests proving no mock service or permissive authentication can be enabled before a public payment route exists.
 
 ## Residual risks and launch conditions
 

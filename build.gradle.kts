@@ -185,6 +185,20 @@ val openApiValidate =
         args("validate", "--input-spec", contract.asFile.absolutePath)
     }
 
+val mockProviderOpenApiValidate =
+    tasks.register<JavaExec>("mockProviderOpenApiValidate") {
+        group = "verification"
+        description = "Validates the test-only mock payment-provider contract."
+        val contract =
+            layout.projectDirectory.file(
+                "application/src/testFixtures/openapi/mock-payment-provider.yaml",
+            )
+        inputs.file(contract)
+        classpath = openApiValidator
+        mainClass = "org.openapitools.codegen.OpenAPIGenerator"
+        args("validate", "--input-spec", contract.asFile.absolutePath)
+    }
+
 val composeValidate =
     tasks.register<Exec>("composeValidate") {
         group = "verification"
@@ -222,6 +236,7 @@ val documentationCheck =
                 "docs/api-design.md",
                 "docs/data-model.md",
                 "docs/threat-model.md",
+                "docs/runbook.md",
                 "docs/plans/mvp-execplan.md",
                 "docs/adr/0001-record-architecture-decisions.md",
                 "compose.yaml",
@@ -277,6 +292,7 @@ tasks.register("verify") {
         integrationTest,
         architectureTest,
         openApiValidate,
+        mockProviderOpenApiValidate,
         composeValidate,
         documentationCheck,
     )

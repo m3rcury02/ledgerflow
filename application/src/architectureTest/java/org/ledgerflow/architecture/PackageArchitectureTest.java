@@ -25,4 +25,14 @@ class PackageArchitectureTest {
               "com.ledgerflow.model..",
               "com.ledgerflow.repository..",
               "com.ledgerflow.service..");
+
+  @ArchTest
+  static final ArchRule paymentDomainIsIndependentOfFrameworkAndAdapters =
+      noClasses()
+          .that()
+          .resideInAPackage("com.ledgerflow.payments.internal.domain..")
+          .should()
+          .dependOnClassesThat()
+          .resideInAnyPackage(
+              "org.springframework..", "java.net..", "java.sql..", "tools.jackson..");
 }

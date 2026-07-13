@@ -33,7 +33,7 @@ The `payments` module uses hexagonal architecture because it owns a non-trivial 
 
 ## Value objects and identifiers
 
-- Order IDs are PostgreSQL-generated UUIDv7 values. Other identifier strategies remain deferred. All IDs are opaque in APIs.
+- Order, payment, and payment-history IDs are PostgreSQL-generated UUIDv7 values. Provider request IDs are independently generated UUIDs and remain stable for one logical authorization or capture. All IDs are opaque in APIs.
 - `Money` is `{ amountMinor: long, currency: "INR" }`; `amountMinor` must be greater than zero.
 - `CorrelationId` is 1–64 characters matching `[A-Za-z0-9._-]+`; invalid inbound values are replaced with a generated UUID.
 - `Idempotency-Key` is 8–128 characters matching `[A-Za-z0-9._:-]+`. Only its SHA-256 hash is persisted.
@@ -43,7 +43,7 @@ The `payments` module uses hexagonal architecture because it owns a non-trivial 
 
 ## Order aggregate
 
-The implemented order contains its UUIDv7 ID, owner subject, optional client reference, positive INR money, `CREATED` status, reserved optimistic version, initial correlation ID, and UTC timestamps. It has no payment association yet.
+The implemented order contains its UUIDv7 ID, owner subject, optional client reference, positive INR money, `CREATED` status, reserved optimistic version, initial correlation ID, and UTC timestamps. The public order workflow does not create or expose a payment yet; the payment integration harness links test payments to existing orders without changing order state.
 
 The active state machine is deliberately small:
 
@@ -57,7 +57,7 @@ stateDiagram-v2
 | --- | --- | --- | --- |
 | New | Accept order | `CREATED` | Unique scoped key; valid positive INR money; response snapshot commits atomically |
 
-Payment-related order transitions below are proposed for later milestones and are not implemented:
+Payment-related order transitions below are proposed for Milestone 5 and are not implemented:
 
 ```mermaid
 stateDiagram-v2
@@ -75,7 +75,7 @@ stateDiagram-v2
 
 | From | Command/result | To | Guard and effects |
 | --- | --- | --- | --- |
-| `CREATED` | Start payment | `PAYMENT_PROCESSING` | Requires a separately approved payment milestone |
+| `CREATED` | Start payment | `PAYMENT_PROCESSING` | Requires the separately approved order/payment integration milestone |
 | `PAYMENT_PROCESSING` | Capture finalization | `COMPLETED` | Payment becomes `CAPTURED`; balanced ledger and outbox commit atomically |
 | `PAYMENT_PROCESSING` | Provider decline | `PAYMENT_DECLINED` | Payment is a decline state; no ledger or outbox |
 | `PAYMENT_PROCESSING` | Retryable outcome exhausted | `PAYMENT_RETRY_PENDING` | Failed operation is open; no ledger or outbox |
@@ -87,7 +87,7 @@ Terminal order states are immutable in the MVP. Refunds and corrective order tra
 
 ## Payment aggregate
 
-A payment contains its ID, order ID, money, state, current resume stage, the restricted local/test provider payment-method reference needed for recovery, stable authorization and capture operation keys, sanitized provider result references, attempt counters, optimistic version, and timestamps. The payment-method reference is never exposed through responses, events, logs, traces, or operator views.
+An implemented payment contains its UUIDv7 ID, order ID, positive INR money, state, current resume stage, restricted test-provider payment-method reference, stable and independent authorization/capture request IDs, sanitized provider references and failure code, attempt counters, optimistic version, and UTC timestamps. The payment-method reference is cleared after authorization resolves and is never exposed through public responses, events, logs, traces, or operator views.
 
 ```mermaid
 stateDiagram-v2
@@ -98,21 +98,25 @@ stateDiagram-v2
     AUTHORIZING --> AUTHORIZATION_RETRY_PENDING: temporary failure exhausted
     AUTHORIZING --> AUTHORIZATION_UNKNOWN: timeout remains ambiguous
     AUTHORIZING --> FAILED: invalid provider response
-    AUTHORIZATION_RETRY_PENDING --> AUTHORIZING: operator retry
-    AUTHORIZATION_UNKNOWN --> AUTHORIZING: reconcile/retry same operation key
+    AUTHORIZATION_RETRY_PENDING --> AUTHORIZING: retry same request ID
+    AUTHORIZATION_UNKNOWN --> AUTHORIZED: lookup confirms success
+    AUTHORIZATION_UNKNOWN --> DECLINED: lookup confirms decline
+    AUTHORIZATION_UNKNOWN --> AUTHORIZING: lookup proves not found
     AUTHORIZED --> CAPTURING: begin capture
-    CAPTURING --> CAPTURED: provider capture confirmed and local finalization commits
+    CAPTURING --> CAPTURE_CONFIRMED: provider capture confirmed
+    CAPTURING --> CAPTURE_DECLINED: provider declined capture
     CAPTURING --> CAPTURE_RETRY_PENDING: temporary failure exhausted
     CAPTURING --> CAPTURE_UNKNOWN: timeout remains ambiguous
     CAPTURING --> FAILED: invalid provider response
-    CAPTURE_RETRY_PENDING --> CAPTURING: operator retry
-    CAPTURE_UNKNOWN --> CAPTURING: reconcile/retry same operation key
-    AUTHORIZATION_RETRY_PENDING --> FAILED: non-retryable recovery result
+    CAPTURE_RETRY_PENDING --> CAPTURING: retry same request ID
+    CAPTURE_UNKNOWN --> CAPTURE_CONFIRMED: lookup confirms success
+    CAPTURE_UNKNOWN --> CAPTURE_DECLINED: lookup confirms decline
+    CAPTURE_UNKNOWN --> CAPTURING: lookup proves not found
     AUTHORIZATION_UNKNOWN --> FAILED: non-retryable recovery result
-    CAPTURE_RETRY_PENDING --> FAILED: non-retryable recovery result
     CAPTURE_UNKNOWN --> FAILED: non-retryable recovery result
     DECLINED --> [*]
-    CAPTURED --> [*]
+    CAPTURE_DECLINED --> [*]
+    CAPTURE_CONFIRMED --> [*]: waits for Milestone 5 finalization
     FAILED --> [*]
 ```
 
@@ -120,16 +124,16 @@ stateDiagram-v2
 | --- | --- | --- |
 | `CREATED` | `AUTHORIZING` | Persisted stable authorization operation key |
 | `AUTHORIZING` | `AUTHORIZED`, `DECLINED`, `AUTHORIZATION_RETRY_PENDING`, `AUTHORIZATION_UNKNOWN`, `FAILED` | Provider response or reconciled lookup result |
-| `AUTHORIZATION_RETRY_PENDING` | `AUTHORIZING`, `FAILED` | Idempotent operator retry or non-retryable reconciliation result |
-| `AUTHORIZATION_UNKNOWN` | `AUTHORIZING`, `FAILED` | Lookup/retry with the same provider operation key or non-retryable reconciliation result |
+| `AUTHORIZATION_RETRY_PENDING` | `AUTHORIZING` | Explicit retry with the same authorization request ID |
+| `AUTHORIZATION_UNKNOWN` | `AUTHORIZED`, `DECLINED`, `AUTHORIZING`, `FAILED` | Lookup result; resend only after `NOT_FOUND`, using the same request ID |
 | `AUTHORIZED` | `CAPTURING` | Provider authorization reference exists |
-| `CAPTURING` | `CAPTURED`, `CAPTURE_RETRY_PENDING`, `CAPTURE_UNKNOWN`, `FAILED` | Provider response or reconciled lookup result |
-| `CAPTURE_RETRY_PENDING` | `CAPTURING`, `FAILED` | Idempotent operator retry or non-retryable reconciliation result |
-| `CAPTURE_UNKNOWN` | `CAPTURING`, `FAILED` | Lookup/retry with the same provider operation key or non-retryable reconciliation result |
-| `CAPTURED` | None | Provider capture reference, ledger transaction, and outbox event exist |
-| `DECLINED`, `FAILED` | None | Sanitized terminal reason exists |
+| `CAPTURING` | `CAPTURE_CONFIRMED`, `CAPTURE_DECLINED`, `CAPTURE_RETRY_PENDING`, `CAPTURE_UNKNOWN`, `FAILED` | Provider response or reconciled lookup result |
+| `CAPTURE_RETRY_PENDING` | `CAPTURING` | Explicit retry with the same capture request ID |
+| `CAPTURE_UNKNOWN` | `CAPTURE_CONFIRMED`, `CAPTURE_DECLINED`, `CAPTURING`, `FAILED` | Lookup result; resend only after `NOT_FOUND`, using the same request ID |
+| `CAPTURE_CONFIRMED` | None in Milestone 4 | Provider capture reference exists; later finalization may transition to `CAPTURED` with ledger/outbox evidence |
+| `DECLINED`, `CAPTURE_DECLINED`, `FAILED` | None | Sanitized terminal reason exists |
 
-Every transition compares the persisted version and expected source state. Provider I/O happens after a committed transition to `AUTHORIZING` or `CAPTURING`, and its result is committed in a later transaction.
+Every transition validates its source in the domain and compares the persisted version and expected state in SQL. Illegal transitions throw a domain error; stale concurrent transitions throw an optimistic-concurrency error and make no change. Provider I/O and retry delay happen after a committed transition to `AUTHORIZING` or `CAPTURING`, and each classified result is committed later with an append-only history event.
 
 ### Provider result classification
 

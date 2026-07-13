@@ -8,7 +8,7 @@
 - Last updated: 2026-07-13
 - Approved by: LedgerFlow maintainer
 - Approval date: 2026-07-13
-- Current milestone: Milestone 3 — Create Order vertical slice (`Complete`)
+- Current milestone: None — Milestone 4 is complete; Milestone 5 remains proposed and unapproved
 - Canonical plan path: `docs/plans/mvp-execplan.md` by explicit maintainer request
 
 ## Purpose and outcome
@@ -37,7 +37,7 @@ The normative requirements and designs are:
 
 ## Current state
 
-The repository contains the verified Milestones 1 and 2 foundation plus the completed Milestone 3 Create Order slice:
+The repository contains the verified Milestones 1 and 2 foundation plus the completed Milestone 3 Create Order slice. The payments module has only its empty module marker and no schema or behavior yet:
 
 - `AGENTS.md` establishes Java 25, Spring Boot 4.1, Gradle Kotlin DSL, modular-monolith, PostgreSQL, Flyway, OpenAPI, money/time, idempotency, observability, scope, and quality rules.
 - `.agent/PLANS.md` defines ExecPlan structure and one-approved-milestone discipline.
@@ -52,7 +52,7 @@ The repository contains the verified Milestones 1 and 2 foundation plus the comp
 - `docs/architecture.md`, `docs/development-workflow.md`, `README.md`, and this plan record the approved bootstrap choices and developer commands.
 - ADR 0001 establishes the ADR process, and ADR 0003 is accepted for the Create Order transaction only.
 
-ADRs 0002 and 0004 through 0008 remain proposed. No payment, ledger, outbox, Kafka, notification, or operator functionality is approved or implemented.
+ADR 0004 is approved for the current payment milestone, subject to the refined `CAPTURE_CONFIRMED` boundary below. ADRs 0002 and 0005 through 0008 remain proposed. No ledger, outbox, Kafka, notification, or operator functionality is approved or implemented.
 
 The maintainer explicitly requested this ExecPlan at `docs/plans/mvp-execplan.md`. This is a one-plan path exception to `.agent/PLANS.md`, which normally specifies `.agent/plans/YYYY-MM-DD-<name>.md`. Do not create a duplicate plan.
 
@@ -243,26 +243,30 @@ Only the current milestone is approved or in progress. Later milestones remain `
 
 ### Milestone 4 — Implement the external mock provider and payment state machine
 
-- Status: Proposed
+- Status: Complete
 - Intended outcome: Normal, latency, authorization-decline, temporary-failure, timeout/unknown, and invalid-response scenarios verify the provider adapter and payment state machine through a non-public integration harness without a database transaction across HTTP.
 - Implementation work:
-  - Implement the provider port, HTTP adapter, strict response validation, typed result classification, stable operation keys, timeout lookup, and bounded one-retry policy.
-  - Add and validate `application/src/testFixtures/openapi/mock-payment-provider.yaml`, then implement a local/test-only JDK HTTP fixture and run task against it; it supports deterministic scenario tokens and provider-side idempotency/lookup.
-  - Implement every allowed/forbidden payment transition with optimistic version checks and durable attempt history.
-  - Apply `V002` and create sanitized payment failed-operation records through `operations.api`.
+  - Implement the provider port, JDK HTTP adapter, strict response validation, typed result classification, independently stable authorization/capture request IDs, timeout lookup, and a maximum of one automatic temporary-failure retry using exponential backoff with jitter.
+  - Add and validate `application/src/testFixtures/openapi/mock-payment-provider.yaml`, then implement a local/test-only JDK HTTP fixture against it; it supports deterministic success, decline, timeout-after-processing, temporary-error, and slow-success scenarios plus provider-side idempotency and lookup.
+  - Implement every allowed/forbidden payment transition with optimistic version checks and immutable attempt-history events. Persist `CAPTURE_CONFIRMED` after provider success; reserve `CAPTURED` for Milestone 5's atomic ledger/outbox finalization.
+  - Apply `V002` for payment and attempt-history tables only. Failed-operation projections and operator APIs remain Milestone 7 work.
+  - Persist the stable request ID and active state before provider I/O, run all HTTP calls and backoff without a database transaction, and persist classified results afterward.
+  - Recover `AUTHORIZING`, `CAPTURING`, and explicit unknown states by provider lookup. Resend with the same request ID only after lookup proves `NOT_FOUND`; never resend after confirmed success or decline.
+  - Add a payment recovery runbook and update the domain, data, threat, architecture, and ADR documentation for the implemented boundary.
   - Do not connect the active order routes to provider behavior until a later milestone explicitly approves that integration. Provider capture is invoked only by tests until Milestone 5 can finalize accounting/outbox atomically.
 - Validation commands:
-  - `./gradlew test --tests '*PaymentStateMachineTest'`
-  - `./gradlew integrationTest --tests '*PaymentProviderIntegrationTest'`
-  - `./gradlew integrationTest --tests '*PaymentRecoveryIntegrationTest'`
+  - `./gradlew :modules:payments:test --tests '*PaymentStateMachineTest'`
+  - `./gradlew :application:integrationTest --tests '*PaymentProviderIntegrationTest'`
+  - `./gradlew :application:integrationTest --tests '*PaymentRecoveryIntegrationTest'`
+  - `./gradlew :application:integrationTest --tests '*PaymentConcurrencyIntegrationTest'`
   - `./gradlew clean verify`
 - Observable acceptance:
   - All provider scenarios match API/domain state and retry semantics.
   - Unknown outcomes query the same provider key before resend.
   - Declines never retry and never create financial/event effects.
-  - A temporary failure performs no more than one automatic retry.
+  - A temporary failure performs no more than one automatic retry with bounded jittered backoff; decline and unknown outcomes perform no blind retry.
   - A malformed or contradictory response produces terminal domain failure and safe evidence for the future replayable `502` contract.
-  - Captured provider outcome followed by local process failure is discoverable for the next milestone's finalization.
+  - Captured provider outcome followed by local process failure converges through lookup to `CAPTURE_CONFIRMED`, ready for the next milestone's local financial finalization.
   - No production/public route can capture funds without ledger/outbox finalization.
 
 ### Milestone 5 — Activate the atomic order, capture, ledger, and outbox flow
@@ -514,12 +518,17 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - [x] `2026-07-13 10:17Z` — Implemented and validated the OpenAPI-first create/read contract, V001 order/idempotency schema, UUIDv7 persistence, scoped canonical request hashing, atomic replay transaction, JWT ownership/scopes, correlation/problem handling, and structured logs without payment or Kafka behavior.
 - [x] `2026-07-13 10:17Z` — Added domain unit tests and PostgreSQL Testcontainers context, repository, concurrent-idempotency, and secured HTTP integration tests; focused unit, integration, OpenAPI, and architecture checks pass. Full clean verification remains pending.
 - [x] `2026-07-13 10:22Z` — Ran `./gradlew --no-daemon spotlessApply clean verify --console=plain`; all 52 actionable formatting, static-analysis, unit, PostgreSQL integration, architecture, Compose, OpenAPI, and documentation tasks completed successfully.
+- [x] `2026-07-13 10:42Z` — Recorded explicit maintainer approval for Milestone 4 limited to payment authorization/capture, provider simulation, recovery, tests, threat modeling, and runbook work; later order integration, ledger, outbox, Kafka, notification, and operator milestones remain unapproved.
+- [x] `2026-07-13 10:42Z` — Defined the unknown-outcome protocol before implementation: persist a stable stage-specific request ID and active state, call outside a transaction, classify timeout as unknown, lookup by the same ID before any resend, and use `CAPTURE_CONFIRMED` until financial finalization.
+- [x] `2026-07-13 11:18Z` — Implemented ADR 0004's explicit payment state machine, stage-independent idempotent request IDs, guarded JDBC persistence, append-only attempt history, JDK HTTP provider adapter with explicit timeouts, bounded temporary-failure retry, deterministic external HTTP fixture, and lookup-first crash/timeout recovery without a public payment route.
+- [x] `2026-07-13 11:18Z` — Added and passed state-machine/retry/configuration unit tests plus 15 PostgreSQL/provider integration tests covering success, both declines, temporary retry, timeout, slow response, invalid response, provider-success/local-persistence crash, optimistic races, constraints, and immutable history. Updated the provider contract, ADR, architecture, domain/data model, threat model, README, and recovery runbook.
+- [x] `2026-07-13 11:28Z` — Ran `./gradlew --no-daemon clean verify --console=plain`; all 53 actionable formatting, static-analysis, unit, PostgreSQL integration, architecture, Compose, public/provider OpenAPI, and documentation tasks completed successfully.
 
 ## Surprises and discoveries
 
 - The repository has no Gradle lifecycle, so the first application milestone must establish every required check before later implementation can satisfy the Definition of Done.
 - The requested ExecPlan path conflicts with the default `.agent/plans/...` location. The maintainer's explicit path is treated as a one-plan exception; duplicating a living plan would create drift.
-- The accepted architecture originally deferred the base package, concrete feature modules, and Gradle project structure. The maintainer's Milestone 1 approval now selects `com.ledgerflow`, six feature projects, and one deployable application project; ADRs 0002–0008 remain `Proposed` because their business-flow decisions are outside this milestone.
+- The accepted architecture originally deferred the base package, concrete feature modules, and Gradle project structure. The maintainer's Milestone 1 approval selected `com.ledgerflow`, six feature projects, and one deployable application project. ADR 0003 was later accepted for Create Order and ADR 0004 for Milestone 4; the remaining business-flow ADRs stay proposed.
 - PostgreSQL row `CHECK` constraints cannot enforce a balance across multiple entries. A deferred constraint trigger on both parent and entry changes is necessary to reject even an empty ledger transaction.
 - Provider capture and the local database cannot be atomic. Stable provider operation keys, lookup, and idempotent local finalization are required; a database transaction held across HTTP would not solve this gap.
 - Non-blocking Kafka retry topics keep failed records durable and partitions available but sacrifice ordering. One terminal event per order and event-ID idempotency make that tradeoff acceptable for the MVP.
@@ -532,6 +541,7 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - Tempo and Loki deliberately delay readiness for fifteen seconds when an ingester becomes ready. Endpoint verification waits for actual `/ready` success rather than treating the image binary check alone as proof of backend readiness.
 - A JUnit-managed static Testcontainer inherited by several test classes was stopped after the first class while Spring retained its cached context. The integration base now uses the Testcontainers singleton pattern so one PostgreSQL container lives for the complete test JVM.
 - A newly used integration-test resource exposed duplicate conventional source-directory registration in the Gradle source sets. Removing the redundant declarations preserves the same directories and allows deterministic resource processing.
+- PostgreSQL JDBC does not infer a SQL type for a raw Java `Instant` passed through `JdbcClient`. The payment adapter converts domain `Instant` values to UTC `OffsetDateTime` only at binding time; persisted columns remain `timestamptz` and mapped domain values remain `Instant`.
 
 ## Decision log
 
@@ -555,13 +565,16 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - **2026-07-13 — Make order creation one short idempotency transaction.** Claiming the unique scoped key, inserting the order, and persisting the original response snapshot commit together. This avoids committed leases or incomplete resources before external payment work exists; ADR 0003 must reflect this accepted slice-specific boundary.
 - **2026-07-13 — Restrict the MVP currency to INR.** The currency remains explicit and validated in API, domain, and database layers; multi-currency and FX remain out of scope.
 - **2026-07-13 — Declare existing Spring capabilities directly in the orders feature.** The multi-project compiler requires the orders library to declare Web MVC, validation, JDBC, Jackson, and OAuth resource-server APIs it imports. These are the same Spring Boot-managed starters already present in the deployable application, so no new production library or version is introduced. JDBC adds the PostgreSQL transaction boundary; resource-server validation adds issuer/JWK/audience trust and scope enforcement; no provider, broker, cache, or persistence technology is added.
+- **2026-07-13 — Reuse Spring Boot-managed JDBC/Jackson dependencies and the JDK HTTP client for payments.** The payments feature declares the already-approved Data JDBC and Jackson starters because its adapter compiles against those APIs. The JDK client supplies connect/request timeouts without a resilience or HTTP-client library. No new production dependency family or manually managed version is introduced; retry and classification remain explicit domain/application behavior.
+- **2026-07-13 — Treat timeout and post-call crashes as unknown outcomes, not temporary failures.** Authorization/capture recovery always queries the provider with the persisted request ID; only `NOT_FOUND` permits a same-ID resend. This accepts ADR 0004 for the payment boundary and prevents duplicate provider effects.
+- **2026-07-13 — Persist provider success as `CAPTURE_CONFIRMED`.** `CAPTURED` continues to mean that provider capture, balanced ledger posting, and outbox insertion have finalized locally; only Milestone 5 may make that transition.
 - **2026-07-11 — Validate OpenAPI without server code generation.** Contract tests enforce conformance without generated framework coupling.
 - **2026-07-11 — Contract the mock provider separately and exclude it from the main artifact.** Its external HTTP behavior is validated without exposing simulator controls in production.
 - **2026-07-11 — Separate Flyway owner and runtime database roles.** Migration authority does not grant the application DDL or mutation rights over immutable financial/audit data.
 
 ## Outcome and follow-up
 
-Current outcome: Milestones 1 through 3 are complete. The repository has a verified multi-project application foundation, validated local dependency/observability environment, and an OpenAPI-first secured Create Order slice. V001 and PostgreSQL Testcontainers prove UUIDv7 creation, positive INR constraints, exact idempotent replay, changed-payload conflict, concurrent single creation, and owner-only reads. No payment, provider, ledger, outbox, Kafka, notification, or operator behavior has been created. Later milestones remain proposed and require separate approval.
+Current outcome: Milestones 1 through 4 are complete. The repository has a verified multi-project application foundation, validated local dependency/observability environment, an OpenAPI-first secured Create Order slice, and a non-public payment/provider slice. V001 proves UUIDv7 orders and durable Create Order idempotency. V002 and PostgreSQL/provider tests prove explicit legal transitions, stable independent provider request IDs, bounded retry of temporary failures only, terminal declines, unknown-outcome lookup, crash convergence to `CAPTURE_CONFIRMED`, optimistic concurrency, and immutable attempt evidence without holding a transaction across HTTP. No ledger, outbox, Kafka producer/consumer, notification, operator API, or public payment behavior has been created. Later milestones remain proposed and require separate approval.
 
 When all milestones are complete, update this section with:
 

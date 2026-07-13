@@ -2,7 +2,7 @@
 
 ## Status
 
-This document defines the architectural constraints for LedgerFlow. Milestones 1 and 2 established the application and local infrastructure; Milestone 3 adds only the Create Order HTTP/persistence slice. Payments, financial posting, and messaging remain unimplemented.
+This document defines the architectural constraints for LedgerFlow. Milestones 1 and 2 established the application and local infrastructure, Milestone 3 added the Create Order HTTP/persistence slice, and Milestone 4 adds the non-public payment/provider boundary. Financial posting and messaging remain unimplemented.
 
 ## Architectural goals
 
@@ -61,9 +61,13 @@ Do not introduce interfaces, mapping layers, commands, events, or duplicate mode
 
 The `orders` slice keeps framework-free money, key, fingerprint, and order types behind one application-owned persistence port. This narrow boundary makes the PostgreSQL idempotency transaction testable without imposing ports on every feature. The HTTP and `JdbcClient` adapters remain module-internal.
 
+The `payments` module uses a hexagonal boundary because provider I/O is replaceable and unreliable, while the payment state machine must remain independently testable. Its application-owned `PaymentProvider` and `PaymentStore` ports isolate a JDK HTTP adapter and guarded JDBC adapter. The workflow itself is deliberately not transactional: each persistence call opens one short transaction, and no provider call or retry delay runs with a database transaction open.
+
+ADR 0004 accepts one narrow database-boundary exception: the payment-owned `V002` constraint trigger reads only an order's ID, amount, and currency to reject a payment whose copied money differs from its referenced order. Application code still cannot query another module's tables, and a PostgreSQL integration test verifies this invariant. This exception does not authorize general cross-module SQL.
+
 ## HTTP contracts
 
-The version-controlled OpenAPI document at `application/src/main/openapi/ledgerflow.yaml` is the source of truth for HTTP APIs.
+The version-controlled OpenAPI document at `application/src/main/openapi/ledgerflow.yaml` is the source of truth for public HTTP APIs. The test-only external provider contract at `application/src/testFixtures/openapi/mock-payment-provider.yaml` is validated separately and is not a public LedgerFlow API.
 
 An HTTP change must:
 
@@ -89,7 +93,7 @@ Migration rules:
 - destructive or long-running migrations require an ExecPlan with compatibility, recovery, and rollout details; and
 - a module accesses only tables it owns unless an accepted ADR defines a controlled exception.
 
-The current local, production-design, and integration-test baseline is PostgreSQL 18. Migrations use ordered `VNNN__description.sql` names. The first migration owns only orders and HTTP idempotency.
+The current local, production-design, and integration-test baseline is PostgreSQL 18. Migrations use ordered `VNNN__description.sql` names. `V001` owns orders and HTTP idempotency; `V002` owns payments and append-only payment attempt history.
 
 ## Money and time
 
@@ -146,7 +150,7 @@ Spring Modulith verifies logical application modules, API/internal access, and c
 
 Keycloak stores its data in a separate database on the local PostgreSQL instance; embedded H2 is not used. Valkey is an ephemeral Redis-compatible cache service and is not an approved application datastore. Local Kafka is a single combined broker/controller in KRaft mode. Prometheus, Grafana, Tempo, Loki, and OpenTelemetry Collector provide a self-contained observability path without committing credentials or choosing a production observability vendor.
 
-Selecting these development containers does not authorize payment or messaging integration. The Create Order slice now accepts ADR 0003's scoped idempotency decision and validates JWTs against an issuer/JWK configuration. Production identity, broker, cache, observability, persistence roles, deployment topology, TLS, retention, backup, and sizing remain subject to approved implementation or deployment milestones.
+The Create Order slice accepts ADR 0003's scoped idempotency decision and validates JWTs against an issuer/JWK configuration. The non-public payment harness accepts ADR 0004 and exercises a separate deterministic provider fixture over HTTP; no public route invokes it. Selecting development containers still does not authorize messaging integration. Production identity, real payment provider, broker, cache, observability, persistence roles, deployment topology, TLS, retention, backup, and sizing remain subject to approved implementation or deployment milestones.
 
 ## Decisions intentionally deferred
 

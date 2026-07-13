@@ -1,7 +1,8 @@
 # ADR 0004: Isolate the Payment Provider and Persist Explicit Payment States
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-11
+- Accepted: 2026-07-13
 - Decision owners: LedgerFlow maintainers
 
 ## Context
@@ -10,7 +11,7 @@ Authorization and capture cross an unreliable external HTTP boundary. Latency, t
 
 ## Decision
 
-The payment domain owns a provider port with authorize, capture, and operation-lookup capabilities. An HTTP adapter implements it. A separate local/test mock-provider support service exercises the real HTTP boundary; it is not included in the production LedgerFlow deployable.
+The payment domain owns a provider port with authorize, capture, and operation-lookup capabilities. A JDK HTTP adapter implements it with explicit connection and per-request timeouts. A deterministic integration-test provider fixture exercises the real HTTP boundary; it is not included in the production LedgerFlow deployable.
 
 Each logical authorization and capture receives a distinct stable application-generated UUID operation key before the call. Every retry and lookup for that logical operation reuses the same key and equivalent money/payment identity. Authorization includes the restricted mock payment-method reference; capture uses the validated provider authorization ID and does not need that reference. The provider contract is idempotent on each key and rejects a changed payload.
 
@@ -19,21 +20,23 @@ No database transaction remains open during provider I/O. Before a call, a short
 Persisted states distinguish:
 
 - active authorization/capture;
-- successful authorization/capture;
+- successful authorization and provider-confirmed capture;
 - terminal authorization decline;
 - known temporary failure pending retry;
 - unknown timeout outcome requiring reconciliation; and
 - non-retryable invalid provider response.
 
-Capture is permitted only after authorization. All transitions use an expected source state plus optimistic version. Invalid or stale transitions make no change.
+Capture is permitted only after authorization. Provider capture success enters `CAPTURE_CONFIRMED`; `CAPTURED` is reserved for the later transaction that also posts a balanced ledger transaction and outbox event. All transitions use an expected source state plus optimistic version. Invalid or stale transitions make no change.
 
-Declines are terminal and never retried. A temporary failure receives at most one automatic retry. An unknown outcome is looked up before resend. Exhausted temporary or unknown outcomes become operator-visible and retryable; the operator command still reuses the original provider operation key.
+The payment table copies order money so every provider call has immutable stage-local input. A payment-owned constraint trigger may read only `orders.id`, `orders.amount_minor`, and `orders.currency` during payment insert/update to reject a mismatch. This is a narrow accepted exception to the no-cross-module-SQL rule; application repositories still do not query another module's tables.
 
-If capture succeeds at the provider but local finalization fails, recovery looks up the capture key and reruns only the idempotent local finalization transaction.
+Declines are terminal and never retried. A temporary failure receives at most one automatic retry using bounded exponential backoff and jitter. An unknown outcome is looked up before resend. Exhausted temporary and unknown outcomes remain durable retry/reconciliation states; operator projection and commands are deferred to Milestone 7 and will reuse the original provider operation key.
 
-The fake payment-method reference is stored only through authorization recovery and cleared after authorization succeeds or becomes terminal. The mock provider offers deterministic opaque tokens for success, bounded latency, timeout-after-processing, authorization decline, and temporary failure. It accepts no card data. Mock code is a separate fixture enabled only for local/test/demo; production rejects it and requires a separately approved real provider.
+If the process stops after provider success but before local persistence, recovery looks up the same request ID and records the confirmed result without another provider effect. A lookup result of `NOT_FOUND` is the only case that permits resending the equivalent request with the same ID.
 
-A malformed, contradictory, or amount/currency-mismatched provider response is non-retryable: order/payment become `FAILED`, the original POST snapshots a `502 provider_protocol_error` with the order location, and no ledger/outbox effect is created.
+The fake payment-method reference is stored only through authorization recovery and cleared after authorization succeeds or becomes terminal. The mock provider offers deterministic opaque tokens for success, bounded latency, timeout-after-processing, authorization/capture decline, temporary failure, and deliberately invalid response. It accepts no card data. Mock service code exists only in the integration-test fixture. No public or production workflow invokes the payment use case in this milestone; a real provider requires a separately approved decision.
+
+A malformed or contradictory provider response is non-retryable and moves the payment to `FAILED` with a sanitized code. Public order/error mapping and amount/currency echo validation are deferred until the order and financial-finalization flow is connected in Milestone 5. No ledger or outbox effect exists in this milestone.
 
 ## Consequences
 
