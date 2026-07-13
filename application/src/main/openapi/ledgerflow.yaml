@@ -1,8 +1,382 @@
 openapi: 3.1.0
 info:
   title: LedgerFlow API
-  version: 0.1.0
+  version: 0.2.0
   description: >-
-    Contract placeholder for the application scaffolding milestone. Business operations are added only
-    with their approved implementation milestones.
-paths: {}
+    LedgerFlow's contract-first HTTP API. The current vertical slice creates and reads INR orders;
+    payment, ledger, outbox, Kafka, and notification behavior are not active yet.
+servers:
+  - url: http://localhost:8080
+    description: Local application
+tags:
+  - name: Orders
+paths:
+  /api/v1/orders:
+    post:
+      tags: [Orders]
+      operationId: createOrder
+      summary: Create an order idempotently
+      description: >-
+        Creates one INR order for the authenticated subject. Reusing the same Idempotency-Key with
+        the same canonical request returns the original result; reusing it with a different request
+        returns 409.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CorrelationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderRequest"
+            examples:
+              standardOrder:
+                summary: INR order
+                value:
+                  clientReference: checkout-20260713-0001
+                  amount:
+                    amountMinor: 259900
+                    currency: INR
+      responses:
+        "201":
+          description: Order created, or original creation result replayed
+          headers:
+            Location:
+              $ref: "#/components/headers/Location"
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+              examples:
+                created:
+                  $ref: "#/components/examples/CreatedOrder"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: The idempotency key was already used for a different canonical request
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                keyReused:
+                  value:
+                    type: https://ledgerflow.example/problems/idempotency-key-reused
+                    title: Idempotency key reused
+                    status: 409
+                    detail: The idempotency key was already used with a different request.
+                    instance: /api/v1/orders
+                    code: idempotency_key_reused
+                    correlationId: order-conflict-001
+        "422":
+          description: The request uses a well-formed currency that this MVP does not support
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                unsupportedCurrency:
+                  value:
+                    type: https://ledgerflow.example/problems/unsupported-currency
+                    title: Unsupported currency
+                    status: 422
+                    detail: The MVP supports INR only.
+                    instance: /api/v1/orders
+                    code: unsupported_currency
+                    correlationId: order-currency-001
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /api/v1/orders/{orderId}:
+    get:
+      tags: [Orders]
+      operationId: getOrder
+      summary: Get the current owned order
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          example: 019535d9-3df7-79fb-b466-fa907fa17f9e
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: Current order representation
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+              examples:
+                current:
+                  $ref: "#/components/examples/CreatedOrder"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Order absent or not owned by the authenticated subject
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                notFound:
+                  value:
+                    type: https://ledgerflow.example/problems/resource-not-found
+                    title: Resource not found
+                    status: 404
+                    detail: The requested order was not found.
+                    instance: /api/v1/orders/019535d9-3df7-79fb-b466-fa907fa17f9e
+                    code: resource_not_found
+                    correlationId: order-read-001
+        "500":
+          $ref: "#/components/responses/InternalError"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        OAuth 2.0 JWT. POST requires ledgerflow.orders.write; GET requires
+        ledgerflow.orders.read.
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        Case-sensitive client nonce. Validated before hashing; raw values are never persisted or
+        logged.
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+        pattern: "^[A-Za-z0-9._:-]+$"
+      example: order-019535d9-3df7-79fb
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Invalid or absent values are replaced by the server.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+        pattern: "^[A-Za-z0-9._-]+$"
+      example: checkout-order-001
+  headers:
+    Location:
+      description: Canonical path of the created order
+      schema:
+        type: string
+        example: /api/v1/orders/019535d9-3df7-79fb-b466-fa907fa17f9e
+    CorrelationId:
+      description: Valid correlation ID used for this HTTP operation
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+        pattern: "^[A-Za-z0-9._-]+$"
+    IdempotencyReplayed:
+      description: Present and true only when the original result is replayed
+      required: false
+      schema:
+        type: boolean
+  schemas:
+    CreateOrderRequest:
+      type: object
+      additionalProperties: false
+      required: [amount]
+      properties:
+        clientReference:
+          type: string
+          minLength: 1
+          maxLength: 100
+          pattern: "^\\S(?:.*\\S)?$"
+          example: checkout-20260713-0001
+        amount:
+          $ref: "#/components/schemas/Money"
+    Money:
+      type: object
+      additionalProperties: false
+      required: [amountMinor, currency]
+      properties:
+        amountMinor:
+          type: integer
+          format: int64
+          minimum: 1
+          example: 259900
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+          pattern: "^[A-Z]{3}$"
+          enum: [INR]
+    Order:
+      type: object
+      additionalProperties: false
+      required: [orderId, status, amount, createdAt, updatedAt]
+      properties:
+        orderId:
+          type: string
+          format: uuid
+          description: PostgreSQL 18 UUIDv7 identifier
+          example: 019535d9-3df7-79fb-b466-fa907fa17f9e
+        clientReference:
+          type:
+            - string
+            - "null"
+          minLength: 1
+          maxLength: 100
+        status:
+          type: string
+          enum: [CREATED]
+        amount:
+          $ref: "#/components/schemas/Money"
+        createdAt:
+          type: string
+          format: date-time
+          example: 2026-07-13T09:42:00Z
+        updatedAt:
+          type: string
+          format: date-time
+          example: 2026-07-13T09:42:00Z
+    ValidationError:
+      type: object
+      additionalProperties: false
+      required: [field, code]
+      properties:
+        field:
+          type: string
+          example: /amount/amountMinor
+        code:
+          type: string
+          example: must_be_positive
+    Problem:
+      type: object
+      additionalProperties: true
+      required: [type, title, status, detail, instance, code, correlationId]
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        detail:
+          type: string
+        instance:
+          type: string
+        code:
+          type: string
+          pattern: "^[a-z0-9_]+$"
+        correlationId:
+          type: string
+        errors:
+          type: array
+          items:
+            $ref: "#/components/schemas/ValidationError"
+  responses:
+    InvalidRequest:
+      description: Request body, path, or required header is invalid
+      headers:
+        X-Correlation-Id:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          examples:
+            invalidRequest:
+              value:
+                type: https://ledgerflow.example/problems/invalid-request
+                title: Invalid request
+                status: 400
+                detail: The request is invalid.
+                instance: /api/v1/orders
+                code: invalid_request
+                correlationId: generated-correlation-id
+                errors:
+                  - field: /headers/Idempotency-Key
+                    code: invalid_format
+    Unauthorized:
+      description: Missing or invalid bearer token
+      headers:
+        X-Correlation-Id:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Forbidden:
+      description: Authenticated principal lacks the required order scope
+      headers:
+        X-Correlation-Id:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    InternalError:
+      description: Unexpected internal failure with no exposed internals
+      headers:
+        X-Correlation-Id:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ServiceUnavailable:
+      description: Required durable infrastructure is unavailable
+      headers:
+        X-Correlation-Id:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  examples:
+    CreatedOrder:
+      value:
+        orderId: 019535d9-3df7-79fb-b466-fa907fa17f9e
+        clientReference: checkout-20260713-0001
+        status: CREATED
+        amount:
+          amountMinor: 259900
+          currency: INR
+        createdAt: 2026-07-13T09:42:00Z
+        updatedAt: 2026-07-13T09:42:00Z

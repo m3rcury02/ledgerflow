@@ -1,12 +1,14 @@
 # LedgerFlow MVP Threat Model
 
-- Status: Proposed
-- Last updated: 2026-07-11
+- Status: Partially implemented
+- Last updated: 2026-07-13
 - Method: asset and trust-boundary review informed by STRIDE and OWASP API Security Top 10
 
 ## Scope
 
 This threat model covers the MVP public API, operator API, modular-monolith process, mock payment-provider boundary, PostgreSQL, Kafka topics, OpenTelemetry export, and administrative retry flow.
+
+The active scope is the Create Order HTTP/PostgreSQL boundary: JWT scope checks, subject ownership, bounded input, correlation, structured logs, idempotency hashing, unique-key concurrency, and safe problem responses. Provider, ledger, Kafka, notification, and operator controls below are launch requirements for their future milestones, not claims about current behavior.
 
 It does not certify PCI DSS compliance or cover a real payment provider, identity-provider implementation, host/container hardening, Kafka/PostgreSQL control planes, or internet-scale denial-of-service protection.
 
@@ -79,15 +81,15 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 - LedgerFlow acts as an OAuth 2.0 JWT resource server; it does not issue tokens.
 - Production validates an exact configured issuer, audience `ledgerflow-api`, RS256 signatures only, `exp`, and `nbf`. JWKS retrieval uses HTTPS with bounded connect/read timeouts and cache lifetime; readiness remains false until initial trusted keys load, and validation fails closed when no valid cached key exists.
 - JWT `sub` is the owner scope for order creation and reads.
-- OAuth scopes map to the four authorities documented in `docs/api-design.md`.
+- The active order scopes map to the authorities documented in `docs/api-design.md`; operator scopes remain proposed.
 - Local/test uses ephemeral test signing keys or a test identity container and exercises key rotation. No authentication bypass exists in the main artifact.
 - Actuator and mock-provider control endpoints are not exposed on the public API. Mock support is a separate test fixture requiring explicit `local`, `test`, or `demo` activation; production rejects it and cannot launch until a real provider is approved.
 
 ## Input and external-service safety
 
 - Bean validation is not the only boundary: normalized commands, state guards, and database constraints revalidate critical invariants.
-- The API rejects unknown fields and raw primary-account-number-like input. Only opaque mock tokens are accepted in the MVP.
-- The mock payment-method reference is persisted only because authorization recovery must reconstruct the provider request. Platform/database encryption at rest and the payment module's runtime privileges protect it; it is irreversibly cleared after authorization succeeds or becomes terminal and is never exposed or copied to operational data. A real provider requires a new token-vault/envelope-encryption decision and threat review.
+- The active API rejects unknown fields and has no payment-method field. A future provider milestone may accept only opaque mock references and must reject raw primary-account-number-like input.
+- If a mock payment-method reference is later persisted for recovery, platform/database encryption at rest and restricted payment-module privileges must protect it; it must be cleared after authorization succeeds or becomes terminal and never be exposed or copied to operational data. A real provider requires a new token-vault/envelope-encryption decision and threat review.
 - Provider host, scheme, TLS policy, connect timeout, read timeout, and response-size limit are deployment configuration, not client input.
 - Provider errors are mapped to allowlisted classifications. Raw response bodies and headers are discarded after extracting validated fields.
 - Retry policies distinguish declines, temporary failures, and unknown outcomes; no blanket retry interceptor wraps provider calls.

@@ -8,7 +8,7 @@
 - Last updated: 2026-07-13
 - Approved by: LedgerFlow maintainer
 - Approval date: 2026-07-13
-- Current milestone: Milestone 2 — local development infrastructure (`Complete`); no later milestone is approved
+- Current milestone: Milestone 3 — Create Order vertical slice (`Complete`)
 - Canonical plan path: `docs/plans/mvp-execplan.md` by explicit maintainer request
 
 ## Purpose and outcome
@@ -33,24 +33,26 @@ The normative requirements and designs are:
 - `docs/api-design.md`
 - `docs/data-model.md`
 - `docs/threat-model.md`
-- proposed ADRs 0002 through 0008 under `docs/adr`
+- accepted Create Order decision in ADR 0003 and proposed ADRs 0002 and 0004 through 0008 under `docs/adr`
 
 ## Current state
 
-The repository now contains the verified Milestone 1 application foundation and completed Milestone 2 local infrastructure:
+The repository contains the verified Milestones 1 and 2 foundation plus the completed Milestone 3 Create Order slice:
 
 - `AGENTS.md` establishes Java 25, Spring Boot 4.1, Gradle Kotlin DSL, modular-monolith, PostgreSQL, Flyway, OpenAPI, money/time, idempotency, observability, scope, and quality rules.
 - `.agent/PLANS.md` defines ExecPlan structure and one-approved-milestone discipline.
 - `settings.gradle.kts`, the root build, and the Gradle 9.6.1 Wrapper define one deployable `application` project and six feature-library projects under `modules`.
-- `application/src/main/java/com/ledgerflow/LedgerFlowApplication.java` is the minimal Spring Boot 4.1 entry point; there are no business controllers, services, migrations, producers, or consumers.
-- `application/src/integrationTest` proves context loading, Flyway startup, and JDBC access against PostgreSQL 18.4 Testcontainers.
+- `application/src/main/java/com/ledgerflow/LedgerFlowApplication.java` is the Spring Boot 4.1 entry point, and `modules/orders` contains the only active business behavior.
+- `application/src/main/openapi/ledgerflow.yaml` defines active authenticated create/read order contracts and RFC 9457-style problems.
+- `V001__create_orders_and_idempotency.sql` creates only the order and HTTP idempotency tables; PostgreSQL 18 generates UUIDv7 order IDs.
+- `application/src/integrationTest` proves context loading, Flyway startup, repository constraints, idempotency races, and secured HTTP behavior against PostgreSQL 18.4 Testcontainers.
 - `application/src/architectureTest` verifies exactly six Spring Modulith modules and complementary ArchUnit package rules.
 - `compose.yaml`, `.env.example`, `infra`, and `scripts/dev-*` provide the pinned nine-service local environment, safe placeholder defaults, provisioning, and lifecycle commands.
 - `build.gradle.kts` provides the stable formatting, static-analysis, unit, integration, architecture, OpenAPI, Compose, documentation, and aggregate `verify` tasks.
 - `docs/architecture.md`, `docs/development-workflow.md`, `README.md`, and this plan record the approved bootstrap choices and developer commands.
-- ADR 0001 establishes the ADR process.
+- ADR 0001 establishes the ADR process, and ADR 0003 is accepted for the Create Order transaction only.
 
-ADRs 0002 through 0008 remain proposed. No later MVP milestone, business API, database migration, or business functionality is approved or implemented.
+ADRs 0002 and 0004 through 0008 remain proposed. No payment, ledger, outbox, Kafka, notification, or operator functionality is approved or implemented.
 
 The maintainer explicitly requested this ExecPlan at `docs/plans/mvp-execplan.md`. This is a one-plan path exception to `.agent/PLANS.md`, which normally specifies `.agent/plans/YYYY-MM-DD-<name>.md`. Do not create a duplicate plan.
 
@@ -62,7 +64,7 @@ The maintainer explicitly requested this ExecPlan at `docs/plans/mvp-execplan.md
 - Feature modules `orders`, `payments`, `ledger`, `messaging`, `notifications`, and `operations` with automated boundary tests.
 - Contract-first OpenAPI documents for LedgerFlow `/api/v1` and the local/test mock-provider HTTP boundary.
 - OAuth 2.0 JWT resource-server validation and scopes from `docs/api-design.md`; the identity provider is external.
-- One positive full-capture USD order and one payment.
+- One positive full-capture INR order and one payment.
 - A test/local HTTP mock payment provider with stable operation keys and deterministic faults.
 - PostgreSQL 18, Flyway, explicit Spring `JdbcClient` SQL, and PostgreSQL Testcontainers.
 - Immutable balanced double-entry posting for confirmed capture.
@@ -91,10 +93,13 @@ The `scripts/dev-up`, `scripts/dev-down`, `scripts/dev-reset`, and `scripts/dev-
 
 ### HTTP interfaces
 
-The future operations in `application/src/main/openapi/ledgerflow.yaml` define:
+The active operations in `application/src/main/openapi/ledgerflow.yaml` define:
 
-- `POST /api/v1/orders` — required order-write scope and `Idempotency-Key`; returns `201`, `202`, or a documented problem response.
+- `POST /api/v1/orders` — required order-write scope and `Idempotency-Key`; returns an original or replayed `201`, or a documented problem response.
 - `GET /api/v1/orders/{orderId}` — returns current owner-visible order state.
+
+The following remain future operations and are not present in the active OpenAPI contract:
+
 - `GET /api/v1/operator/operations` — paginated/filterable sanitized failure list.
 - `GET /api/v1/operator/operations/{operationId}` — sanitized failure and retry history.
 - `POST /api/v1/operator/operations/{operationId}/retries` — required operator-retry scope, idempotency key, and audit reason; returns `202`.
@@ -105,7 +110,8 @@ The future `application/src/testFixtures/openapi/mock-payment-provider.yaml` def
 
 ### Package interfaces
 
-- `orders.api` owns create/read commands and guarded order transitions.
+- The current `orders.internal` packages own create/read commands, domain rules, HTTP, and JDBC persistence. No cross-module order API is exposed because no other module calls it yet.
+- A future `orders.api` package will own only cross-module commands and guarded order transitions that are actually needed.
 - `payments.api` owns authorize/capture/reconcile workflow outcomes.
 - `ledger.api` exposes one idempotent `postPaymentCapture` operation.
 - `messaging.api` exposes `appendOutboxEvent` joined to the caller's transaction.
@@ -116,13 +122,14 @@ Cross-module callers depend only on these APIs. Payment domain and provider port
 
 ### Persistence
 
-Flyway migrations create the tables, checks, indexes, functions, triggers, and seed accounts specified by `docs/data-model.md`. Use these initial files:
+Flyway migrations create the tables, checks, indexes, functions, triggers, and seed accounts specified by `docs/data-model.md`. `V001` is implemented; the remaining initial files are planned:
 
-1. `V001__create_order_and_payment_tables.sql`
-2. `V002__create_operations_tables.sql`
-3. `V003__create_ledger_tables_and_balance_constraints.sql`
-4. `V004__create_transactional_outbox.sql`
-5. `V005__create_notification_inbox_and_dlt_tables.sql`
+1. `V001__create_orders_and_idempotency.sql`
+2. `V002__create_payment_tables.sql`
+3. `V003__create_operations_tables.sql`
+4. `V004__create_ledger_tables_and_balance_constraints.sql`
+5. `V005__create_transactional_outbox.sql`
+6. `V006__create_notification_inbox_and_dlt_tables.sql`
 
 Once merged, these migrations are immutable. Corrections use later versions.
 
@@ -208,29 +215,31 @@ Only the current milestone is approved or in progress. Later milestones remain `
   - Grafana provisions Prometheus, Tempo, and Loki data sources without manual UI setup.
   - No actual secret, application behavior, Flyway migration, API operation, producer, or consumer is added.
 
-### Milestone 3 — Build the order and idempotency core behind an inactive route
+### Milestone 3 — Deliver the Create Order vertical slice
 
-- Status: Proposed
-- Intended outcome: The complete future order contract and durable idempotency/order core are verified through internal integration tests, while public order routes remain unregistered until capture accounting/outbox is safe in Milestone 5.
+- Status: Complete
+- Intended outcome: Authenticated clients can create one INR order through the public API, safely replay the original result, detect changed-payload key reuse, and read the current owned order without invoking payment or Kafka behavior.
 - Implementation work:
-  - Complete order and common problem schemas in OpenAPI.
+  - Complete the active create/read order operations and common RFC 9457-style problem schemas in OpenAPI before implementation.
   - Add JWT resource-server validation, order scopes, subject ownership, correlation filter, and structured HTTP logs.
-  - Apply `V001` for orders, idempotency records with ownership leases, payments, and attempts.
-  - Implement normalized typed-request fingerprints, hashed keys, in-progress recovery, original-response snapshots, current GET representation, and concurrency guards.
-  - Implement order/payment initial states and state-machine unit tests without provider calls.
-  - Keep create/read controllers disabled and readiness non-production until Milestone 5; do not expose a stub success response.
+  - Apply `V001` for orders and idempotency records only. Generate order IDs with PostgreSQL 18 `uuidv7()`, persist `Instant` values as `timestamptz`, store money in positive minor units plus an `INR` currency field, and reserve an optimistic version column for later guarded transitions.
+  - Implement fixed-field canonical request fingerprints, SHA-256 key hashes, immutable original-response snapshots, current GET representations, and database-enforced uniqueness.
+  - Claim the idempotency key, insert the `CREATED` order, and complete the response snapshot in one short PostgreSQL transaction. A conflicting insert waits on the unique key; same-hash callers replay after the winner commits, while different hashes return `409`.
+  - Add focused domain unit tests plus PostgreSQL repository/concurrency and secured HTTP integration tests. Do not create payment tables, provider adapters, Kafka code, ledger rows, or outbox behavior.
 - Validation commands:
   - `./gradlew openApiValidate test`
-  - `./gradlew integrationTest --tests '*OrderIdempotencyIntegrationTest'`
-  - `./gradlew integrationTest --tests '*OrderAuthorizationIntegrationTest'`
+  - `./gradlew :application:integrationTest --tests '*OrderIdempotencyIntegrationTest'`
+  - `./gradlew :application:integrationTest --tests '*OrderRepositoryIntegrationTest'`
+  - `./gradlew :application:integrationTest --tests '*OrderHttpIntegrationTest'`
   - `./gradlew clean verify`
 - Observable acceptance:
   - Missing/malformed key fails before business effects.
-  - Internal command re-execution returns the original result; JSON property order does not change the fingerprint.
+  - A valid authenticated request returns `201 CREATED`, a UUIDv7 order ID, positive INR money, UTC timestamps, `Location`, and a correlation ID.
+  - Command re-execution returns the original result with `Idempotency-Replayed: true`; JSON property order does not change the fingerprint.
   - Changed payload returns `409`; concurrent requests create one order.
-  - Expired lease resumes the existing resource rather than creating another.
   - One subject cannot read another subject's order.
-  - No public order route is active, preventing a success path without payment finalization.
+  - The database rejects duplicate idempotency scope/key claims, non-positive money, non-INR currency, invalid state, and invalid response snapshot state.
+  - No payment, ledger, outbox, Kafka, or notification effect exists.
 
 ### Milestone 4 — Implement the external mock provider and payment state machine
 
@@ -241,7 +250,7 @@ Only the current milestone is approved or in progress. Later milestones remain `
   - Add and validate `application/src/testFixtures/openapi/mock-payment-provider.yaml`, then implement a local/test-only JDK HTTP fixture and run task against it; it supports deterministic scenario tokens and provider-side idempotency/lookup.
   - Implement every allowed/forbidden payment transition with optimistic version checks and durable attempt history.
   - Apply `V002` and create sanitized payment failed-operation records through `operations.api`.
-  - Keep public order routes inactive. Provider capture is invoked only by tests until Milestone 5 can finalize accounting/outbox atomically.
+  - Do not connect the active order routes to provider behavior until a later milestone explicitly approves that integration. Provider capture is invoked only by tests until Milestone 5 can finalize accounting/outbox atomically.
 - Validation commands:
   - `./gradlew test --tests '*PaymentStateMachineTest'`
   - `./gradlew integrationTest --tests '*PaymentProviderIntegrationTest'`
@@ -266,7 +275,7 @@ Only the current milestone is approved or in progress. Later milestones remain `
   - Implement idempotent capture finalization through module APIs inside one transaction.
   - Persist safe event data, correlation ID, and W3C trace context with event type/version.
   - Implement provider-captured/local-rollback reconciliation and finalization re-entry.
-  - Register order create/read controllers only after all finalization components exist; implement `201` completed/declined, `202` retry-pending/unknown, replayable `502 provider_protocol_error`, GET current state, and exact idempotency snapshots.
+  - Extend the active order route only after all finalization components exist; preserve the original Create Order snapshot while implementing later completed/declined/retry-pending/unknown representations and current-state GET behavior.
 - Validation commands:
   - `./gradlew test --tests '*LedgerPostingTest'`
   - `./gradlew integrationTest --tests '*LedgerConstraintIntegrationTest'`
@@ -396,7 +405,7 @@ Implement contract and constraints before happy-path orchestration. At each boun
 4. Commit the smallest complete local invariant.
 5. Use stable business keys, expected-state/version updates, unique constraints, and inbox/outbox identity so recovery can safely repeat.
 
-Use UUIDv4 from the JDK for identifiers; `(created_at, id)` provides stable pagination without a UUIDv7 dependency. Inject `Clock` and ID generators for deterministic unit tests.
+Use PostgreSQL 18 `uuidv7()` for order IDs because the approved database supports timestamp-ordered UUID generation without another dependency. Other future identifier strategies remain deferred. Inject `Clock` where application-generated timestamps require deterministic unit tests.
 
 Do not log full domain objects. Define safe structured fields at each adapter. Store stable error codes and bounded summaries. Protected structured server error logs may include redacted internal exception stacks under restricted access/retention; APIs, Kafka/DLT, operator projections, and span attributes/events may not.
 
@@ -476,7 +485,7 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - exactly one order and payment;
 - exactly one provider authorization and capture for their stable operation keys;
 - payment `CAPTURED` and order `COMPLETED`;
-- exactly one immutable ledger transaction with equal positive debit and credit in USD;
+- exactly one immutable ledger transaction with equal positive debit and credit in INR;
 - exactly one logical outbox event, possibly published more than once; and
 - exactly one notification for that event ID.
 
@@ -500,6 +509,11 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - [x] `2026-07-13 09:27Z` — Implemented the approved Milestone 2 nine-service local Compose environment, pinned images, laptop resource limits, PostgreSQL-backed Keycloak realm, observability provisioning, lifecycle scripts, Compose verification task, and port/setup documentation without application behavior.
 - [x] `2026-07-13 09:27Z` — Started the environment with temporary host overrides for occupied local ports, confirmed all nine containers healthy, verified the KRaft quorum and absence of ZooKeeper, checked PostgreSQL/Valkey/Keycloak, and sent OTLP trace, log, and metric records end-to-end through Tempo, Loki, and Prometheus. Grafana reported all three data sources provisioned.
 - [x] `2026-07-13 09:30Z` — Ran `./gradlew clean verify`; all 45 actionable formatting, static-analysis, unit, PostgreSQL integration, architecture, Compose, OpenAPI, and documentation tasks completed successfully.
+- [x] `2026-07-13 09:42Z` — Recorded explicit maintainer approval for Milestone 3 as the active Create Order vertical slice, replacing the earlier inactive-route proposal while keeping payment and Kafka work out of scope.
+- [x] `2026-07-13 09:42Z` — Inspected the clean worktree, multi-project/component-scan boundaries, existing empty OpenAPI contract, PostgreSQL/Flyway/Testcontainers setup, security dependencies, proposed order/idempotency design, and documentation conflicts around USD, UUIDv4, and payment-coupled order creation.
+- [x] `2026-07-13 10:17Z` — Implemented and validated the OpenAPI-first create/read contract, V001 order/idempotency schema, UUIDv7 persistence, scoped canonical request hashing, atomic replay transaction, JWT ownership/scopes, correlation/problem handling, and structured logs without payment or Kafka behavior.
+- [x] `2026-07-13 10:17Z` — Added domain unit tests and PostgreSQL Testcontainers context, repository, concurrent-idempotency, and secured HTTP integration tests; focused unit, integration, OpenAPI, and architecture checks pass. Full clean verification remains pending.
+- [x] `2026-07-13 10:22Z` — Ran `./gradlew --no-daemon spotlessApply clean verify --console=plain`; all 52 actionable formatting, static-analysis, unit, PostgreSQL integration, architecture, Compose, OpenAPI, and documentation tasks completed successfully.
 
 ## Surprises and discoveries
 
@@ -516,6 +530,8 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - Docker Desktop was temporarily unavailable during the first check, then recovered. Existing host PostgreSQL and Valkey processes occupied ports 5432 and 6379, so runtime validation used temporary `POSTGRES_PORT=15432` and `VALKEY_PORT=16379` overrides while retaining documented defaults.
 - Kafka's JVM CLI and the OpenTelemetry Collector validation command can exceed ten seconds under the configured CPU ceilings. Their health-check timeouts allow thirty seconds to prevent false failures without increasing service resource caps.
 - Tempo and Loki deliberately delay readiness for fifteen seconds when an ingester becomes ready. Endpoint verification waits for actual `/ready` success rather than treating the image binary check alone as proof of backend readiness.
+- A JUnit-managed static Testcontainer inherited by several test classes was stopped after the first class while Spring retained its cached context. The integration base now uses the Testcontainers singleton pattern so one PostgreSQL container lives for the complete test JVM.
+- A newly used integration-test resource exposed duplicate conventional source-directory registration in the Gradle source sets. Removing the redundant declarations preserves the same directories and allows deterministic resource processing.
 
 ## Decision log
 
@@ -529,20 +545,23 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - **2026-07-13 — Bind every host port to loopback and disable Grafana's default plugin preinstallation.** Loopback limits accidental network exposure; disabling unpinned background downloads keeps startup deterministic while built-in Prometheus, Tempo, and Loki data sources are provisioned from version-controlled configuration.
 - **2026-07-11 — Use Spring `JdbcClient`, not an ORM.** Explicit guarded SQL and PostgreSQL features are core to the correctness demonstration.
 - **2026-07-11 — Use synchronous normal provider orchestration and asynchronous Kafka/notification.** This produces an observable completed `201` while keeping messaging eventual.
-- **2026-07-11 — Keep public order routes inactive until Milestone 5.** Earlier milestones test idempotency and provider components internally so no approved intermediate milestone can capture without ledger/outbox finalization.
+- **2026-07-11 — Keep public order routes inactive until Milestone 5.** Superseded for order-only creation by the maintainer's 2026-07-13 approval; the active route creates no payment or financial effect.
 - **2026-07-11 — Use stable provider operation keys and explicit unknown states.** A timeout is not proof of failure.
 - **2026-07-11 — Use `PAYMENT_CLEARING` debit and `MERCHANT_PAYABLE` credit.** This balances the demo without assuming revenue ownership.
 - **2026-07-11 — Use PostgreSQL polling outbox plus Kafka inbox.** At-least-once behavior is explicit and does not require distributed transactions or Debezium.
 - **2026-07-11 — Use one initial consumer attempt plus three retry-topic attempts at 1/5/30 seconds.** Then publish to DLT; non-retryable input goes directly there.
 - **2026-07-11 — Use JWT resource-server security.** Operator retry is privileged; the application consumes but does not issue tokens.
-- **2026-07-11 — Use UUIDv4 from the JDK.** UUIDv7 does not justify another production dependency for this MVP.
+- **2026-07-11 — Use UUIDv4 from the JDK.** Superseded for order IDs by the maintainer's 2026-07-13 UUIDv7 requirement and PostgreSQL 18's native `uuidv7()` support; no dependency is added.
+- **2026-07-13 — Make order creation one short idempotency transaction.** Claiming the unique scoped key, inserting the order, and persisting the original response snapshot commit together. This avoids committed leases or incomplete resources before external payment work exists; ADR 0003 must reflect this accepted slice-specific boundary.
+- **2026-07-13 — Restrict the MVP currency to INR.** The currency remains explicit and validated in API, domain, and database layers; multi-currency and FX remain out of scope.
+- **2026-07-13 — Declare existing Spring capabilities directly in the orders feature.** The multi-project compiler requires the orders library to declare Web MVC, validation, JDBC, Jackson, and OAuth resource-server APIs it imports. These are the same Spring Boot-managed starters already present in the deployable application, so no new production library or version is introduced. JDBC adds the PostgreSQL transaction boundary; resource-server validation adds issuer/JWK/audience trust and scope enforcement; no provider, broker, cache, or persistence technology is added.
 - **2026-07-11 — Validate OpenAPI without server code generation.** Contract tests enforce conformance without generated framework coupling.
 - **2026-07-11 — Contract the mock provider separately and exclude it from the main artifact.** Its external HTTP behavior is validated without exposing simulator controls in production.
 - **2026-07-11 — Separate Flyway owner and runtime database roles.** Migration authority does not grant the application DDL or mutation rights over immutable financial/audit data.
 
 ## Outcome and follow-up
 
-Current outcome: Milestones 1 and 2 are complete. The repository has a verified multi-project application foundation, one PostgreSQL context-load integration test, and a validated local dependency/observability environment. No migration, public business operation, payment behavior, ledger behavior, messaging behavior, or notification behavior has been created. Later milestones remain proposed and require separate approval.
+Current outcome: Milestones 1 through 3 are complete. The repository has a verified multi-project application foundation, validated local dependency/observability environment, and an OpenAPI-first secured Create Order slice. V001 and PostgreSQL Testcontainers prove UUIDv7 creation, positive INR constraints, exact idempotent replay, changed-payload conflict, concurrent single creation, and owner-only reads. No payment, provider, ledger, outbox, Kafka, notification, or operator behavior has been created. Later milestones remain proposed and require separate approval.
 
 When all milestones are complete, update this section with:
 

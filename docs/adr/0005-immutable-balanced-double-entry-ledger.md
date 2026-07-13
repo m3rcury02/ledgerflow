@@ -12,7 +12,7 @@ The MVP does not establish that LedgerFlow is merchant-of-record, so recognizing
 
 ## Decision
 
-Represent each confirmed capture as one immutable ledger transaction containing exactly two positive USD entries:
+Represent each confirmed capture as one immutable ledger transaction containing exactly two positive INR entries:
 
 - debit `PAYMENT_CLEARING` (asset); and
 - credit `MERCHANT_PAYABLE` (liability).

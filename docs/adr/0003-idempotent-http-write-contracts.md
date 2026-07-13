@@ -1,70 +1,79 @@
 # ADR 0003: Define Durable Idempotent HTTP Write Contracts
 
-- Status: Proposed
-- Date: 2026-07-11
+- Status: Accepted for Create Order
+- Date: 2026-07-13
 - Decision owners: LedgerFlow maintainers
 
 ## Context
 
-Clients and operators will retry HTTP writes after timeouts, lost responses, or process failures. A retry must not create a second order, repeat a provider workflow, or schedule duplicate recovery. A key alone is insufficient because concurrent requests, changed payloads, and crashes while work is in progress need explicit behavior.
+Clients retry writes after timeouts, lost responses, or process failures. Create Order must not
+create a second order under sequential or concurrent retry, and a key must not silently identify two
+different requests. Redis or an in-memory cache cannot commit atomically with PostgreSQL business
+data. The current slice performs no external work, so a renewable workflow lease would create
+recovery states without solving a present problem.
 
 ## Decision
 
-`POST /api/v1/orders` and operator retry requests require `Idempotency-Key`.
+`POST /api/v1/orders` requires `Idempotency-Key`. LedgerFlow authenticates the caller and validates
+the request before it:
 
-For each operation, LedgerFlow:
+1. hashes the validated key bytes with SHA-256;
+2. creates a SHA-256 fingerprint from a versioned, length-delimited canonical encoding of the typed
+   business fields;
+3. attempts to insert an `IN_PROGRESS` record scoped by authenticated subject, stable operation, and
+   key hash;
+4. creates a PostgreSQL-generated UUIDv7 `CREATED` order if it owns the claim; and
+5. stores the `201` resource ID, body, and `Location` and marks the claim `COMPLETED`.
 
-1. authenticates and validates the request;
-2. normalizes the typed business fields and computes a SHA-256 request fingerprint;
-3. hashes the raw key with SHA-256;
-4. claims a unique `{principal, OpenAPI operation plus concrete target ID where present, key hash}` row with an owner token and renewable lease;
-5. creates or resumes the same resource/workflow; and
-6. stores the accepted HTTP status, body, resource ID, and replayable headers before returning.
+Steps 3–5 execute in one short PostgreSQL transaction. The idempotency composite primary key is the
+concurrency control. `INSERT ... ON CONFLICT DO NOTHING` waits for a conflicting uncommitted row.
+After the winner commits, the contender compares the committed fingerprint. If the winner rolls
+back, the contender can insert and become the owner.
 
-Raw keys and request bodies are not stored or logged. Correlation, trace, authorization, and other transport headers are excluded from the request fingerprint.
+The same scope, key, and fingerprint returns the immutable original status, body, resource ID, and
+`Location` with `Idempotency-Replayed: true`. The replaying HTTP operation gets its own correlation
+and trace context. A different fingerprint returns `409 idempotency_key_reused`.
 
-The same scope, key, and fingerprint returns the stored status/body/`Location` without repeating business effects. The replaying operation receives its own correlation and trace context plus `Idempotency-Replayed: true`.
+Raw keys and raw requests are never stored or logged. Correlation, tracing, authorization, and JSON
+presentation details are excluded from the fingerprint. Idempotency rows do not expire in the MVP.
 
-The same scope and key with a different fingerprint returns `409 idempotency_key_reused`. A concurrent matching request may wait briefly for completion; if the original remains in progress, it returns `409 idempotency_request_in_progress` and `Retry-After` without starting work.
-
-The lease exceeds or is renewed during bounded provider work. Renew, takeover, response completion, and failure updates compare owner token and version. If a lease expires, a new owner resumes the existing resource from durable state rather than creating a new one; the stale owner cannot perform an external call or overwrite the response after takeover.
-
-Operator retry requests store their immutable accepted `202` snapshot with the retry row and apply the same fingerprint/mismatch/replay rules.
-
-The create-order snapshot is immutable. If an operator later advances a `202` order, a POST replay still returns the original `202`; `GET /api/v1/orders/{id}` returns current state.
-
-MVP idempotency rows do not expire automatically. Retention changes require a contract and data-retention decision.
+Later operations that span provider I/O or background recovery must make a separate accepted
+decision about leases, takeover, and durable workflow state. This ADR does not authorize payment or
+operator-retry behavior.
 
 ## Consequences
 
 ### Positive
 
-- Lost HTTP responses and retries cannot duplicate financial effects.
-- Different-payload key reuse has deterministic behavior.
-- In-progress crashes can be recovered without guessing whether a resource exists.
-- Current resource state and original command result have distinct, documented meanings.
+- Order creation and its replay record cannot commit separately.
+- PostgreSQL gives deterministic concurrent-key behavior without another production dependency.
+- Changed-payload key reuse has a stable conflict response.
+- There is no committed `IN_PROGRESS` state to recover in the current slice.
 
 ### Costs and risks
 
-- Response snapshots and idempotency rows consume durable storage.
-- Request normalization must remain stable for the lifetime of an API version.
-- Lease expiry and recovery add concurrency tests and operational states.
-- A caller must use GET after a `202` to see later progress.
+- A contender waits on PostgreSQL's unique-index conflict until the winner resolves or a configured
+  database timeout fires.
+- Response snapshots and key records consume durable storage.
+- The canonical encoding must remain stable for the lifetime of API v1.
+- Later external workflows cannot hold this transaction open and need a separate recovery design.
 
 ## Alternatives considered
 
-### Trust client-generated order IDs only
+### Application-level pre-check followed by insert
 
-Rejected because it does not define changed payloads, stored responses, concurrent processing, or operator-command retries.
+Rejected because a check-then-act race can create two orders unless the database is still made the
+authority.
 
 ### Cache idempotency in memory or Redis
 
-Rejected because PostgreSQL already participates in resource creation and provides the required transactional durability. An extra datastore would add failure modes.
+Rejected because it cannot commit atomically with the order and adds a consistency boundary.
 
-### Return the latest resource on POST replay
+### Commit an in-progress lease before creating the order
 
-Rejected because it changes the result of the original command and makes retry behavior time-dependent.
+Deferred. It is useful only when work must survive beyond the short local transaction, such as a
+future provider workflow.
 
-### Expire keys after a short fixed period
+### Return the latest resource on replay
 
-Deferred until retention and duplicate-order risk are evaluated with real usage requirements.
+Rejected because it makes the result of the original command change over time.

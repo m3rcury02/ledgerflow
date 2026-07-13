@@ -1,6 +1,6 @@
 # LedgerFlow
 
-LedgerFlow is a Java 25 and Spring Boot 4.1 modular-monolith portfolio project. The current repository contains the verified application foundation only; no business API or financial workflow is implemented yet.
+LedgerFlow is a Java 25 and Spring Boot 4.1 modular-monolith portfolio project. Its current vertical slice exposes contract-first, JWT-secured create/read order APIs with durable PostgreSQL idempotency. Payment, ledger, Kafka, notification, and operator behavior are not implemented yet.
 
 ## Prerequisites
 
@@ -17,7 +17,7 @@ Do not install Gradle separately. The committed Gradle 9.6.1 Wrapper is the supp
 ./gradlew clean verify
 ```
 
-The lifecycle checks formatting, static analysis, unit tests, a PostgreSQL Testcontainers context test, Spring Modulith and ArchUnit rules, OpenAPI, and documentation. The equivalent convenience command is `make verify`.
+The lifecycle checks formatting, static analysis, unit tests, PostgreSQL Testcontainers repository/HTTP/concurrency tests, Spring Modulith and ArchUnit rules, OpenAPI, and documentation. The equivalent convenience command is `make verify`.
 
 ## Local dependency environment
 
@@ -77,10 +77,39 @@ export LEDGERFLOW_DB_URL=jdbc:postgresql://localhost:5432/ledgerflow
 export LEDGERFLOW_DB_USERNAME=ledgerflow
 export LEDGERFLOW_DB_PASSWORD='<local-password>'
 export LEDGERFLOW_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+export LEDGERFLOW_OAUTH2_AUDIENCE=ledgerflow-api
+export LEDGERFLOW_OAUTH2_ISSUER=http://localhost:8081/realms/ledgerflow
+export LEDGERFLOW_OAUTH2_JWK_SET_URI=http://localhost:8081/realms/ledgerflow/protocol/openid-connect/certs
 ./gradlew :application:bootRun
 ```
 
-Kafka and the other services are available for later milestones, but no producer, consumer, cache integration, identity behavior, topic, or business operation exists yet.
+Flyway applies `V001__create_orders_and_idempotency.sql` at startup. Kafka and the other services are available for later milestones, but the application has no producer, consumer, cache integration, payment workflow, or financial behavior.
+
+## Create Order API
+
+The imported local realm intentionally contains roles but no users or credentials. Supply a JWT from your configured development issuer whose `sub` identifies the customer and whose scope contains `ledgerflow.orders.write` or `ledgerflow.orders.read` as appropriate.
+
+Create one positive INR order:
+
+```bash
+curl --fail-with-body http://localhost:8080/api/v1/orders \
+  --request POST \
+  --header "Authorization: Bearer ${LEDGERFLOW_ACCESS_TOKEN}" \
+  --header 'Content-Type: application/json' \
+  --header 'Idempotency-Key: checkout-order-0001' \
+  --header 'X-Correlation-Id: checkout-demo-001' \
+  --data '{"clientReference":"checkout-0001","amount":{"amountMinor":259900,"currency":"INR"}}'
+```
+
+Repeat that request with the same key and body to receive the original `201` result and `Idempotency-Replayed: true`. Changing a canonical request field while retaining the key returns `409`. Read the owned order with:
+
+```bash
+curl --fail-with-body "http://localhost:8080/api/v1/orders/${ORDER_ID}" \
+  --header "Authorization: Bearer ${LEDGERFLOW_ACCESS_TOKEN}" \
+  --header 'X-Correlation-Id: checkout-read-001'
+```
+
+The complete schemas, examples, validation rules, problem details, and status codes live in `application/src/main/openapi/ledgerflow.yaml` and [the API design](docs/api-design.md).
 
 ## Project structure
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-This document defines the initial architectural constraints for LedgerFlow. The repository and application foundation was scaffolded in the approved MVP Milestone 1; business behavior remains unimplemented.
+This document defines the architectural constraints for LedgerFlow. Milestones 1 and 2 established the application and local infrastructure; Milestone 3 adds only the Create Order HTTP/persistence slice. Payments, financial posting, and messaging remain unimplemented.
 
 ## Architectural goals
 
@@ -59,6 +59,8 @@ When hexagonal architecture is used:
 
 Do not introduce interfaces, mapping layers, commands, events, or duplicate models solely to imitate an architectural pattern.
 
+The `orders` slice keeps framework-free money, key, fingerprint, and order types behind one application-owned persistence port. This narrow boundary makes the PostgreSQL idempotency transaction testable without imposing ports on every feature. The HTTP and `JdbcClient` adapters remain module-internal.
+
 ## HTTP contracts
 
 The version-controlled OpenAPI document at `application/src/main/openapi/ledgerflow.yaml` is the source of truth for HTTP APIs.
@@ -87,7 +89,7 @@ Migration rules:
 - destructive or long-running migrations require an ExecPlan with compatibility, recovery, and rollout details; and
 - a module accesses only tables it owns unless an accepted ADR defines a controlled exception.
 
-The production PostgreSQL major version and migration version-numbering convention will be selected in the bootstrap or deployment milestone and then pinned.
+The current local, production-design, and integration-test baseline is PostgreSQL 18. Migrations use ordered `VNNN__description.sql` names. The first migration owns only orders and HTTP idempotency.
 
 ## Money and time
 
@@ -144,16 +146,14 @@ Spring Modulith verifies logical application modules, API/internal access, and c
 
 Keycloak stores its data in a separate database on the local PostgreSQL instance; embedded H2 is not used. Valkey is an ephemeral Redis-compatible cache service and is not an approved application datastore. Local Kafka is a single combined broker/controller in KRaft mode. Prometheus, Grafana, Tempo, Loki, and OpenTelemetry Collector provide a self-contained observability path without committing credentials or choosing a production observability vendor.
 
-Selecting these development containers does not accept proposed ADRs 0002–0008 or authorize application integration. Production identity, broker, cache, observability, persistence roles, deployment topology, TLS, authentication, retention, backup, and sizing remain subject to their approved implementation or deployment milestones.
+Selecting these development containers does not authorize payment or messaging integration. The Create Order slice now accepts ADR 0003's scoped idempotency decision and validates JWTs against an issuer/JWK configuration. Production identity, broker, cache, observability, persistence roles, deployment topology, TLS, retention, backup, and sizing remain subject to approved implementation or deployment milestones.
 
 ## Decisions intentionally deferred
 
 The following require product or operational evidence and are not selected by this document:
 
-- authentication and authorization;
 - public API versioning policy;
 - OpenAPI code generation;
-- PostgreSQL major version;
 - deployment platform and topology;
 - asynchronous messaging or an event broker;
 - caches, search engines, or additional datastores;

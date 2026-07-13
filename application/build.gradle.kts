@@ -10,16 +10,12 @@ val springModulithVersion = rootProject.extra["springModulithVersion"] as String
 
 val integrationTest =
     sourceSets.create("integrationTest") {
-        java.srcDir("src/integrationTest/java")
-        resources.srcDir("src/integrationTest/resources")
         compileClasspath += sourceSets.main.get().output
         runtimeClasspath += output + compileClasspath
     }
 
 val architectureTest =
     sourceSets.create("architectureTest") {
-        java.srcDir("src/architectureTest/java")
-        resources.srcDir("src/architectureTest/resources")
         compileClasspath += sourceSets.main.get().output
         runtimeClasspath += output + compileClasspath
     }
@@ -60,8 +56,10 @@ dependencies {
     runtimeOnly("org.postgresql:postgresql")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    testImplementation("org.springframework.boot:spring-boot-starter-webmvc-test")
     testImplementation("org.assertj:assertj-core")
     testImplementation("org.junit.jupiter:junit-jupiter")
+    testImplementation("org.springframework.security:spring-security-test")
 
     // Spring Boot's dependency BOM imports the Testcontainers BOM; keep these modules versionless.
     add(

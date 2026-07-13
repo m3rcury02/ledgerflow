@@ -1,0 +1,21 @@
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: https://issuer.integration-test.invalid
+          jwk-set-uri: https://issuer.integration-test.invalid/jwks
+
+management:
+  logging:
+    export:
+      otlp:
+        enabled: false
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  tracing:
+    export:
+      otlp:
+        enabled: false

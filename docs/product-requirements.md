@@ -1,7 +1,7 @@
 # LedgerFlow MVP Product Requirements
 
-- Status: Proposed
-- Last updated: 2026-07-11
+- Status: Partially implemented
+- Last updated: 2026-07-13
 - Related plan: `docs/plans/mvp-execplan.md`
 
 ## Purpose
@@ -20,6 +20,10 @@ create order
 ```
 
 The goal is not a feature-complete commerce product. The goal is to prove correctness under retries, partial failure, concurrency, duplicate delivery, and operator recovery.
+
+## Current delivery status
+
+The Create Order slice is implemented. Authenticated clients can create one positive INR order in `CREATED` state and read an owned order. The idempotency claim, order, and original `201` response snapshot commit atomically. Payments, provider calls, ledger records, outbox/Kafka, notifications, and operator recovery remain planned and are not invoked by the active endpoints.
 
 ## Actors
 
@@ -44,17 +48,19 @@ The goal is not a feature-complete commerce product. The goal is to prove correc
 - Real card data, PCI DSS scope, or a real payment service provider.
 - Inventory, fulfillment, tax, discounts, refunds, voids, disputes, or partial capture.
 - Multiple payments per order or split tender.
-- Multi-currency conversion. The MVP accepts `USD` only, represented as an ISO 4217 code.
+- Multi-currency conversion. The MVP accepts `INR` only, represented as an ISO 4217 code.
 - Sending email, SMS, or push messages. The consumer creates a notification record only.
 - A customer or operator user interface.
 - Building an identity provider, Kafka control plane, or production deployment platform.
 - Exactly-once delivery claims across PostgreSQL and Kafka.
 
-## End-to-end behavior
+## Target end-to-end behavior
+
+Only steps 1–2 and the order-only part of step 3 are active. The remaining steps require separately approved milestones.
 
 1. The client sends `POST /api/v1/orders` with a bearer token, `Idempotency-Key`, optional `X-Correlation-Id`, and a valid order request.
 2. LedgerFlow validates authentication, payload, supported currency, idempotency-key syntax, and request ownership before creating data.
-3. A unique client-and-operation-scoped idempotency record, order, and payment are created in PostgreSQL.
+3. A unique client-and-operation-scoped idempotency record and order are created in PostgreSQL. A later milestone starts the payment workflow without changing the original Create Order replay result.
 4. The payment module calls the mock provider through an outbound HTTP port. Authorization and capture use stable provider operation keys so uncertain calls can be queried and safely retried.
 5. Normal success is processed synchronously. No PostgreSQL transaction remains open while waiting for the provider.
 6. After confirmed capture, one PostgreSQL transaction updates payment and order state, creates a balanced ledger transaction, and inserts one outbox event.
@@ -76,7 +82,7 @@ The goal is not a feature-complete commerce product. The goal is to prove correc
 - **FR-004:** Repeating a completed request with the same scope, key, and fingerprint returns the original status, body, `Location`, and business identifiers without repeating payment, ledger, or outbox effects.
 - **FR-005:** A replay uses the correlation ID and trace context of the replaying HTTP operation and adds `Idempotency-Replayed: true`; these transport headers are not part of the cached business result.
 - **FR-006:** Reusing a key in the same scope with a different fingerprint returns `409 Conflict` with problem code `idempotency_key_reused`.
-- **FR-007:** Concurrent matching requests cannot create two orders. A request encountering the first request still in progress returns `409 Conflict`, problem code `idempotency_request_in_progress`, and `Retry-After: 1` if the original result is not available after a bounded wait.
+- **FR-007:** Concurrent matching requests cannot create two orders. PostgreSQL serializes conflicting key claims until the winning short transaction commits or rolls back; a matching contender then replays the result. Database timeouts produce a retryable `503`, and the client retries with the same key.
 - **FR-008:** MVP idempotency records are retained indefinitely. A retention and archival policy requires a later ADR.
 - **FR-009:** `GET /api/v1/orders/{orderId}` returns the current state only to its owning subject. Operators use the sanitized operations API rather than the customer order representation.
 
@@ -92,7 +98,7 @@ The goal is not a feature-complete commerce product. The goal is to prove correc
 
 ### Ledger and atomic outbox
 
-- **FR-017:** A confirmed capture creates one immutable ledger transaction with exactly one `PAYMENT_CLEARING` debit and one `MERCHANT_PAYABLE` credit for the same positive USD amount.
+- **FR-017:** A confirmed capture creates one immutable ledger transaction with exactly one `PAYMENT_CLEARING` debit and one `MERCHANT_PAYABLE` credit for the same positive INR amount.
 - **FR-018:** Database constraints and a deferred constraint trigger reject an unbalanced, incomplete, mixed-currency, or non-positive ledger transaction at commit.
 - **FR-019:** A unique capture reference prevents multiple ledger transactions for the same payment.
 - **FR-020:** Payment `CAPTURED`, order `COMPLETED`, ledger rows, and the payment-captured outbox event commit in one PostgreSQL transaction.
@@ -125,7 +131,20 @@ The goal is not a feature-complete commerce product. The goal is to prove correc
 - **Observability:** A healthy flow is traceable from HTTP ingress through provider calls, outbox publication, Kafka consumption, and notification persistence.
 - **Testability:** PostgreSQL, Kafka, and mock-provider behavior are exercised through real protocol boundaries in integration tests.
 
-## Acceptance criteria
+## Current Create Order acceptance criteria
+
+- **AC-M3-001:** A valid scoped request returns `201`, a UUIDv7 `CREATED` order, positive INR minor units, UTC timestamps, `Location`, and a correlation ID.
+- **AC-M3-002:** The same subject, key, and canonical payload returns the byte-equivalent original body and location with `Idempotency-Replayed: true`, without another order.
+- **AC-M3-003:** The same scoped key with a changed canonical field returns `409 idempotency_key_reused` and does not add a row.
+- **AC-M3-004:** Two concurrent identical requests create one order and one completed idempotency record; one response is the new result and one is its replay.
+- **AC-M3-005:** Missing or malformed keys, invalid payloads, non-positive money, and unsupported currency are rejected without business data.
+- **AC-M3-006:** GET returns the owned order and returns the same `404` shape for absent and non-owned IDs.
+- **AC-M3-007:** PostgreSQL constraints enforce key uniqueness, SHA-256 lengths, positive INR money, valid state, completion consistency, and timestamp ordering.
+- **AC-M3-008:** No payment, provider, ledger, outbox, Kafka, notification, or operator behavior is introduced.
+
+## Target full-flow acceptance criteria
+
+The following remain proposed for later milestones:
 
 - **AC-001:** A valid success request returns `201`, a `COMPLETED` order, a `CAPTURED` payment, two balanced ledger entries, and one pending or published outbox event.
 - **AC-002:** Replaying AC-001 with the same key and semantically identical payload returns the original status and body with `Idempotency-Replayed: true`; row counts and provider-call counts do not increase.
@@ -147,7 +166,7 @@ The goal is not a feature-complete commerce product. The goal is to prove correc
 ## Product assumptions
 
 - The public API is versioned under `/api/v1`; backward-compatibility policy beyond v1 requires a later ADR.
-- Only USD and one full capture are supported in the MVP.
+- Only INR and one full capture are supported in the MVP.
 - The accounting entry represents captured funds owed to a merchant; the MVP does not assert that LedgerFlow is merchant-of-record or recognize revenue.
 - The caller identity is the JWT `sub` claim; no `customerId` is accepted from the request body.
 - The identity provider, Kafka cluster, PostgreSQL service, and telemetry backend are external platform concerns.

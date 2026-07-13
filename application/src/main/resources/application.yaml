@@ -7,8 +7,19 @@ spring:
     password: ${LEDGERFLOW_DB_PASSWORD}
   flyway:
     enabled: true
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          audiences: ${LEDGERFLOW_OAUTH2_AUDIENCE:ledgerflow-api}
+          issuer-uri: ${LEDGERFLOW_OAUTH2_ISSUER}
+          jwk-set-uri: ${LEDGERFLOW_OAUTH2_JWK_SET_URI}
+          jws-algorithms: RS256
   kafka:
     bootstrap-servers: ${LEDGERFLOW_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
 
 management:
   endpoint:
@@ -19,3 +30,12 @@ management:
     web:
       exposure:
         include: health,info,prometheus
+
+server:
+  error:
+    include-message: never
+
+logging:
+  structured:
+    format:
+      console: ecs
