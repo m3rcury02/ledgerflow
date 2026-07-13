@@ -1,0 +1,1 @@
+description = "Notifications feature module"

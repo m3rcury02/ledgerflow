@@ -1,0 +1,1 @@
+description = "Messaging feature module"

@@ -1,0 +1,8 @@
+openapi: 3.1.0
+info:
+  title: LedgerFlow API
+  version: 0.1.0
+  description: >-
+    Contract placeholder for the application scaffolding milestone. Business operations are added only
+    with their approved implementation milestones.
+paths: {}

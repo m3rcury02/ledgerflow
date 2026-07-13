@@ -2,7 +2,7 @@
 
 ## Status
 
-This document defines the initial architectural constraints for LedgerFlow. The application has not yet been scaffolded, so it distinguishes committed constraints from decisions that must wait for concrete product requirements.
+This document defines the initial architectural constraints for LedgerFlow. The repository and application foundation was scaffolded in the approved MVP Milestone 1; business behavior remains unimplemented.
 
 ## Architectural goals
 
@@ -15,11 +15,13 @@ LedgerFlow is a single deployable application built as a modular monolith. The d
 - handle money, time, retries, and operational diagnostics safely; and
 - allow later extraction of a module only when evidence justifies the cost.
 
-A modular monolith is a logical boundary model, not a commitment to Java Platform Module System modules, Gradle subprojects, or future microservices.
+A modular monolith is a logical boundary model, not a commitment to Java Platform Module System modules or future microservices. The approved bootstrap uses Gradle subprojects for compile-time feature boundaries while producing one deployable application.
 
 ## Code organization and module boundaries
 
-Application code is organized package-by-feature beneath a single base package chosen during the bootstrap milestone.
+Application code is organized package-by-feature beneath the base package `com.ledgerflow`.
+
+The Gradle build contains one deployable `application` project and feature-library projects for `orders`, `payments`, `ledger`, `messaging`, `notifications`, and `operations`. These projects strengthen build-time boundaries but do not imply separate runtime processes or databases.
 
 Each top-level feature package is a logical application module. Repository-wide packages such as `controller`, `service`, `repository`, `entity`, or `model` are prohibited.
 
@@ -59,7 +61,7 @@ Do not introduce interfaces, mapping layers, commands, events, or duplicate mode
 
 ## HTTP contracts
 
-The version-controlled OpenAPI document at `src/main/openapi/ledgerflow.yaml` is the source of truth for HTTP APIs.
+The version-controlled OpenAPI document at `application/src/main/openapi/ledgerflow.yaml` is the source of truth for HTTP APIs.
 
 An HTTP change must:
 
@@ -74,7 +76,7 @@ Whether server interfaces and models are generated from OpenAPI will be decided 
 
 Production persistence uses PostgreSQL. Integration tests use a PostgreSQL Testcontainer compatible with the production major version. H2 is prohibited because its SQL and transactional behavior do not provide adequate PostgreSQL compatibility.
 
-Flyway migrations live under `src/main/resources/db/migration` and are the only supported mechanism for production schema changes.
+Flyway migrations live under `application/src/main/resources/db/migration` and are the only supported mechanism for production schema changes.
 
 Migration rules:
 
@@ -134,14 +136,12 @@ The Gradle `architectureTest` task must verify at least:
 - persistence code does not introduce H2; and
 - documented exceptions correspond to explicit test rules.
 
-The initial implementation may use ArchUnit as a test-only dependency. If another mechanism is chosen, it must provide equivalent failing build checks and the choice must be documented.
+Spring Modulith verifies logical application modules, API/internal access, and cycles. ArchUnit complements it with repository-specific package rules. Both run through `architectureTest`.
 
 ## Decisions intentionally deferred
 
 The following require product or operational evidence and are not selected by this document:
 
-- concrete business modules and their APIs;
-- the base Java package;
 - authentication and authorization;
 - public API versioning policy;
 - OpenAPI code generation;
@@ -149,7 +149,6 @@ The following require product or operational evidence and are not selected by th
 - deployment platform and topology;
 - asynchronous messaging or an event broker;
 - caches, search engines, or additional datastores;
-- Gradle single-project versus multi-project structure; and
 - extraction into independently deployed services.
 
 These decisions require an approved milestone and, when significant, an ADR.

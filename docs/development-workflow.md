@@ -36,7 +36,7 @@ Write or update tests with the behavior. Do not defer testing, contracts, migrat
 
 For HTTP behavior:
 
-1. update `src/main/openapi/ledgerflow.yaml`;
+1. update `application/src/main/openapi/ledgerflow.yaml`;
 2. validate the contract;
 3. implement the behavior; and
 4. add contract-focused integration tests.
