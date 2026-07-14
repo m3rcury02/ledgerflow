@@ -1,7 +1,7 @@
 # LedgerFlow MVP Threat Model
 
 - Status: Partially implemented
-- Last updated: 2026-07-13
+- Last updated: 2026-07-14
 - Method: asset and trust-boundary review informed by STRIDE and OWASP API Security Top 10
 
 ## Scope
@@ -68,11 +68,11 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 | T-11 | Unbalanced or mutable ledger data | Financial integrity loss | Positive integer checks, currency checks, deferred balance trigger, immutable rows, least-privilege DB role | Direct SQL constraint tests |
 | T-12 | Outbox/Kafka duplicate or reordered records | Duplicate notification or inconsistent projection | Unique event ID, order key, inbox idempotency, one event type per order in MVP | Duplicate/reorder tests |
 | T-13 | Spoofed or malformed Kafka event | Unauthorized notification or consumer crash | Broker TLS/SASL, topic ACLs, schema/type/version validation, bounded sizes, DLT | Invalid-schema and unauthorized-topic tests |
-| T-14 | Repeated transient event failure causes infinite retry or partition starvation | Availability loss | Three bounded blocking retries after the initial attempt, then acknowledged DLT publication; invalid input skips transient retries | Retry-count, DLT, and acknowledgement tests |
+| T-14 | Repeated transient event failure causes infinite retry or partition starvation | Availability loss | Three bounded pause-based retries after the initial attempt, bounded poll intake/concurrency, then acknowledged DLT publication; invalid input skips transient retries | Retry-count, pause/backpressure, DLT, and acknowledgement tests |
 | T-15 | DLT replay is abused | Repeated workload or notification effects | Narrow CLI, validated replayable catalog entry, required actor/reason, generated transport correlation/trace, owner lease, immutable audit, inbox deduplication; future HTTP scope controls | Replay validation, stale-lease, audit, and duplicate-delivery tests |
 | T-16 | Sensitive values leak through logs/traces/events/errors | Credential or privacy breach | Attribute allowlist, redaction, no bodies/tokens/keys, stable safe error codes; stack traces only in access-restricted redacted server error logs | Capture exporters/logs and scan values |
 | T-17 | Untrusted correlation/trace headers cause log injection or oversized metadata | Log corruption or resource exhaustion | Validate correlation format/length; standards-compliant trace parser; replace invalid values | Fuzz boundary headers |
-| T-18 | Large bodies, slow provider, or high-cardinality metrics exhaust resources | Denial of service/cost | Implemented 16 KiB provider-response limit and connect/request timeouts; bounded pools/queues/concurrency, deployment-edge rate limits, and metric-label policy remain launch controls | Slow/timeout tests now; load and resource-bound tests before launch |
+| T-18 | Large bodies, slow provider, or high-cardinality metrics exhaust resources | Denial of service/cost | Implemented 16 KiB provider-response limit, connect/read/overall deadlines, zero-queue provider bulkhead, count-window circuit, bounded Kafka intake, and graceful drain; deployment-edge rate limits and metric-label policy remain launch controls | Toxiproxy latency/reset/timeout, circuit/bulkhead, bounded retry, and shutdown tests; load test before launch |
 | T-19 | Secrets committed or insecure defaults enabled in production | Infrastructure compromise | Environment/secret manager, secret scanning, local-only mock profile, production startup guard | CI scanning and profile tests |
 | T-20 | Operator sees raw stack trace, provider response, or event secret | Internal information disclosure | Sanitized failure projection and allowlisted retry payload; restricted audit API | Serialization snapshot tests |
 
@@ -93,6 +93,8 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 - Provider host and timeout configuration are deployment input, never client input. The current adapter accepts HTTP for loopback integration tests; production TLS validation, egress allowlisting, credentials, and host policy require the real-provider milestone.
 - Provider errors are mapped to allowlisted classifications. Raw response bodies and headers are discarded after extracting validated fields.
 - Retry policies distinguish declines, temporary failures, and unknown outcomes; no blanket retry interceptor wraps provider calls.
+- Confirmed declines count as provider-availability success. Only temporary/unknown/invalid availability outcomes open the provider circuit; excess concurrent calls are rejected without an unbounded queue.
+- Fault injection is compiled into the application only as an inert hook, is configurable only under local/test profiles, has an allowlist and delay cap, and is rejected at production startup when enabled.
 
 ## Kafka and outbox safety
 
@@ -152,6 +154,8 @@ The following controls apply to the future operator HTTP workflow and are not im
 - Concurrent ledger-posting tests proving one payment produces one journal and one payment accounting transition.
 - Database-role tests proving the runtime user cannot perform DDL or update/delete immutable ledger/audit rows while Flyway can migrate.
 - Kafka tests for malformed event, unknown version, duplicate delivery, the publish/marker crash window, poison records, retry exhaustion, and DLT publication failure.
+- Toxiproxy tests for provider latency/reset/timeout and temporary PostgreSQL/Kafka loss; recovery assertions restore each fault before completion.
+- Circuit open/half-open/close, bulkhead saturation, decline classification, retry exhaustion, and bounded graceful-drain tests.
 - DLT-catalog tests for safe evidence, idempotent source coordinates, replay eligibility, lease safety, and immutable audit. Database-outage alerting remains a production-operability follow-up.
 - Captured structured-log, in-memory trace-exporter, outbox-header, and DLT-record assertions that seeded secret markers never appear.
 - Production-profile startup tests proving no mock service or permissive authentication can be enabled before a public payment route exists.

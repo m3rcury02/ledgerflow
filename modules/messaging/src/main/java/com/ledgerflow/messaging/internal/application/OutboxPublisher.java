@@ -4,6 +4,11 @@ import com.ledgerflow.messaging.api.EventEnvelopeCodec;
 import com.ledgerflow.messaging.internal.kafka.KafkaTracePropagation;
 import com.ledgerflow.messaging.internal.persistence.JdbcOutboxStore;
 import com.ledgerflow.messaging.internal.persistence.OutboxRecord;
+import com.ledgerflow.operations.api.FaultInjection;
+import com.ledgerflow.operations.api.FaultPoint;
+import com.ledgerflow.operations.api.InjectedFaultException;
+import com.ledgerflow.operations.api.WorkToken;
+import com.ledgerflow.operations.api.WorkTracker;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Clock;
@@ -32,6 +37,8 @@ public class OutboxPublisher {
   private final OutboxAcknowledgementHook acknowledgementHook;
   private final Clock clock;
   private final String workerId;
+  private final WorkTracker workTracker;
+  private final FaultInjection faultInjection;
 
   public OutboxPublisher(
       JdbcOutboxStore outboxStore,
@@ -40,7 +47,9 @@ public class OutboxPublisher {
       EventEnvelopeCodec codec,
       KafkaTracePropagation tracePropagation,
       OutboxAcknowledgementHook acknowledgementHook,
-      Clock clock) {
+      Clock clock,
+      WorkTracker workTracker,
+      FaultInjection faultInjection) {
     this.outboxStore = outboxStore;
     this.kafkaTemplate = kafkaTemplate;
     this.properties = properties;
@@ -50,6 +59,8 @@ public class OutboxPublisher {
     this.acknowledgementHook = acknowledgementHook;
     this.clock = clock;
     this.workerId = UUID.randomUUID().toString();
+    this.workTracker = workTracker;
+    this.faultInjection = faultInjection;
   }
 
   @Scheduled(
@@ -57,12 +68,17 @@ public class OutboxPublisher {
       fixedDelayString = "${ledgerflow.messaging.publisher-poll-interval:1s}",
       initialDelayString = "${ledgerflow.messaging.publisher-initial-delay:1s}")
   public void publishBatch() {
-    String leaseOwner = workerId + ":" + UUID.randomUUID();
-    List<OutboxRecord> records =
-        outboxStore.claimBatch(
-            leaseOwner, properties.batchSize(), clock.instant(), properties.leaseDuration());
-    for (OutboxRecord record : records) {
-      publish(record);
+    WorkToken work = workTracker.begin("outbox-publish-batch");
+    try {
+      String leaseOwner = workerId + ":" + UUID.randomUUID();
+      List<OutboxRecord> records =
+          outboxStore.claimBatch(
+              leaseOwner, properties.batchSize(), clock.instant(), properties.leaseDuration());
+      for (OutboxRecord record : records) {
+        publish(record);
+      }
+    } finally {
+      work.close();
     }
   }
 
@@ -84,6 +100,7 @@ public class OutboxPublisher {
     try (KafkaTracePropagation.PublishSpan span =
         tracePropagation.start(record, producerRecord.headers())) {
       try {
+        faultInjection.before(FaultPoint.OUTBOX_PUBLISH);
         kafkaTemplate
             .send(producerRecord)
             .get(properties.acknowledgementTimeout().toMillis(), TimeUnit.MILLISECONDS);
@@ -95,6 +112,10 @@ public class OutboxPublisher {
       } catch (ExecutionException | TimeoutException exception) {
         span.failed(exception);
         recordPublishFailure(record, "KAFKA_SEND_FAILED");
+        return;
+      } catch (InjectedFaultException exception) {
+        span.failed(exception);
+        recordPublishFailure(record, "OUTBOX_FAULT_INJECTED");
         return;
       }
 

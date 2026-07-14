@@ -5,10 +5,10 @@
 - Status: In Progress
 - Owner: Codex
 - Created: 2026-07-11
-- Last updated: 2026-07-13
+- Last updated: 2026-07-14
 - Approved by: LedgerFlow maintainer
 - Approval date: 2026-07-13
-- Current milestone: Milestone 5B — Transactional outbox and Kafka delivery (`In Progress`)
+- Current milestone: None; Milestone 5B is `Complete`, and later milestones remain `Proposed`
 - Canonical plan path: `docs/plans/mvp-execplan.md` by explicit maintainer request
 
 ## Purpose and outcome
@@ -37,7 +37,7 @@ The normative requirements and designs are:
 
 ## Current state
 
-The repository contains the verified foundation and completed Create Order, payment/provider, and ledger slices from Milestones 1 through 5A:
+The repository contains the verified foundation and completed Create Order, payment/provider, ledger, outbox/Kafka, notification, and resilience slices from Milestones 1 through 5B:
 
 - `AGENTS.md` establishes Java 25, Spring Boot 4.1, Gradle Kotlin DSL, modular-monolith, PostgreSQL, Flyway, OpenAPI, money/time, idempotency, observability, scope, and quality rules.
 - `.agent/PLANS.md` defines ExecPlan structure and one-approved-milestone discipline.
@@ -53,6 +53,8 @@ The repository contains the verified foundation and completed Create Order, paym
 - ADR 0001 establishes the ADR process; ADR 0003 is accepted for Create Order, ADR 0004 for the provider/payment state machine, and ADR 0005 for ledger posting.
 
 The maintainer's 2026-07-13 transactional-outbox and Kafka request approves the revised Milestone 5B below and accepts the outbox/Kafka decision in ADR 0006. It deliberately excludes public payment/order/operator endpoints and final order-state orchestration. ADR 0007 is accepted only for the Kafka propagation implemented by this milestone; operator recovery tracing remains proposed.
+
+The maintainer's 2026-07-14 resilience request explicitly expands the still-in-progress Milestone 5B with bounded provider circuit/bulkhead controls, distinct timeout budgets, graceful draining, Kafka backpressure, dependency health/startup validation, profile-gated fault injection, and Toxiproxy failure tests. This is one revised active milestone rather than a second concurrent plan. It does not approve public orchestration, operator HTTP APIs, new business states, or schema changes.
 
 The maintainer explicitly requested this ExecPlan at `docs/plans/mvp-execplan.md`. This is a one-plan path exception to `.agent/PLANS.md`, which normally specifies `.agent/plans/YYYY-MM-DD-<name>.md`. Do not create a duplicate plan.
 
@@ -70,6 +72,7 @@ The maintainer explicitly requested this ExecPlan at `docs/plans/mvp-execplan.md
 - Immutable balanced double-entry posting for confirmed capture.
 - Transactional outbox, Kafka publication, inbox deduplication, notification persistence, bounded consumer retries, DLT catalog, and operator replay.
 - Correlation IDs, structured logs, OpenTelemetry HTTP/Kafka propagation, metrics, health, and sanitized failure records.
+- Provider circuit breaking and concurrency isolation, bounded shutdown draining, Kafka consumer backpressure, startup dependency validation, and health/readiness/liveness probes.
 - Unit, integration, contract, architecture, concurrency, crash-window, security, and end-to-end tests.
 - A laptop-sized Docker Compose environment for PostgreSQL, Kafka, Valkey, Keycloak, OpenTelemetry Collector, Prometheus, Grafana, Tempo, and Loki, controlled by repository scripts.
 
@@ -297,10 +300,10 @@ Only the current milestone is approved or in progress. Later milestones remain `
   - SQL examples show trial/account balances and chronological payment journal history.
   - No order, outbox, Kafka, notification, operator, or public API behavior is introduced.
 
-### Milestone 5B — Add transactional outbox and Kafka delivery
+### Milestone 5B — Add transactional outbox, Kafka delivery, and resilience hardening
 
-- Status: In Progress
-- Intended outcome: Capture accounting writes one logical versioned outbox event in the same PostgreSQL transaction as the balanced ledger/payment operation. A dedicated multi-instance-safe worker publishes it to Kafka at least once, and an idempotent consumer creates one notification despite duplicate delivery. Bounded failures reach a cataloged dead-letter topic and validated records can be replayed through an audited command-line operation.
+- Status: Complete
+- Intended outcome: Capture accounting writes one logical versioned outbox event in the same PostgreSQL transaction as the balanced ledger/payment operation. A dedicated multi-instance-safe worker publishes it to Kafka at least once, and an idempotent, backpressured consumer creates one notification despite duplicate delivery. Provider, database, Kafka, overload, startup, and shutdown failures are bounded, observable, and recoverable without changing financial or event identity.
 - Implementation work:
   - Apply `V004` for the outbox and `V005` for inbox, notifications, DLT catalog, and replay audit. Operations API tables remain future work.
   - Extend the existing `READ_COMMITTED` capture-accounting transaction with a `Propagation.MANDATORY` outbox append. Do not add order completion, final `CAPTURED`, public routes, or provider calls.
@@ -310,12 +313,22 @@ Only the current milestone is approved or in progress. Later milestones remain `
   - Configure one initial consumer attempt plus three bounded retries, direct DLT for non-retryable input, acknowledged DLT forwarding, and idempotent DLT cataloging.
   - Add an explicit test seam for a process failure after Kafka acknowledgement but before the outbox marker. Lease expiry must republish the same event ID and the inbox must prevent a second notification.
   - Add narrow command-line DLT replay that accepts only cataloged, validated records; preserves immutable event ID/key/body; strips delivery exception headers; publishes with a new correlation/trace context; and writes append-only request/result audit. Do not add the proposed operator HTTP API.
+  - Replace the provider's single response deadline with explicit connect, read/response, and overall call timeouts. Keep exponential backoff with jitter and make retry eligibility an explicit classifier: only confirmed temporary failures retry; declines, invalid responses, and unknown outcomes do not.
+  - Decorate the mock-provider port with a Resilience4j count-window circuit breaker and semaphore bulkhead. Confirmed declines count as successful provider availability, while temporary/unknown/invalid transport outcomes count toward opening. Circuit-open and bulkhead-full calls fail fast with stable temporary codes.
+  - Use the existing `operations` feature for a small cross-module in-flight work API, bounded graceful drain, dependency readiness, startup validation, and profile-gated fault-injection hooks. The production profile must reject enabled fault injection.
+  - Bound Kafka intake with typed concurrency, `max.poll.records`, poll/fetch limits, pause-based retry backoff, and explicit listener shutdown timeouts. Outbox scheduling and the Java 25 HTTP client must drain or report timeout rather than silently abandoning work.
+  - Configure Boot liveness as internal-process state only. Readiness includes database/startup state and Kafka only when a Kafka adapter is enabled. A temporary broker outage must not corrupt or discard the durable outbox.
+  - Add Testcontainers Toxiproxy coverage for provider latency, connection reset, and timeout plus temporary PostgreSQL and Kafka unavailability. Fault controls are test/local only and have bounded delays and an explicit allowlist.
   - Update architecture, data/domain model, threat model, runbook, README, ADR 0006, the Kafka-applicable portion of ADR 0007, and this plan with accurate at-least-once guarantees.
 - Validation commands:
   - `./gradlew :modules:messaging:test :modules:notifications:test`
   - `./gradlew :application:integrationTest --tests '*TransactionalOutboxIntegrationTest'`
   - `./gradlew :application:integrationTest --tests '*OutboxPublisherIntegrationTest'`
   - `./gradlew :application:integrationTest --tests '*KafkaRetryAndDltIntegrationTest'`
+  - `./gradlew :modules:payments:test --tests '*PaymentProviderResilienceTest'`
+  - `./gradlew :modules:operations:test --tests '*DrainableWorkTrackerTest'`
+  - `./gradlew :application:integrationTest --tests '*ProviderToxiproxyIntegrationTest'`
+  - `./gradlew :application:integrationTest --tests '*DependencyToxiproxyIntegrationTest'`
   - `./gradlew architectureTest documentationCheck`
   - `./gradlew clean verify`
 - Observable acceptance:
@@ -329,6 +342,13 @@ Only the current milestone is approved or in progress. Later milestones remain `
   - A validated DLT record can be replayed only through an audited command using an explicit actor and reason; malformed input cannot be replayed.
   - Event and transport headers contain the required envelope identity, correlation, causation, and propagated W3C trace context.
   - Documentation states PostgreSQL business/outbox atomicity, at-least-once publication and consumption, and one idempotent notification side effect without claiming exactly-once end-to-end delivery.
+  - Connect, read, and overall provider timeouts are positive, ordered, externally configurable, and distinguish timeout/unknown outcomes from retryable connection-establishment failures.
+  - A confirmed decline invokes the provider once; temporary failures stop at the configured maximum; the circuit opens after its threshold, rejects calls without invoking the provider, and closes after a successful half-open probe.
+  - The provider bulkhead never exceeds its configured concurrency and rejects excess work without queue growth.
+  - Kafka consumers pause during bounded retry backoff, fetch a bounded number of records, and finish or explicitly fail in-flight work within the shutdown deadline.
+  - `/actuator/health/liveness` excludes external dependencies; readiness reports database/Kafka/drain state, and a separate provider-circuit health component is inspectable without leaking credentials or payloads.
+  - Startup rejects an unavailable database, missing required Kafka topics, unsafe resilience settings, and fault injection outside local/test profiles; temporary Kafka unavailability is observable without deleting the outbox.
+  - Toxiproxy tests restore every injected fault and prove recovery. Duplicate delivery after faults creates neither a second ledger journal nor a second notification.
 
 ### Milestone 6 — Finalize order and expose the complete public workflow
 
@@ -408,6 +428,7 @@ Production dependencies and necessity:
 | Operations | Spring Boot Actuator | Health, readiness, metrics integration |
 | Tracing | Micrometer tracing OpenTelemetry bridge and OTLP exporter | Required OpenTelemetry propagation/export through Spring facilities |
 | Metrics export | Micrometer Prometheus registry | Expose production-standard metrics through Actuator without a custom metrics backend adapter |
+| Provider circuit and concurrency isolation | Resilience4j circuit breaker and semaphore bulkhead 2.4.0 | A mature thread-safe state machine and bounded admission control are safer than a repository-local implementation; direct core APIs avoid Spring AOP/annotation coupling |
 
 The JDK does not provide Spring MVC integration, bean validation, JDBC pooling and transaction configuration, append-only schema migration, Kafka protocol integration, JWT resource-server validation, production health endpoints, or vendor-neutral telemetry export. The Spring Boot starters supply those capabilities as one tested platform and are preferable to hand-assembling their transitive libraries. Their operational and security implications are controlled as follows:
 
@@ -417,16 +438,17 @@ The JDK does not provide Spring MVC integration, bean validation, JDBC pooling a
 - the resource-server starter changes the security surface and will require an explicitly approved issuer, audience, algorithms, scopes, and failure behavior before business routes exist;
 - Actuator exposes only health, info, and Prometheus endpoints in the scaffold; production network policy and authorization must restrict any later sensitive endpoint; and
 - Micrometer/OpenTelemetry can create outbound traffic and high-cardinality or sensitive telemetry, so exporters are disabled in the context test and later milestones must configure bounded export, redaction, safe dimensions, and collector trust.
+- Resilience4j adds in-memory per-instance state and fast rejection. It cannot coordinate breaker state between instances and must never decide financial outcome; stable provider operation IDs and lookup-first recovery remain authoritative. Version 2.4.0 is pinned through its BOM because Spring Boot does not manage this family.
 
 Test/build-only dependencies:
 
-- the Testcontainers BOM plus PostgreSQL, Kafka, and Redis-compatible modules for real integration boundaries without version drift;
+- the Testcontainers BOM plus PostgreSQL, Kafka, Toxiproxy, and Redis-compatible modules for real integration and failure boundaries without version drift;
 - Spring Modulith and ArchUnit for complementary module verification and repository architecture rules;
 - a compatible OpenAPI validation Gradle plugin without server generation;
 - Spotless and Checkstyle for formatting/static analysis; and
 - Spring Security/MockMvc, Awaitility where polling is unavoidable, and in-memory OpenTelemetry export for deterministic tests.
 
-Do not add Lombok, an ORM, MapStruct, Redis, Debezium, embedded Kafka, H2, a money library, or a resilience library. Payment retry classification/state is explicit domain behavior rather than a generic retry annotation.
+Do not add Lombok, an ORM, MapStruct, Redis, Debezium, embedded Kafka, H2, or a money library. Resilience4j is limited to direct circuit-breaker and semaphore-bulkhead core APIs; retry classification/backoff and payment state remain explicit application/domain behavior rather than annotations.
 
 ### Implementation sequence and invariants
 
@@ -471,7 +493,7 @@ Provide documented explicit local/test/demo configuration with PostgreSQL 18.4 a
 | Consumer DB failure before commit | Offset not committed; retry handles record again |
 | Consumer DB commit then offset failure | Redelivery finds same event ID/hash and performs no duplicate notification |
 | Event ID with changed payload | Integrity failure; no domain effect; direct DLT |
-| Transient consumer failure | Initial attempt plus three bounded blocking retries, then DLT |
+| Transient consumer failure | Initial attempt plus three bounded pause-based retries, then DLT |
 | DLT publication failure | Source offset remains uncommitted and record is redelivered |
 | DLT catalog duplication | Original topic/partition/offset unique constraint makes cataloging idempotent |
 | Concurrent operator retries | One active retry and one command result; all others replay/conflict |
@@ -479,6 +501,12 @@ Provide documented explicit local/test/demo configuration with PostgreSQL 18.4 a
 | DLT catalog database outage | DLT offset remains uncommitted; bounded pause/retry and alert; no recursive DLT |
 | Telemetry backend unavailable | Bounded exporter drops/retries telemetry without changing business outcome |
 | Invalid correlation/trace header | Safe correlation replacement/new trace; untrusted value is never logged verbatim |
+| Provider connection saturation | Semaphore bulkhead rejects excess calls immediately with a stable temporary result; no unbounded queue |
+| Repeated provider transport failure | Count-window circuit opens, rejects without I/O, permits bounded half-open probes, and closes only after recovery |
+| Provider read/overall timeout | Cancel the asynchronous call, classify the outcome as unknown, persist it, and reconcile by stable request ID before resend |
+| Temporary database outage | Startup/readiness reports unavailable; transactional consumers roll back and retain offsets for retry |
+| Shutdown with active HTTP/Kafka/outbox work | Stop ingress, drain tracked work within the configured phase timeout, and emit explicit failed-drain state/log if the deadline expires |
+| Unsafe fault injection configuration | Production startup rejects it; only allowlisted local/test profiles may bind bounded injection points |
 
 ## Validation and acceptance
 
@@ -496,6 +524,7 @@ Provide documented explicit local/test/demo configuration with PostgreSQL 18.4 a
 - **PostgreSQL integration tests:** Flyway from empty with migration owner; runtime-role DDL/immutability denial; all checks/FKs/unique/partial indexes; idempotency races/lease ownership/stale completion; optimistic-state races; parent/entry balance triggers; ledger/account immutability; atomic finalization; outbox claiming/lease/reset; inbox hash conflicts; retry-worker lease/takeover.
 - **HTTP/provider tests:** both OpenAPI contracts; public status/header/schema cases including replayable `502`; JWT scope/ownership/RS256/rotation/JWKS outage; all mock scenarios; timeout-after-provider-effect; same-key provider semantics; payment-reference clearing; response redaction.
 - **Kafka integration tests:** key/envelope/headers; broker outage; ack/status crash duplicate; concurrent duplicates; consumer commit/offset crash; direct/exhausted/malformed DLT; failed DLT send; catalog DB outage/redelivery; sanitized catalog; replay header reset/correlation/resolution.
+- **Resilience/Toxiproxy tests:** provider latency, reset, read/overall timeout, temporary PostgreSQL unavailability, Kafka bootstrap unavailability/recovery, circuit open/half-open/close, semaphore saturation, bounded drain, and profile-gated fault injection.
 - **Observability tests:** in-memory span exporter and captured structured logs prove propagation/linking and absence of seeded secrets.
 - **Architecture/static tests:** feature boundaries/cycles; payment domain isolation; no H2, floating-point money, global technical layers, or forbidden dependencies.
 - **End-to-end test:** one containerized flow from HTTP through notification, plus replay/conflict and operator recovery.
@@ -560,7 +589,13 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - [x] `2026-07-13 15:41Z` — Recorded explicit maintainer approval for transactional outbox and Kafka delivery, inspected the clean worktree and existing `READ_COMMITTED` capture-accounting boundary, and revised Milestone 5B to include outbox publication, inbox/notification, bounded DLT handling, Kafka trace propagation, and narrow audited command-line replay while excluding public order/payment/operator APIs.
 - [x] `2026-07-13 16:17Z` — Implemented V004/V005, the atomic capture-accounting/outbox append, leased multi-instance publisher, versioned envelope and Kafka headers, notification inbox/deduplication, bounded consumer retries and DLT catalog, audited command-line replay, Kafka Testcontainers coverage, crash-window proof, and accurate at-least-once documentation.
 - [x] `2026-07-13 16:20Z` — Clean Java 25 `-Xlint:all -Werror` compilation passed for 123 production sources plus every unit, integration, and architecture source. All 27 unit tests and all five Spring Modulith/ArchUnit checks passed through the cached JUnit launcher; Google Java Format, ktlint, and Checkstyle checks passed.
-- [ ] `2026-07-13 16:23Z` — Required `./gradlew clean verify` and Kafka Testcontainers execution remain pending. The wrapper reports Gradle 9.6.1/Java 25 but this sandbox denies Gradle's wildcard-IP socket and access to `/var/run/docker.sock`; a repeat local PostgreSQL start is likewise denied Unix-socket creation. V004/V005 syntax and representative state transitions were validated earlier against local PostgreSQL 18.4.
+- [x] `2026-07-13 16:23Z` — Required `./gradlew clean verify` and Kafka Testcontainers execution were initially blocked because the sandbox denied Gradle's wildcard-IP socket and `/var/run/docker.sock`; the later Docker-enabled verification entries below resolve this item.
+- [x] `2026-07-14 06:18Z` — Recorded explicit maintainer approval to expand the active Milestone 5B with resilience hardening. Docker 29.6.1 and Compose 5.3.0 became available; the Gradle 9.6.1 Wrapper uses Java 25.
+- [x] `2026-07-14 06:18Z` — Ran the previously blocked `./gradlew --no-daemon clean verify --console=plain`. Formatting, static analysis, unit, architecture, Compose, OpenAPI, documentation, and integration compilation passed; the Kafka suite exposed one real baseline defect: DLT catalog `attempt_count` recorded `1` instead of the required `4`. The resilience retry work must correct and retain this evidence rather than weakening the assertion.
+- [x] `2026-07-14 06:40Z` — Implemented ordered provider deadlines, explicit retry classification, Resilience4j circuit/bulkhead controls, bounded HTTP shutdown, operations-owned drain/readiness/startup/topic validation, pause-based bounded Kafka intake, local/test fault hooks, DLT attempt evidence, Toxiproxy scenarios, ADR 0009, and aligned architecture/security/runbook documentation.
+- [x] `2026-07-14 06:40Z` — Passed formatting, Java 25 `-Xlint:all -Werror`, Checkstyle, all unit tests, Spring Modulith/ArchUnit, both OpenAPI validators, and documentation checks. Focused Docker-backed execution started but the Docker Desktop daemon stopped answering during Testcontainers discovery, before any application assertion ran.
+- [x] `2026-07-14 07:03Z` — With Docker 29.6.1 healthy, passed provider latency/timeout/reset and PostgreSQL/Kafka unavailability/recovery Toxiproxy tests. Corrected the Kafka proxy target to its host-reachable broker listener after the first topology advertised an internal-only hostname.
+- [x] `2026-07-14 07:07Z` — Ran `./gradlew --no-daemon clean verify --console=plain`; all 65 formatting, static-analysis, unit, PostgreSQL/Kafka/Toxiproxy integration, architecture, Compose, OpenAPI, and documentation task actions completed successfully in 3m 46s. The corrected Kafka retry/DLT tests retain four-attempt evidence, and duplicate-delivery tests retain one ledger and notification side effect.
 
 ## Surprises and discoveries
 
@@ -569,7 +604,7 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - The accepted architecture originally deferred the base package, concrete feature modules, and Gradle project structure. The maintainer's Milestone 1 approval selected `com.ledgerflow`, six feature projects, and one deployable application project. ADR 0003 was later accepted for Create Order and ADR 0004 for Milestone 4; the remaining business-flow ADRs stay proposed.
 - PostgreSQL row `CHECK` constraints cannot enforce a balance across multiple entries. A deferred constraint trigger on both parent and entry changes is necessary to reject even an empty ledger transaction.
 - Provider capture and the local database cannot be atomic. Stable provider operation keys, lookup, and idempotent local finalization are required; a database transaction held across HTTP would not solve this gap.
-- Bounded blocking Kafka retries temporarily pause the affected partition, but preserve a smaller and more auditable topic topology. The 1/5/30-second schedule and one terminal event per order keep that tradeoff acceptable for the MVP; sustained failures still move to DLT.
+- Bounded Kafka retries use container pausing rather than sleeping the consumer thread. The affected work waits while polling remains alive, preserving a smaller topic topology without risking long blocking backoffs; sustained failures still move to DLT.
 - Spring Boot 4.1's BOM imports the Testcontainers 2.0.5 BOM, so the PostgreSQL, Kafka, and Redis-compatible test modules remain versionless without declaring a second platform dependency.
 - Spring Modulith treats only a module's base package as exposed by default; an `api` subpackage must be annotated as a named interface. The ledger and payment API packages use compile-only `spring-modulith-api` annotations from the existing Modulith BOM, and the architecture test rejects non-exposed cross-module access.
 - Testcontainers 2 deprecates its legacy generic PostgreSQL container package. The integration test uses `org.testcontainers.postgresql.PostgreSQLContainer` and enables Java 25 native access for JNA-backed container discovery.
@@ -599,13 +634,13 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - **2026-07-11 — Use stable provider operation keys and explicit unknown states.** A timeout is not proof of failure.
 - **2026-07-11 — Use `PAYMENT_CLEARING` debit and `MERCHANT_PAYABLE` credit.** This balances the demo without assuming revenue ownership.
 - **2026-07-11 — Use PostgreSQL polling outbox plus Kafka inbox.** At-least-once behavior is explicit and does not require distributed transactions or Debezium.
-- **2026-07-13 — Use one initial consumer attempt plus three bounded blocking retries at 1/5/30 seconds.** Then publish to DLT; non-retryable validation or integrity failures go directly there. This supersedes the original retry-topic proposal and avoids extra retry-topic operations for the MVP.
+- **2026-07-13 — Use one initial consumer attempt plus three bounded retries at 1/5/30 seconds.** Then publish to DLT; non-retryable validation or integrity failures go directly there. This superseded the original retry-topic proposal. ADR 0009 later refined the waits from blocking to container-pausing so polling remains alive.
 - **2026-07-11 — Use JWT resource-server security.** Operator retry is privileged; the application consumes but does not issue tokens.
 - **2026-07-11 — Use UUIDv4 from the JDK.** Superseded for order IDs by the maintainer's 2026-07-13 UUIDv7 requirement and PostgreSQL 18's native `uuidv7()` support; no dependency is added.
 - **2026-07-13 — Make order creation one short idempotency transaction.** Claiming the unique scoped key, inserting the order, and persisting the original response snapshot commit together. This avoids committed leases or incomplete resources before external payment work exists; ADR 0003 must reflect this accepted slice-specific boundary.
 - **2026-07-13 — Restrict the MVP currency to INR.** The currency remains explicit and validated in API, domain, and database layers; multi-currency and FX remain out of scope.
 - **2026-07-13 — Declare existing Spring capabilities directly in the orders feature.** The multi-project compiler requires the orders library to declare Web MVC, validation, JDBC, Jackson, and OAuth resource-server APIs it imports. These are the same Spring Boot-managed starters already present in the deployable application, so no new production library or version is introduced. JDBC adds the PostgreSQL transaction boundary; resource-server validation adds issuer/JWK/audience trust and scope enforcement; no provider, broker, cache, or persistence technology is added.
-- **2026-07-13 — Reuse Spring Boot-managed JDBC/Jackson dependencies and the JDK HTTP client for payments.** The payments feature declares the already-approved Data JDBC and Jackson starters because its adapter compiles against those APIs. The JDK client supplies connect/request timeouts without a resilience or HTTP-client library. No new production dependency family or manually managed version is introduced; retry and classification remain explicit domain/application behavior.
+- **2026-07-13 — Reuse Spring Boot-managed JDBC/Jackson dependencies and the JDK HTTP client for payments.** The payments feature declares the already-approved Data JDBC and Jackson starters because its adapter compiles against those APIs. The JDK remains the HTTP client. ADR 0009 later adds direct Resilience4j circuit/bulkhead cores while keeping retry and classification as explicit domain/application behavior.
 - **2026-07-13 — Treat timeout and post-call crashes as unknown outcomes, not temporary failures.** Authorization/capture recovery always queries the provider with the persisted request ID; only `NOT_FOUND` permits a same-ID resend. This accepts ADR 0004 for the payment boundary and prevents duplicate provider effects.
 - **2026-07-13 — Persist provider success as `CAPTURE_CONFIRMED`.** `CAPTURE_ACCOUNTED` now means the balanced journal also committed; final `CAPTURED` remains reserved for later order/outbox finalization.
 - **2026-07-13 — Split ledger posting from final outbox activation at the maintainer's explicit scope boundary.** Milestone 5A transitions `CAPTURE_CONFIRMED -> CAPTURE_ACCOUNTED` in the same transaction as the journal. At that point Milestone 5B was unapproved; the later transactional-outbox approval activated only the outbox/Kafka/notification portion while final `CAPTURED`, order completion, and HTTP orchestration moved to Milestone 6. ADRs 0004 through 0006 record the resulting boundaries.
@@ -614,13 +649,16 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - **2026-07-13 — Attach the first payment-captured outbox event to the existing capture-accounting transaction.** `LedgerPostingService.postPaymentCapture` is the current complete business transaction: it locks the provider-confirmed payment, writes the balanced journal, and records `CAPTURE_ACCOUNTED`. A mandatory `messaging.api` append makes those effects and the event atomic without prematurely adding final order/public workflow behavior. This accepts ADR 0006 for the approved scope.
 - **2026-07-13 — Use a canonical `schemaVersion` envelope with aggregate and causation identity.** The immutable envelope contains the fields required by the maintainer; the initial causation ID is the stable provider capture request ID, while replay request identity remains transport/audit metadata so replay does not mutate the event body.
 - **2026-07-13 — Deliver replay as a narrow audited command-line operation.** Validated DLT catalog records can be requested with an explicit actor/reason and republished with acknowledgement and append-only audit; malformed records are never replayable. The proposed secured operator HTTP API remains outside this milestone.
+- **2026-07-14 — Use Resilience4j 2.4.0 direct core circuit-breaker and semaphore-bulkhead APIs.** Spring Boot does not supply these state machines, and a mature thread-safe implementation is safer than custom concurrency code. Do not add its Spring/AOP starter or generic retry; explicit result classification and payment recovery remain authoritative. ADR 0009 is required.
+- **2026-07-14 — Put cross-module drain/startup/fault controls in the existing `operations` feature.** A minimal named API lets external-work adapters register in-flight work without exposing their internals. Health and profile guards stay operations-owned; business modules retain their own failure semantics. ADR 0009 records the cross-cutting boundary.
+- **2026-07-14 — Use bounded Kafka polling plus container pausing for backoff.** `max.poll.records`, typed concurrency, pause-immediate behavior, and explicit shutdown timeouts bound memory and allow heartbeats during retry delays. Record acknowledgment and inbox idempotency remain unchanged.
 - **2026-07-11 — Validate OpenAPI without server code generation.** Contract tests enforce conformance without generated framework coupling.
 - **2026-07-11 — Contract the mock provider separately and exclude it from the main artifact.** Its external HTTP behavior is validated without exposing simulator controls in production.
 - **2026-07-11 — Separate Flyway owner and runtime database roles.** Migration authority does not grant the application DDL or mutation rights over immutable financial/audit data.
 
 ## Outcome and follow-up
 
-Current outcome: Milestones 1 through 5A are complete. Milestone 5B implementation is present and awaits the required full wrapper/Testcontainers verification, which the current sandbox cannot execute because it denies Gradle socket creation and Docker daemon access. The approved slice adds V004/V005, an atomic payment-accounting/outbox boundary, an immutable versioned payment-captured envelope, a leased multi-instance publisher, Kafka trace propagation, inbox-backed notification idempotency, bounded retry and DLT cataloging, and audited command-line replay. It deliberately does not add operator HTTP APIs, public payment behavior, final order/capture orchestration, or end-to-end exactly-once claims. Focused Java 25 compilation, formatting, static checks, unit tests, migration validation against PostgreSQL 18, documentation checks, and Git whitespace checks pass; Kafka Testcontainers and `./gradlew clean verify` remain pending in an environment with Docker and socket permissions.
+Current outcome: Milestones 1 through 5B are complete. The transactional outbox/Kafka and resilience implementation includes exact DLT delivery-attempt evidence; explicit provider deadlines, retry classification, circuit breaking, and bulkheading; bounded shutdown and Kafka intake; readiness/startup checks; local/test-only fault injection; and Toxiproxy recovery coverage. Focused fault tests and the full Java 25 `./gradlew clean verify` lifecycle pass with Docker. No later milestone is approved. The delivered scope still excludes operator HTTP APIs, public payment behavior, final order/capture orchestration, schema changes, and end-to-end exactly-once claims.
 
 When all milestones are complete, update this section with:
 

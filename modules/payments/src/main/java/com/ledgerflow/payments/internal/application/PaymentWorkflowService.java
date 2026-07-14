@@ -16,6 +16,7 @@ public class PaymentWorkflowService {
   private final PaymentStore paymentStore;
   private final PaymentProvider paymentProvider;
   private final PaymentRetryPolicy retryPolicy;
+  private final ProviderRetryClassifier retryClassifier;
   private final Clock clock;
   private final Supplier<UUID> requestIdSupplier;
 
@@ -23,11 +24,13 @@ public class PaymentWorkflowService {
       PaymentStore paymentStore,
       PaymentProvider paymentProvider,
       PaymentRetryPolicy retryPolicy,
+      ProviderRetryClassifier retryClassifier,
       Clock clock,
       Supplier<UUID> requestIdSupplier) {
     this.paymentStore = paymentStore;
     this.paymentProvider = paymentProvider;
     this.retryPolicy = retryPolicy;
+    this.retryClassifier = retryClassifier;
     this.clock = clock;
     this.requestIdSupplier = requestIdSupplier;
   }
@@ -125,6 +128,9 @@ public class PaymentWorkflowService {
       if (result instanceof ProviderResult.InvalidResponse invalid) {
         return persistInvalid(
             current, stage, started.attemptNumber(), invalid.failureCode(), correlationId);
+      }
+      if (!retryClassifier.isRetryable(result)) {
+        throw new IllegalStateException("Payment provider result has no explicit classification");
       }
       ProviderResult.TemporaryFailure temporary = (ProviderResult.TemporaryFailure) result;
       paymentStore.appendHistory(

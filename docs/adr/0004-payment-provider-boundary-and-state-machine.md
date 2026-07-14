@@ -11,7 +11,7 @@ Authorization and capture cross an unreliable external HTTP boundary. Latency, t
 
 ## Decision
 
-The payment domain owns a provider port with authorize, capture, and operation-lookup capabilities. A JDK HTTP adapter implements it with explicit connection and per-request timeouts. A deterministic integration-test provider fixture exercises the real HTTP boundary; it is not included in the production LedgerFlow deployable.
+The payment domain owns a provider port with authorize, capture, and operation-lookup capabilities. A JDK HTTP adapter implements it with explicit connection and per-response timeouts; ADR 0009 adds the overall deadline, circuit breaker, and bulkhead without changing the state machine. A deterministic integration-test provider fixture exercises the real HTTP boundary; it is not included in the production LedgerFlow deployable.
 
 Each logical authorization and capture receives a distinct stable application-generated UUID operation key before the call. Every retry and lookup for that logical operation reuses the same key and equivalent money/payment identity. Authorization includes the restricted mock payment-method reference; capture uses the validated provider authorization ID and does not need that reference. The provider contract is idempotent on each key and rejects a changed payload.
 

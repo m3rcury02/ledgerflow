@@ -200,7 +200,7 @@ The `PaymentCaptured` handler validates the envelope, type, and version, compute
 4. insert one notification with a unique event ID; and
 5. commit before acknowledging the Kafka offset.
 
-Transient failures receive one initial processing attempt plus three bounded blocking retries. Invalid type/version/integrity input goes directly to DLT; repeatedly failing transient input reaches it after that retry budget. The source record is acknowledged only after the DLT publication is acknowledged. Replaying the same valid event ID remains safe because of the inbox hash and notification unique constraints.
+Transient failures receive one initial processing attempt plus three bounded pause-based retries. The listener continues polling while the affected work is paused, and configured concurrency, poll count, and fetch bytes bound intake. Invalid type/version/integrity input goes directly to DLT; repeatedly failing transient input reaches it after that retry budget. The source record is acknowledged only after the DLT publication is acknowledged. Replaying the same valid event ID remains safe because of the inbox hash and notification unique constraints.
 
 The DLT catalog stores bounded, sanitized source coordinates, hash/size, safe headers, and a validated replay envelope/key only when parsing succeeds. A replayable record can be claimed by the narrow command-line tool with an actor and reason; the tool generates new transport correlation/trace context. Replay preserves the event envelope and key and appends immutable replay audit rows. It never edits the inbox, notification, outbox, or Kafka offsets directly.
 

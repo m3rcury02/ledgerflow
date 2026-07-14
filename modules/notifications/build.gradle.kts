@@ -4,6 +4,7 @@ val springModulithVersion = rootProject.extra["springModulithVersion"] as String
 
 dependencies {
     implementation(project(":modules:messaging"))
+    implementation(project(":modules:operations"))
     implementation("org.springframework.boot:spring-boot-starter-data-jdbc")
     implementation("org.springframework.boot:spring-boot-starter-jackson")
     implementation("org.springframework.boot:spring-boot-starter-kafka")

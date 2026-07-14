@@ -2,7 +2,7 @@
 
 ## Status
 
-This document defines the architectural constraints for LedgerFlow. Milestones 1 and 2 established the application and local infrastructure, Milestone 3 added the Create Order HTTP/persistence slice, Milestone 4 added the non-public payment/provider boundary, Milestone 5A added immutable ledger posting, and Milestone 5B added the transactional outbox, Kafka relay, idempotent notification consumer, dead-letter catalog, and audited command-line replay. Public payment orchestration, order completion, a final payment `CAPTURED` state, and operator HTTP workflows remain future work.
+This document defines the architectural constraints for LedgerFlow. Milestones 1 and 2 established the application and local infrastructure, Milestone 3 added the Create Order HTTP/persistence slice, Milestone 4 added the non-public payment/provider boundary, Milestone 5A added immutable ledger posting, and Milestone 5B added the transactional outbox, Kafka relay, idempotent notification consumer, dead-letter catalog, audited command-line replay, and bounded resilience controls. Public payment orchestration, order completion, a final payment `CAPTURED` state, and operator HTTP workflows remain future work.
 
 ## Architectural goals
 
@@ -63,11 +63,15 @@ The `orders` slice keeps framework-free money, key, fingerprint, and order types
 
 The `payments` module uses a hexagonal boundary because provider I/O is replaceable and unreliable, while the payment state machine must remain independently testable. Its application-owned `PaymentProvider` and `PaymentStore` ports isolate a JDK HTTP adapter and guarded JDBC adapter. The workflow itself is deliberately not transactional: each persistence call opens one short transaction, and no provider call or retry delay runs with a database transaction open.
 
+The provider adapter has ordered connect, response, and overall deadlines. An overall deadline cancels the client future, but a timeout or post-send connection loss remains an unknown business outcome and must enter lookup-first recovery. An explicit classifier permits retry only for confirmed temporary failures. A count-window circuit breaker prevents repeated calls to an unavailable provider, and a zero-queue semaphore bulkhead bounds concurrent calls; confirmed business declines do not count as provider-availability failures. These controls wrap the provider port without changing payment state-machine authority or stable request IDs.
+
 The `ledger` module keeps a framework-independent journal model because balance, immutability, and compensation rules need focused unit tests. Its small `ledger.api` is the only cross-module posting surface. Ledger posting uses the `payments.api` accounting boundary; it does not import payment internals or query payment tables. Spring transactions and JDBC remain internal adapters, and ArchUnit verifies that the ledger domain does not depend on them.
 
 Capture accounting has two directed feature dependencies: `ledger -> payments.api` and `ledger -> messaging.api`. A capture-posting transaction locks the payment, inserts the ledger transaction and entries, marks it `CAPTURE_ACCOUNTED`, and invokes the mandatory-transaction outbox appender. Payments and messaging do not call ledger, so the dependencies remain acyclic. A later coordinator may call the public APIs but must not bypass module internals.
 
 The `messaging.api.OutboxEventAppender` is deliberately narrow: it appends one typed payment-captured event only when a caller already owns a PostgreSQL transaction. The messaging module owns canonical envelope serialization, outbox persistence, leases, retry timing, Kafka publication, and W3C trace-header injection. The notifications module owns validation, inbox deduplication, notification persistence, bounded consumer retry, the DLT catalog, and audited replay. Neither consumer nor replay path may call ledger or mutate financial state.
+
+The `operations.api` package exposes only in-flight work registration and allowlisted fault hooks. Provider, publisher, and consumer adapters depend on that API so shutdown can stop admission and drain known work within a bounded phase. Operations internals own dependency probes, readiness contribution, startup validation, and the production fault-injection guard. They do not own business recovery or bypass feature APIs.
 
 ADR 0004 accepts one narrow database-boundary exception: the payment-owned `V002` constraint trigger reads only an order's ID, amount, and currency to reject a payment whose copied money differs from its referenced order. Application code still cannot query another module's tables, and a PostgreSQL integration test verifies this invariant. This exception does not authorize general cross-module SQL.
 
@@ -124,11 +128,19 @@ The dedicated publisher uses short owner-token lease transactions. Each instance
 
 Publication has at most 10 attempts per cycle with exponential backoff capped at 256 seconds and configurable jitter. Failed rows remain durable and inspectable; this milestone does not expose an outbox retry API. The default main topic is `ledgerflow.payment-captured.v1`, keyed by order ID.
 
-The notification listener validates the exact envelope, key, type, version, money, and identity relationships. It makes one initial attempt plus three bounded blocking retries for transient failures. A poison record is published to `ledgerflow.payment-captured.v1.dlt` and acknowledged before the source offset advances. Inbox event-ID/hash deduplication and the unique notification event ID make matching redelivery a successful no-op; the same event ID with different canonical content is an integrity failure.
+The notification listener validates the exact envelope, key, type, version, money, and identity relationships. Intake is bounded by configured listener concurrency and `max.poll.records`. It makes one initial attempt plus three bounded retries for transient failures; retry delays pause the affected container/partition while polling continues for consumer-group liveness. A poison record is published to `ledgerflow.payment-captured.v1.dlt` and acknowledged before the source offset advances. Inbox event-ID/hash deduplication and the unique notification event ID make matching redelivery a successful no-op; the same event ID with different canonical content is an integrity failure.
 
 The DLT listener catalogs bounded safe evidence. Malformed raw bytes are not copied into PostgreSQL. The narrow command-line replay accepts only catalog rows already marked replayable, records actor/reason/correlation audit events, preserves the canonical envelope and Kafka key, removes old exception/delivery metadata, and injects new transport correlation and trace headers. There is no general Kafka resend command and no operator HTTP workflow in this milestone.
 
 These boundaries provide atomic PostgreSQL business data plus outbox, at-least-once publication, and at-least-once consumption. They provide exactly one logical notification database side effect for a stable event ID and content; they do not provide end-to-end exactly-once delivery.
+
+## Runtime health and shutdown
+
+Spring Boot graceful shutdown stops HTTP admission. Kafka listener containers stop without abandoning a record and use an explicit shutdown timeout; outbox and retry schedulers wait for active tasks. The operations work tracker stops last, refuses new tracked work, and waits for active provider, outbox, and notification work. Exceeding the drain deadline emits an error and leaves an observable failed-drain state rather than claiming a clean shutdown.
+
+`/actuator/health/liveness` contains process state only and deliberately excludes PostgreSQL, Kafka, and the provider. `/actuator/health/readiness` includes process readiness plus the bounded LedgerFlow dependency probe. PostgreSQL is required at startup. Kafka is checked at startup and readiness when publisher or consumer adapters are enabled; broker failure never deletes or rewrites durable outbox data. The provider circuit has its own health component for inspection without making a business decline unhealthy.
+
+Controlled fault injection is a local/test mechanism with an explicit point allowlist, bounded delay, and fail/delay modes. Production startup rejects `ledgerflow.fault-injection.enabled=true` unless an allowed local or test profile is active. This guard supplements deployment policy; it is not a public control API.
 
 ## Money and time
 

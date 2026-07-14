@@ -59,6 +59,19 @@ class PaymentProviderIntegrationTest extends PaymentIntegrationTestSupport {
   }
 
   @Test
+  void stopsRetryingATemporaryFailureAtTheConfiguredAttemptLimit() {
+    Payment created = createPayment("pm_mock_persistent_temporary_error");
+
+    Payment pending = paymentWorkflow.authorize(created.paymentId(), correlationId());
+
+    assertThat(pending.state()).isEqualTo(PaymentState.AUTHORIZATION_RETRY_PENDING);
+    assertThat(pending.authorizationAttemptCount()).isEqualTo(2);
+    assertThat(PROVIDER.callCount("AUTHORIZATION", created.authorizationRequestId())).isEqualTo(2);
+    assertThat(outcomes(created.paymentId()))
+        .containsExactly("STARTED", "TEMPORARY_FAILURE", "STARTED", "TEMPORARY_FAILURE");
+  }
+
+  @Test
   void failsClosedOnAContradictoryProviderResponse() {
     Payment created = createPayment("pm_mock_invalid_response");
 

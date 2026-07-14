@@ -15,6 +15,7 @@ final class KafkaEventHeaders {
   static final String CORRELATION_ID = "x-correlation-id";
   static final String EVENT_ID = "event_id";
   static final String EVENT_TYPE = "event_type";
+  static final String LEDGERFLOW_DELIVERY_ATTEMPT = "ledgerflow_delivery_attempt";
   static final String REPLAY_CAUSATION_ID = "replay_causation_id";
   static final String REPLAY_REQUEST_ID = "replay_request_id";
   static final String SCHEMA_VERSION = "schema_version";
@@ -66,7 +67,10 @@ final class KafkaEventHeaders {
   }
 
   static int deliveryAttempt(Headers headers) {
-    Header header = headers.lastHeader(KafkaHeaders.DELIVERY_ATTEMPT);
+    Header header = headers.lastHeader(LEDGERFLOW_DELIVERY_ATTEMPT);
+    if (header == null) {
+      header = headers.lastHeader(KafkaHeaders.DELIVERY_ATTEMPT);
+    }
     if (header == null || header.value() == null) {
       return 1;
     }

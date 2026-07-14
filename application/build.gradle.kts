@@ -80,6 +80,10 @@ dependencies {
     )
     add(
         integrationTest.implementationConfigurationName,
+        "org.testcontainers:testcontainers-toxiproxy",
+    )
+    add(
+        integrationTest.implementationConfigurationName,
         "com.redis:testcontainers-redis",
     )
 

@@ -1,7 +1,7 @@
 # Payment, Ledger, and Messaging Recovery Runbook
 
 - Status: Milestone 5B development runbook
-- Last updated: 2026-07-13
+- Last updated: 2026-07-14
 
 ## Scope and current limitation
 
@@ -97,7 +97,7 @@ The publisher claims with `SELECT ... FOR UPDATE SKIP LOCKED`, commits the lease
 
 ## Notification and dead-letter recovery
 
-The main listener makes one initial attempt plus three bounded blocking retries. After exhaustion, or immediately for non-retryable validation/integrity failures, it publishes to `ledgerflow.payment-captured.v1.dlt`; the source offset advances only after that publication is acknowledged. The DLT listener catalogs the original coordinates, bounded hash/size, sanitized failure, and allowlisted safe headers. It stores a validated canonical envelope/key only when safe to replay and never stores malformed raw poison bytes.
+The main listener makes one initial attempt plus three bounded pause-based retries. The pause handler keeps consumer polling alive during retry delay and bounds intake with configured concurrency and `max.poll.records`. After exhaustion, or immediately for non-retryable validation/integrity failures, it publishes to `ledgerflow.payment-captured.v1.dlt`; the source offset advances only after that publication is acknowledged. The DLT listener catalogs the original coordinates, bounded hash/size, exact delivery-attempt evidence, sanitized failure, and allowlisted safe headers. It stores a validated canonical envelope/key only when safe to replay and never stores malformed raw poison bytes.
 
 Inspect the catalog with a read-only role:
 
@@ -132,12 +132,13 @@ Relevant defaults and environment overrides are:
 | Notification / DLT consumers | `LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED` / `LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED` | `false` / `false` |
 | Consumer retry sequence | `LEDGERFLOW_NOTIFICATION_FIRST_RETRY_BACKOFF` / `LEDGERFLOW_NOTIFICATION_SECOND_RETRY_BACKOFF` / `LEDGERFLOW_NOTIFICATION_THIRD_RETRY_BACKOFF` | `1s` / `5s` / `30s` |
 | Broker acknowledgement / replay lease | `LEDGERFLOW_KAFKA_ACK_TIMEOUT` / `LEDGERFLOW_REPLAY_LEASE_DURATION` | `10s` / `30s` |
+| Consumer concurrency / poll records / shutdown | `LEDGERFLOW_NOTIFICATION_CONCURRENCY` / `LEDGERFLOW_NOTIFICATION_MAX_POLL_RECORDS` / `LEDGERFLOW_NOTIFICATION_SHUTDOWN_TIMEOUT` | `2` / `25` / `20s` |
 
 Never edit outbox/inbox/DLT/audit rows, change consumer offsets, copy malformed payloads out of Kafka, or use an ad hoc producer to resend a message. If a catalog row is non-replayable or the audited command rejects it, contain and escalate rather than bypassing the guard.
 
 ## Retry policy and timeouts
 
-The adapter configures both connection and whole-request timeouts. A connection failure before a request is established is classified temporary. HTTP `429`/`5xx` is also temporary. A read timeout or general I/O loss after sending is unknown because it may hide provider success.
+The adapter configures separate connection, response/read, and overall-operation deadlines. The overall deadline cancels the asynchronous client future. An explicit connection-establishment timeout is classified temporary. HTTP `429`/`5xx` is also temporary. A reset, response timeout, or other I/O loss is conservatively unknown because it may hide provider success.
 
 Only confirmed temporary failures receive an automatic retry: at most one retry after the initial call, with exponential backoff, a maximum delay, and jitter. Declines, unknown outcomes, invalid responses, and optimistic-lock failures are not fed through that retry loop.
 
@@ -147,14 +148,28 @@ Relevant deployment properties are:
 | --- | ---: | --- |
 | `LEDGERFLOW_PAYMENT_PROVIDER_BASE_URL` | unset | Trusted absolute HTTP(S) origin; required to create provider workflow beans |
 | `LEDGERFLOW_PAYMENT_PROVIDER_CONNECT_TIMEOUT` | `1s` | Positive |
-| `LEDGERFLOW_PAYMENT_PROVIDER_REQUEST_TIMEOUT` | `2s` | Positive |
+| `LEDGERFLOW_PAYMENT_PROVIDER_READ_TIMEOUT` | `2s` | Positive |
+| `LEDGERFLOW_PAYMENT_PROVIDER_OVERALL_TIMEOUT` | `2500ms` | At least the read timeout |
 | `LEDGERFLOW_PAYMENT_PROVIDER_MAX_ATTEMPTS` | `2` | `1` or `2`; includes the initial call |
 | `LEDGERFLOW_PAYMENT_PROVIDER_BASE_BACKOFF` | `200ms` | Positive |
 | `LEDGERFLOW_PAYMENT_PROVIDER_MAX_BACKOFF` | `1s` | At least base backoff |
 | `LEDGERFLOW_PAYMENT_PROVIDER_BACKOFF_MULTIPLIER` | `2.0` | At least `1.0` |
 | `LEDGERFLOW_PAYMENT_PROVIDER_JITTER_RATIO` | `0.2` | From `0.0` through `1.0` |
+| `LEDGERFLOW_PAYMENT_PROVIDER_CIRCUIT_FAILURE_THRESHOLD` / `LEDGERFLOW_PAYMENT_PROVIDER_CIRCUIT_WINDOW_SIZE` | `3` / `3` | Positive count window, at most `100` |
+| `LEDGERFLOW_PAYMENT_PROVIDER_CIRCUIT_OPEN_DURATION` / `LEDGERFLOW_PAYMENT_PROVIDER_CIRCUIT_HALF_OPEN_CALLS` | `10s` / `1` | Bounded recovery probe |
+| `LEDGERFLOW_PAYMENT_PROVIDER_MAX_CONCURRENT_CALLS` | `16` | `1` through `100`; no waiting queue |
 
 Timeouts must be chosen below the upstream request budget while allowing the approved provider latency. Production TLS, authentication, egress allowlisting, and provider-specific reconciliation remain prerequisites for a real-provider milestone.
+
+## Health, startup, and shutdown diagnosis
+
+Use `/actuator/health/liveness` to decide whether the process must restart. It intentionally excludes external dependencies. Use `/actuator/health/readiness` before routing work; it includes process readiness, PostgreSQL, enabled Kafka-adapter connectivity, and drain state. The provider circuit is separately visible in the aggregate health response. Never restart solely because a confirmed business decline occurred.
+
+Startup validates PostgreSQL and, when a publisher or consumer is enabled, Kafka connectivity within `LEDGERFLOW_DEPENDENCY_TIMEOUT` (default `3s`). A failed database check aborts startup. Kafka failure must be investigated without deleting outbox rows or changing offsets. Repeated provider failures open the circuit; calls then fail fast until the open duration expires and a bounded half-open probe succeeds.
+
+Graceful shutdown uses a `25s` Spring phase timeout, a `20s` application work-drain timeout, and explicit Kafka/scheduler deadlines. An error log stating that in-flight work remained is an unclean shutdown signal: preserve correlation IDs, inspect payment unknown states and expired outbox leases, and rely on lookup/inbox recovery rather than manual resends.
+
+Controlled fault injection requires an active `local`, `test`, or `integration-test` profile and is disabled by default. Local operators may set `LEDGERFLOW_FAULT_INJECTION_ENABLED=true` with one allowlisted point, `FAIL` or `DELAY`, and a delay no greater than ten seconds. Never enable this setting in production; startup rejects it outside an allowed profile.
 
 ## Escalation and prohibited actions
 

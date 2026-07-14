@@ -16,9 +16,11 @@ version = "0.1.0-SNAPSHOT"
 
 val springBootVersion = "4.1.0"
 val springModulithVersion = "2.1.0"
+val resilience4jVersion = "2.4.0"
 
 extra["springBootVersion"] = springBootVersion
 extra["springModulithVersion"] = springModulithVersion
+extra["resilience4jVersion"] = resilience4jVersion
 
 configure(subprojects.filter { it.path != ":modules" }) {
     group = rootProject.group

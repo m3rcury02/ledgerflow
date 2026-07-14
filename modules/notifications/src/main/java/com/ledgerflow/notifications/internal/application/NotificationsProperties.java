@@ -15,7 +15,10 @@ public record NotificationsProperties(
     @DefaultValue("5s") Duration secondRetryBackoff,
     @DefaultValue("30s") Duration thirdRetryBackoff,
     @DefaultValue("10s") Duration brokerAcknowledgementTimeout,
-    @DefaultValue("30s") Duration replayLeaseDuration) {
+    @DefaultValue("30s") Duration replayLeaseDuration,
+    @DefaultValue("2") int concurrency,
+    @DefaultValue("25") int maxPollRecords,
+    @DefaultValue("20s") Duration shutdownTimeout) {
 
   public NotificationsProperties {
     requireTopic(topic, "topic");
@@ -28,9 +31,16 @@ public record NotificationsProperties(
     requirePositive(thirdRetryBackoff, "thirdRetryBackoff");
     requirePositive(brokerAcknowledgementTimeout, "brokerAcknowledgementTimeout");
     requirePositive(replayLeaseDuration, "replayLeaseDuration");
+    requirePositive(shutdownTimeout, "shutdownTimeout");
     if (replayLeaseDuration.compareTo(brokerAcknowledgementTimeout) <= 0) {
       throw new IllegalArgumentException(
           "replayLeaseDuration must exceed brokerAcknowledgementTimeout");
+    }
+    if (concurrency < 1 || concurrency > 8) {
+      throw new IllegalArgumentException("concurrency must be between 1 and 8");
+    }
+    if (maxPollRecords < 1 || maxPollRecords > 100) {
+      throw new IllegalArgumentException("maxPollRecords must be between 1 and 100");
     }
   }
 

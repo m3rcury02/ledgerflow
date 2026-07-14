@@ -1,9 +1,16 @@
 package com.ledgerflow.payments.internal.provider;
 
+import com.ledgerflow.operations.api.FaultInjection;
+import com.ledgerflow.operations.api.WorkTracker;
 import com.ledgerflow.payments.internal.application.PaymentProvider;
 import com.ledgerflow.payments.internal.application.PaymentRetryPolicy;
 import com.ledgerflow.payments.internal.application.PaymentStore;
 import com.ledgerflow.payments.internal.application.PaymentWorkflowService;
+import com.ledgerflow.payments.internal.application.ProviderRetryClassifier;
+import io.github.resilience4j.bulkhead.Bulkhead;
+import io.github.resilience4j.bulkhead.BulkheadConfig;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import java.net.http.HttpClient;
 import java.time.Clock;
 import java.util.UUID;
@@ -12,6 +19,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.DependsOn;
 import tools.jackson.databind.ObjectMapper;
 
 @Configuration(proxyBeanMethods = false)
@@ -19,18 +27,74 @@ import tools.jackson.databind.ObjectMapper;
 @EnableConfigurationProperties(PaymentProviderProperties.class)
 public class PaymentProviderConfiguration {
 
-  @Bean
+  @Bean(destroyMethod = "")
   HttpClient paymentProviderHttpClient(PaymentProviderProperties properties) {
     return HttpClient.newBuilder().connectTimeout(properties.connectTimeout()).build();
   }
 
   @Bean
+  PaymentProviderHttpClientShutdown paymentProviderHttpClientShutdown(
+      HttpClient paymentProviderHttpClient, PaymentProviderProperties properties) {
+    return new PaymentProviderHttpClientShutdown(
+        paymentProviderHttpClient, properties.overallTimeout());
+  }
+
+  @Bean
+  @DependsOn("paymentProviderHttpClientShutdown")
   PaymentProvider paymentProvider(
       HttpClient paymentProviderHttpClient,
       ObjectMapper objectMapper,
-      PaymentProviderProperties properties) {
-    return new HttpPaymentProviderAdapter(
-        paymentProviderHttpClient, objectMapper, properties.baseUrl(), properties.requestTimeout());
+      PaymentProviderProperties properties,
+      CircuitBreaker paymentProviderCircuitBreaker,
+      Bulkhead paymentProviderBulkhead,
+      WorkTracker workTracker,
+      FaultInjection faultInjection) {
+    PaymentProvider httpProvider =
+        new HttpPaymentProviderAdapter(
+            paymentProviderHttpClient,
+            objectMapper,
+            properties.baseUrl(),
+            properties.readTimeout(),
+            properties.overallTimeout());
+    return new ResilientPaymentProvider(
+        httpProvider,
+        paymentProviderCircuitBreaker,
+        paymentProviderBulkhead,
+        workTracker,
+        faultInjection);
+  }
+
+  @Bean
+  CircuitBreaker paymentProviderCircuitBreaker(PaymentProviderProperties properties) {
+    CircuitBreakerConfig config =
+        CircuitBreakerConfig.custom()
+            .failureRateThreshold(
+                100.0f
+                    * properties.circuitFailureThreshold()
+                    / properties.circuitSlidingWindowSize())
+            .minimumNumberOfCalls(properties.circuitSlidingWindowSize())
+            .slidingWindowSize(properties.circuitSlidingWindowSize())
+            .waitDurationInOpenState(properties.circuitOpenDuration())
+            .permittedNumberOfCallsInHalfOpenState(properties.circuitHalfOpenCalls())
+            .recordResult(PaymentProviderConfiguration::providerAvailabilityFailure)
+            .build();
+    return CircuitBreaker.of("payment-provider", config);
+  }
+
+  @Bean
+  Bulkhead paymentProviderBulkhead(PaymentProviderProperties properties) {
+    return Bulkhead.of(
+        "payment-provider",
+        BulkheadConfig.custom()
+            .maxConcurrentCalls(properties.maxConcurrentCalls())
+            .maxWaitDuration(java.time.Duration.ZERO)
+            .build());
+  }
+
+  @Bean("paymentProviderCircuit")
+  PaymentProviderCircuitHealthIndicator paymentProviderCircuitHealthIndicator(
+      CircuitBreaker paymentProviderCircuitBreaker) {
+    return new PaymentProviderCircuitHealthIndicator(paymentProviderCircuitBreaker);
   }
 
   @Bean
@@ -46,11 +110,36 @@ public class PaymentProviderConfiguration {
   }
 
   @Bean
+  ProviderRetryClassifier providerRetryClassifier() {
+    return new ProviderRetryClassifier();
+  }
+
+  @Bean
   PaymentWorkflowService paymentWorkflowService(
       PaymentStore paymentStore,
       PaymentProvider paymentProvider,
-      PaymentRetryPolicy paymentRetryPolicy) {
+      PaymentRetryPolicy paymentRetryPolicy,
+      ProviderRetryClassifier retryClassifier) {
     return new PaymentWorkflowService(
-        paymentStore, paymentProvider, paymentRetryPolicy, Clock.systemUTC(), UUID::randomUUID);
+        paymentStore,
+        paymentProvider,
+        paymentRetryPolicy,
+        retryClassifier,
+        Clock.systemUTC(),
+        UUID::randomUUID);
+  }
+
+  static boolean providerAvailabilityFailure(Object result) {
+    return result
+            instanceof com.ledgerflow.payments.internal.application.ProviderResult.TemporaryFailure
+        || result instanceof com.ledgerflow.payments.internal.application.ProviderResult.Unknown
+        || result
+            instanceof com.ledgerflow.payments.internal.application.ProviderResult.InvalidResponse
+        || result
+            instanceof
+            com.ledgerflow.payments.internal.application.ProviderLookupResult.TemporarilyUnavailable
+        || result
+            instanceof
+            com.ledgerflow.payments.internal.application.ProviderLookupResult.InvalidResponse;
   }
 }

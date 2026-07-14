@@ -27,7 +27,7 @@ One publication cycle has 10 total attempts. Failures use bounded exponential ba
 
 The notification listener processes `ledgerflow.payment-captured.v1` with record acknowledgement. It validates the exact envelope, type/version, order-ID key, identity headers, money, and ID relationships. One PostgreSQL transaction inserts the event ID and canonical SHA-256 hash into `notification_inbox` and creates one notification. The same ID and hash is a successful no-op; the same ID with changed canonical content is an integrity failure.
 
-Transient failures receive one initial attempt plus three bounded blocking retries. An exhausted or non-retryable poison record is published to `ledgerflow.payment-captured.v1.dlt`; broker acknowledgement is required before the source offset advances.
+Transient failures receive one initial attempt plus three bounded pause-based retries. Polling continues during backoff and intake is bounded by concurrency, poll count, and fetch bytes. An exhausted or non-retryable poison record is published to `ledgerflow.payment-captured.v1.dlt`; broker acknowledgement is required before the source offset advances. ADR 0009 records this resilience refinement.
 
 The DLT listener catalogs bounded safe evidence by original topic/partition/offset. It stores validated canonical content/key only when replayable and never stores malformed raw bytes. The narrow `scripts/replay-dead-letter <dead-letter-uuid> <actor> <reason>` command leases one replayable row, preserves the envelope and key, removes old exception/delivery metadata, generates new transport correlation/trace context, waits for broker acknowledgement, and appends immutable replay audit records. It is not a general Kafka resend facility or an operator HTTP API.
 

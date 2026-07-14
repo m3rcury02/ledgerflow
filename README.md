@@ -115,13 +115,13 @@ The complete schemas, examples, validation rules, problem details, and status co
 
 Payment authorization and capture are intentionally not connected to the public order routes yet, and neither order `COMPLETED` nor a final payment `CAPTURED` state is implemented. Integration tests start a deterministic external HTTP fixture from `application/src/integrationTest`, validate its separate contract, and cover success, decline, temporary failure, timeout-after-processing, slow response, invalid response, crash recovery, and concurrent transitions.
 
-Provider timeouts and the bounded retry policy use `LEDGERFLOW_PAYMENT_PROVIDER_*` configuration. The default application has no provider base URL, so no provider client/workflow bean starts accidentally. See [the payment recovery runbook](docs/runbook.md) for state interpretation and safe recovery constraints.
+Provider connect/read/overall deadlines, bounded retry, circuit breaker, and zero-queue concurrency bulkhead use `LEDGERFLOW_PAYMENT_PROVIDER_*` configuration. The default application has no provider base URL, so no provider client/workflow bean starts accidentally. See [the payment recovery runbook](docs/runbook.md) for state interpretation and safe recovery constraints.
 
 ## Capture accounting and Kafka slice
 
 The internal ledger use case posts an already `CAPTURE_CONFIRMED` payment once. One `READ COMMITTED` transaction locks the payment, inserts a clearing debit and merchant-payable credit in INR minor units, transitions it to `CAPTURE_ACCOUNTED`, and appends the version-1 payment-captured outbox event through `messaging.api`. Deferred PostgreSQL constraints reject incomplete, unbalanced, or mismatched journals at commit; repeated and concurrent posting returns the original journal and event identity. Posted rows cannot be updated or deleted, and corrections append an exact compensating transaction.
 
-A dedicated publisher leases rows with `SELECT ... FOR UPDATE SKIP LOCKED`, sends outside a database transaction, and marks them published only after Kafka acknowledgement. The notification listener uses one initial attempt plus three bounded blocking retries, then publishes poison records to `ledgerflow.payment-captured.v1.dlt` after broker acknowledgement. Inbox event-ID/hash checks make redelivery a no-op and preserve exactly one logical notification database effect. This is at-least-once delivery, not end-to-end exactly-once delivery.
+A dedicated publisher leases rows with `SELECT ... FOR UPDATE SKIP LOCKED`, sends outside a database transaction, and marks them published only after Kafka acknowledgement. The notification listener bounds concurrency and poll intake, uses one initial attempt plus three pause-based retries, then publishes poison records to `ledgerflow.payment-captured.v1.dlt` after broker acknowledgement. Inbox event-ID/hash checks make redelivery a no-op and preserve exactly one logical notification database effect. This is at-least-once delivery, not end-to-end exactly-once delivery.
 
 The default topics are `ledgerflow.payment-captured.v1` and `ledgerflow.payment-captured.v1.dlt`. With the normal database/Kafka environment configured, replay one validated catalog row with:
 
@@ -139,7 +139,7 @@ The narrow command runs the application in non-web mode with listeners and the o
 - `modules/ledger` — ledger feature boundary.
 - `modules/messaging` — messaging feature boundary.
 - `modules/notifications` — notification feature boundary.
-- `modules/operations` — operator-recovery feature boundary.
+- `modules/operations` — operational health, dependency validation, graceful drain, and future operator-recovery boundary.
 
 Each feature is a Gradle library under `com.ledgerflow.<feature>`. Application code remains package-by-feature; repository-wide controller, service, repository, entity, and model packages are forbidden.
 

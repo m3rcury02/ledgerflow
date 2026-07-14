@@ -7,10 +7,13 @@ import com.ledgerflow.notifications.internal.application.NotificationIntegrityEx
 import com.ledgerflow.notifications.internal.application.NotificationValidationException;
 import com.ledgerflow.notifications.internal.application.NotificationsProperties;
 import com.ledgerflow.notifications.internal.persistence.JdbcNotificationStore;
+import com.ledgerflow.operations.api.FaultInjection;
+import com.ledgerflow.operations.api.WorkTracker;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.OpenTelemetry;
 import java.time.Clock;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -20,11 +23,16 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.kafka.annotation.EnableKafka;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
+import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.ContainerPausingBackOffHandler;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.listener.ListenerContainerPauseService;
+import org.springframework.scheduling.TaskScheduler;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import tools.jackson.databind.ObjectMapper;
 
 @Configuration(proxyBeanMethods = false)
@@ -53,8 +61,11 @@ public class NotificationsConfiguration {
       NotificationEventValidator validator,
       JdbcNotificationStore store,
       NotificationsProperties properties,
-      @Qualifier("notificationClock") Clock clock) {
-    return new PaymentCapturedKafkaListener(validator, store, properties, clock);
+      @Qualifier("notificationClock") Clock clock,
+      WorkTracker workTracker,
+      FaultInjection faultInjection) {
+    return new PaymentCapturedKafkaListener(
+        validator, store, properties, clock, workTracker, faultInjection);
   }
 
   @Bean
@@ -74,9 +85,12 @@ public class NotificationsConfiguration {
   ConcurrentKafkaListenerContainerFactory<String, String> notificationKafkaListenerContainerFactory(
       ConsumerFactory<String, String> consumerFactory,
       KafkaTemplate<String, String> kafkaTemplate,
-      NotificationsProperties properties) {
+      NotificationsProperties properties,
+      KafkaListenerEndpointRegistry registry,
+      @Qualifier("notificationRetryTaskScheduler") TaskScheduler retryScheduler) {
     requireManualCommit(consumerFactory);
-    ConcurrentKafkaListenerContainerFactory<String, String> factory = baseFactory(consumerFactory);
+    ConcurrentKafkaListenerContainerFactory<String, String> factory =
+        baseFactory(consumerFactory, properties);
     DeadLetterPublishingRecoverer recoverer =
         new DeadLetterPublishingRecoverer(
             kafkaTemplate,
@@ -90,6 +104,15 @@ public class NotificationsConfiguration {
     recoverer.excludeHeader(
         DeadLetterPublishingRecoverer.HeaderNames.HeadersToAdd.EX_MSG,
         DeadLetterPublishingRecoverer.HeaderNames.HeadersToAdd.EX_STACKTRACE);
+    recoverer.addHeadersFunction(
+        (record, exception) -> {
+          RecordHeaders headers = new RecordHeaders();
+          int attempt = KafkaEventHeaders.deliveryAttempt(record.headers());
+          headers.add(
+              KafkaEventHeaders.LEDGERFLOW_DELIVERY_ATTEMPT,
+              Integer.toString(attempt).getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+          return headers;
+        });
 
     DefaultErrorHandler errorHandler =
         new DefaultErrorHandler(
@@ -97,9 +120,21 @@ public class NotificationsConfiguration {
             new RetrySequenceBackOff(
                 properties.firstRetryBackoff(),
                 properties.secondRetryBackoff(),
-                properties.thirdRetryBackoff()));
+                properties.thirdRetryBackoff()),
+            new ContainerPausingBackOffHandler(
+                new ListenerContainerPauseService(registry, retryScheduler)));
     errorHandler.addNotRetryableExceptions(
         NotificationValidationException.class, NotificationIntegrityException.class);
+    errorHandler.setRetryListeners(
+        (record, exception, deliveryAttempt) -> {
+          record.headers().remove(KafkaEventHeaders.LEDGERFLOW_DELIVERY_ATTEMPT);
+          record
+              .headers()
+              .add(
+                  KafkaEventHeaders.LEDGERFLOW_DELIVERY_ATTEMPT,
+                  Integer.toString(deliveryAttempt)
+                      .getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        });
     factory.setCommonErrorHandler(errorHandler);
     return factory;
   }
@@ -111,9 +146,13 @@ public class NotificationsConfiguration {
       havingValue = "true")
   ConcurrentKafkaListenerContainerFactory<String, String>
       notificationDltKafkaListenerContainerFactory(
-          ConsumerFactory<String, String> consumerFactory, NotificationsProperties properties) {
+          ConsumerFactory<String, String> consumerFactory,
+          NotificationsProperties properties,
+          KafkaListenerEndpointRegistry registry,
+          @Qualifier("notificationRetryTaskScheduler") TaskScheduler retryScheduler) {
     requireManualCommit(consumerFactory);
-    ConcurrentKafkaListenerContainerFactory<String, String> factory = baseFactory(consumerFactory);
+    ConcurrentKafkaListenerContainerFactory<String, String> factory =
+        baseFactory(consumerFactory, properties);
     DefaultErrorHandler errorHandler =
         new DefaultErrorHandler(
             (record, exception) -> {
@@ -122,7 +161,9 @@ public class NotificationsConfiguration {
             new RetrySequenceBackOff(
                 properties.firstRetryBackoff(),
                 properties.secondRetryBackoff(),
-                properties.thirdRetryBackoff()));
+                properties.thirdRetryBackoff()),
+            new ContainerPausingBackOffHandler(
+                new ListenerContainerPauseService(registry, retryScheduler)));
     errorHandler.setAckAfterHandle(false);
     factory.setCommonErrorHandler(errorHandler);
     return factory;
@@ -143,14 +184,29 @@ public class NotificationsConfiguration {
     return new DeadLetterCatalogListener(validator, codec, store, properties, objectMapper, clock);
   }
 
+  @Bean("notificationRetryTaskScheduler")
+  TaskScheduler notificationRetryTaskScheduler(NotificationsProperties properties) {
+    ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+    scheduler.setPoolSize(properties.concurrency());
+    scheduler.setThreadNamePrefix("notification-retry-");
+    scheduler.setWaitForTasksToCompleteOnShutdown(true);
+    scheduler.setAwaitTerminationMillis(properties.shutdownTimeout().toMillis());
+    return scheduler;
+  }
+
   private ConcurrentKafkaListenerContainerFactory<String, String> baseFactory(
-      ConsumerFactory<String, String> consumerFactory) {
+      ConsumerFactory<String, String> consumerFactory, NotificationsProperties properties) {
     ConcurrentKafkaListenerContainerFactory<String, String> factory =
         new ConcurrentKafkaListenerContainerFactory<>();
     factory.setConsumerFactory(consumerFactory);
+    factory.setConcurrency(properties.concurrency());
     factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);
     factory.getContainerProperties().setDeliveryAttemptHeader(true);
     factory.getContainerProperties().setObservationEnabled(true);
+    factory.getContainerProperties().setPauseImmediate(true);
+    factory.getContainerProperties().setStopImmediate(false);
+    factory.getContainerProperties().setShutdownTimeout(properties.shutdownTimeout().toMillis());
+    factory.getContainerProperties().setPollTimeoutWhilePaused(java.time.Duration.ofMillis(100));
     return factory;
   }
 

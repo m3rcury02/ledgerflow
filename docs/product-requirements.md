@@ -69,7 +69,7 @@ Steps 1–3 are active through the public API. Steps 4–6 and 10–12 are imple
 9. Exhausted temporary failures or unresolved timeouts return `202 Accepted` with `PAYMENT_RETRY_PENDING`. The original response remains replayable while the current resource state is available through `GET /api/v1/orders/{orderId}`.
 10. The outbox publisher claims due rows with a lease, publishes to Kafka, waits for broker acknowledgement, and marks them published. A crash can cause duplicate publication but not event loss.
 11. The notification consumer inserts an inbox record and notification in one PostgreSQL transaction. An existing inbox event ID makes a duplicate delivery a successful no-op.
-12. A transient consumer failure receives three bounded blocking retries after the initial attempt and is then sent to a dead-letter topic. A non-retryable schema, version, or integrity failure goes there without transient retries. A dead-letter listener catalogs safe, inspectable evidence.
+12. A transient consumer failure receives three bounded pause-based retries after the initial attempt and is then sent to a dead-letter topic. Polling continues during the delay and intake is bounded. A non-retryable schema, version, or integrity failure goes there without transient retries. A dead-letter listener catalogs safe, inspectable evidence.
 13. The current narrow CLI can replay a validated catalog row with an actor, reason, and new transport correlation/trace while preserving the envelope and key. A secured operator inspection/retry HTTP workflow remains future work.
 
 ## Functional requirements
@@ -110,7 +110,7 @@ Steps 1–3 are active through the public API. Steps 4–6 and 10–12 are imple
 - **FR-023:** Events use a versioned envelope, globally unique event ID, order ID as Kafka key, UTC timestamp, correlation ID, and propagated W3C trace context.
 - **FR-024:** The notification consumer provides at-least-once processing and deduplicates by event ID in PostgreSQL.
 - **FR-025:** Inbox deduplication and notification creation commit atomically.
-- **FR-026:** A transient processing failure receives three bounded blocking retries after the initial attempt and then moves to `ledgerflow.payment-captured.v1.dlt`; non-retryable schema, version, and integrity failures go there without transient retries. DLT acknowledgement precedes the source offset commit.
+- **FR-026:** A transient processing failure receives three bounded pause-based retries after the initial attempt and then moves to `ledgerflow.payment-captured.v1.dlt`; non-retryable schema, version, and integrity failures go there without transient retries. Polling continues during backoff, intake is bounded, and DLT acknowledgement precedes the source offset commit.
 - **FR-027:** A DLT record always retains original Kafka coordinates, payload hash/size, and sanitized failure metadata; it retains parsed event ID, key, and validated payload only when those values are valid. Failure to publish to the DLT does not commit the failed source offset.
 
 ### Correlation, tracing, and recovery
@@ -148,7 +148,7 @@ The `AC-M3` criteria record the delivered public Create Order slice; `AC-M5B` re
 - **AC-M5B-002:** The canonical envelope fields are exactly `eventId`, `eventType`, `schemaVersion`, `aggregateId`, `correlationId`, `causationId`, `occurredAt`, and `data`; causation is the stable capture request UUID.
 - **AC-M5B-003:** Multiple publishers safely claim with `SKIP LOCKED`; publication occurs outside the claim transaction and `PUBLISHED` is owner-guarded after broker acknowledgement.
 - **AC-M5B-004:** A crash after Kafka acknowledgement but before the outbox marker can republish the same event ID, and the inbox still permits only one logical notification database effect.
-- **AC-M5B-005:** One initial consumer attempt plus three bounded blocking retries precede acknowledged DLT publication; validated poison records are cataloged and replayable through an audited CLI.
+- **AC-M5B-005:** One initial consumer attempt plus three bounded pause-based retries precede acknowledged DLT publication; intake remains bounded, and validated poison records are cataloged and replayable through an audited CLI.
 - **AC-M5B-006:** Kafka uses W3C trace headers and a validated correlation header. Replay preserves the business envelope/key while starting new transport correlation/trace context.
 - **AC-M5B-007:** Delivery is documented as atomic PostgreSQL business-plus-outbox and at-least-once publish/consume, never as end-to-end exactly once.
 
@@ -166,7 +166,7 @@ The following remain proposed for later milestones:
 - **AC-008:** Direct attempts to commit unbalanced, incomplete, non-positive, or mixed-currency ledger rows fail at the database boundary.
 - **AC-009:** Fault injection at every capture-accounting statement proves payment `CAPTURE_ACCOUNTED`, ledger entries, and outbox event are all committed or all rolled back. Later order/payment finalization must not recreate those effects.
 - **AC-010:** A publisher crash after Kafka acknowledgement but before marking the outbox row can produce a duplicate event, and the consumer still creates one notification.
-- **AC-011:** A transient consumer failure receives one initial attempt plus exactly three bounded blocking retries before DLT; non-retryable schema, version, or integrity failures go to DLT without transient retries. The catalog is inspectable now; operator HTTP visibility remains future work.
+- **AC-011:** A transient consumer failure receives one initial attempt plus exactly three bounded pause-based retries before DLT; polling continues with bounded intake, and non-retryable schema, version, or integrity failures go to DLT without transient retries. The catalog is inspectable now; operator HTTP visibility remains future work.
 - **AC-012:** Repeating an operator retry command does not schedule duplicate work; a successful retry resolves the failed operation and preserves the original business/event identifier.
 - **AC-013:** Trace tests show connected HTTP client/server spans, provider spans, Kafka producer spans, and Kafka consumer processing spans. Correlation IDs appear in responses, event headers, and structured logs.
 - **AC-014:** Customer tokens cannot read another subject's order, and customer tokens cannot call operator endpoints.

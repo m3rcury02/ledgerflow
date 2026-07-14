@@ -316,7 +316,7 @@ Provider HTTP calls never run inside this boundary. Final payment `CAPTURED`, or
 
 Main and replay records use order ID as key. Production topics are provisioned outside the application with explicit retention/ACL settings. Auto-creation is disabled.
 
-The notification listener makes one initial processing attempt plus three bounded blocking retries with the configured retry delay. Poison input is published to the DLT and acknowledged before the source offset advances. No retry topics are used.
+The notification listener makes one initial processing attempt plus three bounded pause-based retries with the configured retry delay. Polling continues while work is paused, with bounded concurrency, poll records, and fetch bytes. Poison input is published to the DLT and acknowledged before the source offset advances. No retry topics are used.
 
 ### Event envelope
 

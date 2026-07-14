@@ -31,7 +31,13 @@ public abstract class PaymentIntegrationTestSupport extends PostgreSqlIntegratio
   static void paymentProviderProperties(DynamicPropertyRegistry registry) {
     registry.add("ledgerflow.payment.provider.base-url", PROVIDER::baseUrl);
     registry.add("ledgerflow.payment.provider.connect-timeout", () -> "100ms");
-    registry.add("ledgerflow.payment.provider.request-timeout", () -> "750ms");
+    registry.add("ledgerflow.payment.provider.read-timeout", () -> "750ms");
+    registry.add("ledgerflow.payment.provider.overall-timeout", () -> "1s");
+    registry.add("ledgerflow.payment.provider.circuit-failure-threshold", () -> "10");
+    registry.add("ledgerflow.payment.provider.circuit-sliding-window-size", () -> "10");
+    registry.add("ledgerflow.payment.provider.circuit-open-duration", () -> "100ms");
+    registry.add("ledgerflow.payment.provider.circuit-half-open-calls", () -> "1");
+    registry.add("ledgerflow.payment.provider.max-concurrent-calls", () -> "4");
     registry.add("ledgerflow.payment.provider.max-attempts", () -> "2");
     registry.add("ledgerflow.payment.provider.base-backoff", () -> "1ms");
     registry.add("ledgerflow.payment.provider.max-backoff", () -> "2ms");

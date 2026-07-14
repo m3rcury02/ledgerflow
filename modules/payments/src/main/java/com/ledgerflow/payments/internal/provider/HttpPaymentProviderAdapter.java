@@ -15,6 +15,10 @@ import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -26,14 +30,20 @@ public class HttpPaymentProviderAdapter implements PaymentProvider {
   private final HttpClient httpClient;
   private final ObjectMapper objectMapper;
   private final URI baseUrl;
-  private final Duration requestTimeout;
+  private final Duration readTimeout;
+  private final Duration overallTimeout;
 
   public HttpPaymentProviderAdapter(
-      HttpClient httpClient, ObjectMapper objectMapper, URI baseUrl, Duration requestTimeout) {
+      HttpClient httpClient,
+      ObjectMapper objectMapper,
+      URI baseUrl,
+      Duration readTimeout,
+      Duration overallTimeout) {
     this.httpClient = httpClient;
     this.objectMapper = objectMapper;
     this.baseUrl = baseUrl;
-    this.requestTimeout = requestTimeout;
+    this.readTimeout = readTimeout;
+    this.overallTimeout = overallTimeout;
   }
 
   @Override
@@ -77,7 +87,7 @@ public class HttpPaymentProviderAdapter implements PaymentProvider {
         HttpRequest.newBuilder(
                 baseUrl.resolve(
                     "/mock-provider/v1/operations/" + stage.name() + "/" + providerRequestId))
-            .timeout(requestTimeout)
+            .timeout(readTimeout)
             .header("X-Correlation-Id", correlationId)
             .GET()
             .build();
@@ -128,7 +138,7 @@ public class HttpPaymentProviderAdapter implements PaymentProvider {
       String expectedOutcome) {
     HttpRequest request =
         HttpRequest.newBuilder(baseUrl.resolve(path))
-            .timeout(requestTimeout)
+            .timeout(readTimeout)
             .header("Content-Type", "application/json")
             .header("X-Provider-Request-Id", providerRequestId.toString())
             .header("X-Correlation-Id", correlationId)
@@ -155,7 +165,7 @@ public class HttpPaymentProviderAdapter implements PaymentProvider {
         return new ProviderResult.InvalidResponse("PROVIDER_RESPONSE_CONTRADICTORY");
       }
       return new ProviderResult.Success(requiredText(responseBody, "providerReference", 100));
-    } catch (HttpConnectTimeoutException | ConnectException exception) {
+    } catch (HttpConnectTimeoutException exception) {
       return new ProviderResult.TemporaryFailure("PROVIDER_CONNECT_FAILURE");
     } catch (HttpTimeoutException exception) {
       return new ProviderResult.Unknown("PROVIDER_TIMEOUT");
@@ -170,8 +180,24 @@ public class HttpPaymentProviderAdapter implements PaymentProvider {
   }
 
   private HttpResponse<String> send(HttpRequest request) throws IOException, InterruptedException {
-    HttpResponse<String> response =
-        httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    HttpResponse<String> response;
+    CompletableFuture<HttpResponse<String>> responseFuture =
+        httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    try {
+      response = responseFuture.get(overallTimeout.toMillis(), TimeUnit.MILLISECONDS);
+    } catch (TimeoutException exception) {
+      responseFuture.cancel(true);
+      throw new HttpTimeoutException("Provider overall timeout elapsed");
+    } catch (ExecutionException exception) {
+      Throwable cause = exception.getCause();
+      if (cause instanceof IOException ioException) {
+        throw ioException;
+      }
+      if (cause instanceof RuntimeException runtimeException) {
+        throw runtimeException;
+      }
+      throw new IOException("Provider request failed", cause);
+    }
     if (response.body().getBytes(StandardCharsets.UTF_8).length > MAX_RESPONSE_BYTES) {
       throw new IllegalArgumentException("provider response exceeds the configured bound");
     }

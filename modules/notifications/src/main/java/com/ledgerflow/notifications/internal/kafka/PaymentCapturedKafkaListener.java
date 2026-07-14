@@ -2,6 +2,10 @@ package com.ledgerflow.notifications.internal.kafka;
 
 import com.ledgerflow.notifications.internal.application.NotificationsProperties;
 import com.ledgerflow.notifications.internal.persistence.JdbcNotificationStore;
+import com.ledgerflow.operations.api.FaultInjection;
+import com.ledgerflow.operations.api.FaultPoint;
+import com.ledgerflow.operations.api.WorkToken;
+import com.ledgerflow.operations.api.WorkTracker;
 import java.time.Clock;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -12,16 +16,22 @@ final class PaymentCapturedKafkaListener {
   private final JdbcNotificationStore store;
   private final NotificationsProperties properties;
   private final Clock clock;
+  private final WorkTracker workTracker;
+  private final FaultInjection faultInjection;
 
   PaymentCapturedKafkaListener(
       NotificationEventValidator validator,
       JdbcNotificationStore store,
       NotificationsProperties properties,
-      Clock clock) {
+      Clock clock,
+      WorkTracker workTracker,
+      FaultInjection faultInjection) {
     this.validator = validator;
     this.store = store;
     this.properties = properties;
     this.clock = clock;
+    this.workTracker = workTracker;
+    this.faultInjection = faultInjection;
   }
 
   @KafkaListener(
@@ -30,14 +40,20 @@ final class PaymentCapturedKafkaListener {
       groupId = "${ledgerflow.notifications.group-id:ledgerflow-notifications-v1}",
       containerFactory = "notificationKafkaListenerContainerFactory")
   void onPaymentCaptured(ConsumerRecord<String, String> record) {
-    ValidatedNotificationEvent validated = validator.validateMain(record, properties.topic());
-    store.process(
-        validated.event(),
-        validated.canonicalPayloadHash(),
-        record.topic(),
-        record.partition(),
-        record.offset(),
-        validated.processingCorrelationId(),
-        clock.instant());
+    WorkToken work = workTracker.begin("notification-consume");
+    try {
+      faultInjection.before(FaultPoint.NOTIFICATION_CONSUME);
+      ValidatedNotificationEvent validated = validator.validateMain(record, properties.topic());
+      store.process(
+          validated.event(),
+          validated.canonicalPayloadHash(),
+          record.topic(),
+          record.partition(),
+          record.offset(),
+          validated.processingCorrelationId(),
+          clock.instant());
+    } finally {
+      work.close();
+    }
   }
 }

@@ -56,6 +56,10 @@ public final class MockPaymentProviderServer {
     slowCallStarted.set(new CountDownLatch(1));
   }
 
+  public void stop() {
+    server.stop(0);
+  }
+
   public int callCount(String stage, UUID requestId) {
     return calls.getOrDefault(new OperationKey(stage, requestId), 0);
   }
@@ -133,7 +137,8 @@ public final class MockPaymentProviderServer {
       return new Response(existing.status(), existing.responseBody(), null);
     }
 
-    if (isTemporary(scenario, request.stage()) && callNumber == 1) {
+    if ("pm_mock_persistent_temporary_error".equals(scenario)
+        || (isTemporary(scenario, request.stage()) && callNumber == 1)) {
       return new Response(503, failure("TEMPORARY_ERROR", "PROVIDER_TEMPORARY_FAILURE"), null);
     }
     if ("pm_mock_invalid_response".equals(scenario)) {

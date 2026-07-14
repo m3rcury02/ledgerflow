@@ -7,6 +7,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.Network;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -15,9 +16,14 @@ import org.testcontainers.utility.DockerImageName;
 public abstract class PostgreSqlIntegrationTest {
 
   private static final PostgreSQLContainer POSTGRESQL;
+  private static final Network INTEGRATION_NETWORK;
 
   static {
-    POSTGRESQL = new PostgreSQLContainer(DockerImageName.parse("postgres:18.4-alpine"));
+    INTEGRATION_NETWORK = Network.newNetwork();
+    POSTGRESQL =
+        new PostgreSQLContainer(DockerImageName.parse("postgres:18.4-alpine"))
+            .withNetwork(INTEGRATION_NETWORK)
+            .withNetworkAliases("postgres");
     POSTGRESQL.start();
   }
 
@@ -28,6 +34,22 @@ public abstract class PostgreSqlIntegrationTest {
     registry.add("spring.datasource.url", POSTGRESQL::getJdbcUrl);
     registry.add("spring.datasource.username", POSTGRESQL::getUsername);
     registry.add("spring.datasource.password", POSTGRESQL::getPassword);
+  }
+
+  protected static Network integrationNetwork() {
+    return INTEGRATION_NETWORK;
+  }
+
+  protected static String postgresqlDatabaseName() {
+    return POSTGRESQL.getDatabaseName();
+  }
+
+  protected static String postgresqlUsername() {
+    return POSTGRESQL.getUsername();
+  }
+
+  protected static String postgresqlPassword() {
+    return POSTGRESQL.getPassword();
   }
 
   @BeforeEach

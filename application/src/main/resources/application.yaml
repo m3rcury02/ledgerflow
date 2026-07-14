@@ -21,9 +21,13 @@ spring:
       auto-create: false
     consumer:
       enable-auto-commit: false
+      fetch-max-bytes: ${LEDGERFLOW_NOTIFICATION_FETCH_MAX_BYTES:5242880}
       group-id: ${LEDGERFLOW_KAFKA_NOTIFICATION_GROUP:ledgerflow-notifications-v1}
+      max-poll-records: ${LEDGERFLOW_NOTIFICATION_MAX_POLL_RECORDS:25}
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      properties:
+        max.partition.fetch.bytes: ${LEDGERFLOW_NOTIFICATION_PARTITION_FETCH_MAX_BYTES:1048576}
     listener:
       ack-mode: record
       observation-enabled: true
@@ -41,18 +45,25 @@ spring:
   jackson:
     deserialization:
       fail-on-unknown-properties: true
+  lifecycle:
+    timeout-per-shutdown-phase: ${LEDGERFLOW_SHUTDOWN_PHASE_TIMEOUT:25s}
 
 management:
   endpoint:
     health:
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,ledgerflowDependencies
       probes:
         enabled: true
   endpoints:
     web:
       exposure:
         include: health,info,prometheus
-
 server:
+  shutdown: graceful
   error:
     include-message: never
 
@@ -88,12 +99,30 @@ ledgerflow:
     third-retry-backoff: ${LEDGERFLOW_NOTIFICATION_THIRD_RETRY_BACKOFF:30s}
     broker-acknowledgement-timeout: ${LEDGERFLOW_KAFKA_ACK_TIMEOUT:10s}
     replay-lease-duration: ${LEDGERFLOW_REPLAY_LEASE_DURATION:30s}
+    concurrency: ${LEDGERFLOW_NOTIFICATION_CONCURRENCY:2}
+    max-poll-records: ${LEDGERFLOW_NOTIFICATION_MAX_POLL_RECORDS:25}
+    shutdown-timeout: ${LEDGERFLOW_NOTIFICATION_SHUTDOWN_TIMEOUT:20s}
   payment:
     provider:
       connect-timeout: ${LEDGERFLOW_PAYMENT_PROVIDER_CONNECT_TIMEOUT:1s}
-      request-timeout: ${LEDGERFLOW_PAYMENT_PROVIDER_REQUEST_TIMEOUT:2s}
+      read-timeout: ${LEDGERFLOW_PAYMENT_PROVIDER_READ_TIMEOUT:2s}
+      overall-timeout: ${LEDGERFLOW_PAYMENT_PROVIDER_OVERALL_TIMEOUT:2500ms}
       max-attempts: ${LEDGERFLOW_PAYMENT_PROVIDER_MAX_ATTEMPTS:2}
       base-backoff: ${LEDGERFLOW_PAYMENT_PROVIDER_BASE_BACKOFF:200ms}
       max-backoff: ${LEDGERFLOW_PAYMENT_PROVIDER_MAX_BACKOFF:1s}
       backoff-multiplier: ${LEDGERFLOW_PAYMENT_PROVIDER_BACKOFF_MULTIPLIER:2.0}
       jitter-ratio: ${LEDGERFLOW_PAYMENT_PROVIDER_JITTER_RATIO:0.2}
+      circuit-failure-threshold: ${LEDGERFLOW_PAYMENT_PROVIDER_CIRCUIT_FAILURE_THRESHOLD:3}
+      circuit-sliding-window-size: ${LEDGERFLOW_PAYMENT_PROVIDER_CIRCUIT_WINDOW_SIZE:3}
+      circuit-open-duration: ${LEDGERFLOW_PAYMENT_PROVIDER_CIRCUIT_OPEN_DURATION:10s}
+      circuit-half-open-calls: ${LEDGERFLOW_PAYMENT_PROVIDER_CIRCUIT_HALF_OPEN_CALLS:1}
+      max-concurrent-calls: ${LEDGERFLOW_PAYMENT_PROVIDER_MAX_CONCURRENT_CALLS:16}
+  operations:
+    drain-timeout: ${LEDGERFLOW_DRAIN_TIMEOUT:20s}
+    dependency-timeout: ${LEDGERFLOW_DEPENDENCY_TIMEOUT:3s}
+    startup-validation-enabled: ${LEDGERFLOW_STARTUP_VALIDATION_ENABLED:true}
+  fault-injection:
+    enabled: false
+    point: PAYMENT_PROVIDER
+    mode: FAIL
+    delay: 100ms

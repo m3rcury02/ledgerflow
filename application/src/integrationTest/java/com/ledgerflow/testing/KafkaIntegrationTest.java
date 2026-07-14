@@ -19,7 +19,10 @@ public abstract class KafkaIntegrationTest extends LedgerIntegrationTestSupport 
   private static final KafkaContainer KAFKA;
 
   static {
-    KAFKA = new KafkaContainer(DockerImageName.parse("apache/kafka:4.3.1"));
+    KAFKA =
+        new KafkaContainer(DockerImageName.parse("apache/kafka:4.3.1"))
+            .withNetwork(integrationNetwork())
+            .withNetworkAliases("kafka");
     KAFKA.start();
     try (AdminClient admin =
         AdminClient.create(

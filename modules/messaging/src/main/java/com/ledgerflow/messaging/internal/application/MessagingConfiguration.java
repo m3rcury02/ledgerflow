@@ -4,6 +4,8 @@ import com.ledgerflow.messaging.api.EventEnvelopeCodec;
 import com.ledgerflow.messaging.api.OutboxEventAppender;
 import com.ledgerflow.messaging.internal.kafka.KafkaTracePropagation;
 import com.ledgerflow.messaging.internal.persistence.JdbcOutboxStore;
+import com.ledgerflow.operations.api.FaultInjection;
+import com.ledgerflow.operations.api.WorkTracker;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.OpenTelemetry;
 import java.time.Clock;
@@ -44,7 +46,9 @@ public class MessagingConfiguration {
       MessagingProperties messagingProperties,
       EventEnvelopeCodec eventEnvelopeCodec,
       ObjectProvider<OpenTelemetry> openTelemetryProvider,
-      ObjectProvider<OutboxAcknowledgementHook> hookProvider) {
+      ObjectProvider<OutboxAcknowledgementHook> hookProvider,
+      WorkTracker workTracker,
+      FaultInjection faultInjection) {
     OpenTelemetry openTelemetry = openTelemetryProvider.getIfAvailable(GlobalOpenTelemetry::get);
     OutboxAcknowledgementHook hook =
         hookProvider.getIfAvailable(() -> eventId -> java.util.Objects.requireNonNull(eventId));
@@ -55,15 +59,19 @@ public class MessagingConfiguration {
         eventEnvelopeCodec,
         new KafkaTracePropagation(openTelemetry),
         hook,
-        Clock.systemUTC());
+        Clock.systemUTC(),
+        workTracker,
+        faultInjection);
   }
 
   @Bean
   @ConditionalOnProperty(name = "ledgerflow.messaging.publisher-enabled", havingValue = "true")
-  TaskScheduler outboxTaskScheduler() {
+  TaskScheduler outboxTaskScheduler(MessagingProperties properties) {
     ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
     scheduler.setPoolSize(1);
     scheduler.setThreadNamePrefix("outbox-publisher-");
+    scheduler.setWaitForTasksToCompleteOnShutdown(true);
+    scheduler.setAwaitTerminationMillis(properties.acknowledgementTimeout().toMillis());
     return scheduler;
   }
 }
