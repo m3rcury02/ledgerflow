@@ -36,6 +36,11 @@ public abstract class PostgreSqlIntegrationTest {
         .sql(
             """
             TRUNCATE TABLE
+                message_replay_audit,
+                dead_letter_records,
+                notifications,
+                notification_inbox,
+                outbox_events,
                 ledger_entries,
                 ledger_transactions,
                 payment_attempt_history,

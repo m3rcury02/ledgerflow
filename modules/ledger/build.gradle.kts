@@ -3,6 +3,7 @@ description = "Ledger feature module"
 val springModulithVersion = rootProject.extra["springModulithVersion"] as String
 
 dependencies {
+    implementation(project(":modules:messaging"))
     implementation(project(":modules:payments"))
     implementation("org.springframework.boot:spring-boot-starter-data-jdbc")
     compileOnly(platform("org.springframework.modulith:spring-modulith-bom:$springModulithVersion"))

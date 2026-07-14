@@ -102,6 +102,7 @@ extensions.configure<SpotlessExtension> {
             "infra/**/*.json",
             "Makefile",
             "scripts/dev-*",
+            "scripts/replay-*",
         )
         targetExclude("**/build/**", ".gradle/**")
         trimTrailingWhitespace()
@@ -246,6 +247,7 @@ val documentationCheck =
                 "scripts/dev-down",
                 "scripts/dev-reset",
                 "scripts/dev-status",
+                "scripts/replay-dead-letter",
             )
         val markdownFiles =
             fileTree(rootDir) {

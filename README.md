@@ -1,6 +1,6 @@
 # LedgerFlow
 
-LedgerFlow is a Java 25 and Spring Boot 4.1 modular-monolith portfolio project. Its public vertical slice exposes contract-first, JWT-secured create/read order APIs with durable PostgreSQL idempotency. Non-public payment and ledger slices implement explicit provider states, safe timeout reconciliation, immutable balanced capture journals, idempotent posting, and compensating entries. Kafka, notification, operator, and public financial orchestration are not implemented yet.
+LedgerFlow is a Java 25 and Spring Boot 4.1 modular-monolith portfolio project. Its public vertical slice exposes contract-first, JWT-secured create/read order APIs with durable PostgreSQL idempotency. Non-public payment and capture-accounting slices implement explicit provider states, safe timeout reconciliation, immutable balanced journals, a transactional outbox, at-least-once Kafka publication/consumption, idempotent notification persistence, and audited dead-letter replay. Public payment orchestration, final order completion, and an operator HTTP workflow are not implemented yet.
 
 ## Prerequisites
 
@@ -83,7 +83,7 @@ export LEDGERFLOW_OAUTH2_JWK_SET_URI=http://localhost:8081/realms/ledgerflow/pro
 ./gradlew :application:bootRun
 ```
 
-Flyway applies `V001__create_orders_and_idempotency.sql`, `V002__create_payment_tables.sql`, and `V003__create_immutable_ledger.sql` at startup. Kafka and the other services are available for later milestones, but the application has no producer, consumer, cache integration, or public payment/ledger route.
+Flyway applies `V001__create_orders_and_idempotency.sql` through `V005__create_notification_inbox_and_dead_letters.sql` at startup. The Kafka publisher and notification/DLT consumers are disabled by default; enable them explicitly with `LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED`, `LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED`, and `LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED`. No cache integration or public payment/ledger route exists.
 
 ## Create Order API
 
@@ -113,15 +113,23 @@ The complete schemas, examples, validation rules, problem details, and status co
 
 ## Payment provider test harness
 
-Payment authorization and capture are intentionally not connected to the public order routes yet: final order and outbox behavior remains unimplemented. Integration tests start a deterministic external HTTP fixture from `application/src/integrationTest`, validate its separate contract, and cover success, decline, temporary failure, timeout-after-processing, slow response, invalid response, crash recovery, and concurrent transitions.
+Payment authorization and capture are intentionally not connected to the public order routes yet, and neither order `COMPLETED` nor a final payment `CAPTURED` state is implemented. Integration tests start a deterministic external HTTP fixture from `application/src/integrationTest`, validate its separate contract, and cover success, decline, temporary failure, timeout-after-processing, slow response, invalid response, crash recovery, and concurrent transitions.
 
 Provider timeouts and the bounded retry policy use `LEDGERFLOW_PAYMENT_PROVIDER_*` configuration. The default application has no provider base URL, so no provider client/workflow bean starts accidentally. See [the payment recovery runbook](docs/runbook.md) for state interpretation and safe recovery constraints.
 
-## Ledger accounting slice
+## Capture accounting and Kafka slice
 
-The internal ledger use case posts an already `CAPTURE_CONFIRMED` payment once. One `READ COMMITTED` transaction locks the payment, inserts a clearing debit and merchant-payable credit in INR minor units, and transitions it to `CAPTURE_ACCOUNTED`. Deferred PostgreSQL constraints reject incomplete, unbalanced, or mismatched journals at commit; repeated and concurrent posting returns the original transaction. Posted rows cannot be updated or deleted, and corrections append an exact compensating transaction.
+The internal ledger use case posts an already `CAPTURE_CONFIRMED` payment once. One `READ COMMITTED` transaction locks the payment, inserts a clearing debit and merchant-payable credit in INR minor units, transitions it to `CAPTURE_ACCOUNTED`, and appends the version-1 payment-captured outbox event through `messaging.api`. Deferred PostgreSQL constraints reject incomplete, unbalanced, or mismatched journals at commit; repeated and concurrent posting returns the original journal and event identity. Posted rows cannot be updated or deleted, and corrections append an exact compensating transaction.
 
-This slice deliberately adds no HTTP endpoint, provider call, order completion, or Kafka effect. Use [the read-only ledger SQL](docs/sql/ledger-queries.sql) for account balances and payment transaction history, and [the payment and ledger runbook](docs/runbook.md) for recovery boundaries.
+A dedicated publisher leases rows with `SELECT ... FOR UPDATE SKIP LOCKED`, sends outside a database transaction, and marks them published only after Kafka acknowledgement. The notification listener uses one initial attempt plus three bounded blocking retries, then publishes poison records to `ledgerflow.payment-captured.v1.dlt` after broker acknowledgement. Inbox event-ID/hash checks make redelivery a no-op and preserve exactly one logical notification database effect. This is at-least-once delivery, not end-to-end exactly-once delivery.
+
+The default topics are `ledgerflow.payment-captured.v1` and `ledgerflow.payment-captured.v1.dlt`. With the normal database/Kafka environment configured, replay one validated catalog row with:
+
+```bash
+scripts/replay-dead-letter '<dead-letter-uuid>' '<actor>' '<specific reason of at least 10 characters>'
+```
+
+The narrow command runs the application in non-web mode with listeners and the outbox publisher disabled. It preserves the original envelope and Kafka key while creating new transport correlation and trace context; see [the runbook](docs/runbook.md). This slice deliberately adds no HTTP endpoint, provider call, final order transition, or operator HTTP API. Use [the read-only ledger SQL](docs/sql/ledger-queries.sql) for account balances and payment transaction history.
 
 ## Project structure
 

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 3 ]]; then
+  echo "Usage: scripts/replay-dead-letter <dead-letter-uuid> <actor> <reason>" >&2
+  exit 2
+fi
+
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+export LEDGERFLOW_REPLAY_COMMAND_ENABLED=true
+export LEDGERFLOW_REPLAY_DEAD_LETTER_ID=$1
+export LEDGERFLOW_REPLAY_ACTOR=$2
+export LEDGERFLOW_REPLAY_REASON=$3
+
+exec "$ROOT_DIR/gradlew" \
+  --no-daemon \
+  :application:bootRun \
+  --args='--spring.main.web-application-type=none --spring.kafka.listener.auto-startup=false --ledgerflow.notifications.enabled=true --ledgerflow.notifications.dlt-enabled=false --ledgerflow.messaging.publisher-enabled=false'

@@ -8,7 +8,7 @@
 
 This threat model covers the MVP public API, operator API, modular-monolith process, mock payment-provider boundary, PostgreSQL, Kafka topics, OpenTelemetry export, and administrative retry flow.
 
-The active scope includes the Create Order HTTP/PostgreSQL boundary, the non-public payment/provider integration harness, and non-public payment-capture ledger posting. Implemented ledger controls include a framework-independent balance invariant, positive integer minor units, payment/order foreign keys, same-payment row locking, unique source/payment indexes, deferred database validation, append-only transaction/entry triggers, exact compensating journals, correlation IDs, actors, and UTC timestamps. Kafka, notification, public financial orchestration, and operator controls below are launch requirements for future milestones, not claims about current behavior.
+The active scope includes the Create Order HTTP/PostgreSQL boundary, the non-public payment/provider integration harness, non-public capture accounting, the transactional outbox publisher, notification consumer/inbox, DLT catalog, and audited replay CLI. Capture accounting commits payment `CAPTURE_ACCOUNTED`, the balanced journal, and outbox event together. Kafka publish/consume is at least once; event-ID/hash constraints permit one logical notification database effect. Public financial orchestration, order `COMPLETED`, payment `CAPTURED`, and the operator HTTP controls below remain launch requirements, not claims about current behavior.
 
 It does not certify PCI DSS compliance or cover a real payment provider, identity-provider implementation, host/container hardening, Kafka/PostgreSQL control planes, or internet-scale denial-of-service protection.
 
@@ -68,8 +68,8 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 | T-11 | Unbalanced or mutable ledger data | Financial integrity loss | Positive integer checks, currency checks, deferred balance trigger, immutable rows, least-privilege DB role | Direct SQL constraint tests |
 | T-12 | Outbox/Kafka duplicate or reordered records | Duplicate notification or inconsistent projection | Unique event ID, order key, inbox idempotency, one event type per order in MVP | Duplicate/reorder tests |
 | T-13 | Spoofed or malformed Kafka event | Unauthorized notification or consumer crash | Broker TLS/SASL, topic ACLs, schema/type/version validation, bounded sizes, DLT | Invalid-schema and unauthorized-topic tests |
-| T-14 | Repeated transient event failure causes infinite retry or partition starvation | Availability loss | Three non-blocking retries, bounded backoff, DLT, per-record handling; invalid input goes directly to DLT | Retry-count and healthy-neighbor tests |
-| T-15 | DLT/operator retry is abused | Repeated workload or financial effects | Operator retry scope, bounded pagination/concurrency, reason, idempotency, worker lease, current-state guard, audit | Concurrent command/worker and stale-lease tests |
+| T-14 | Repeated transient event failure causes infinite retry or partition starvation | Availability loss | Three bounded blocking retries after the initial attempt, then acknowledged DLT publication; invalid input skips transient retries | Retry-count, DLT, and acknowledgement tests |
+| T-15 | DLT replay is abused | Repeated workload or notification effects | Narrow CLI, validated replayable catalog entry, required actor/reason, generated transport correlation/trace, owner lease, immutable audit, inbox deduplication; future HTTP scope controls | Replay validation, stale-lease, audit, and duplicate-delivery tests |
 | T-16 | Sensitive values leak through logs/traces/events/errors | Credential or privacy breach | Attribute allowlist, redaction, no bodies/tokens/keys, stable safe error codes; stack traces only in access-restricted redacted server error logs | Capture exporters/logs and scan values |
 | T-17 | Untrusted correlation/trace headers cause log injection or oversized metadata | Log corruption or resource exhaustion | Validate correlation format/length; standards-compliant trace parser; replace invalid values | Fuzz boundary headers |
 | T-18 | Large bodies, slow provider, or high-cardinality metrics exhaust resources | Denial of service/cost | Implemented 16 KiB provider-response limit and connect/request timeouts; bounded pools/queues/concurrency, deployment-edge rate limits, and metric-label policy remain launch controls | Slow/timeout tests now; load and resource-bound tests before launch |
@@ -96,16 +96,19 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 
 ## Kafka and outbox safety
 
+- Capture accounting appends the outbox event through `messaging.api` in the same PostgreSQL transaction as payment `CAPTURE_ACCOUNTED` and the ledger journal. It does not mutate the order or claim final payment `CAPTURED`.
+- The publisher claims with `SELECT ... FOR UPDATE SKIP LOCKED` in short transactions, publishes outside PostgreSQL, and uses owner-guarded acknowledgement/failure markers. Ten attempts use bounded exponential backoff and jitter.
 - Production Kafka uses TLS/SASL and distinct least-privilege principals for main publishing, notification consumption, retry/DLT publishing, and DLT inspection where the platform permits.
 - Topic auto-creation is disabled outside local/test. Deployment validates topic existence, partitions, retention, maximum message size, and ACLs.
 - The producer waits for `acks=all`; idempotent producer mode reduces broker-level duplicates but does not replace outbox/inbox idempotency.
 - DLT publication must be confirmed before the source offset is committed. If recovery publication fails, the source record remains eligible for redelivery.
 - Exception headers are bounded and sanitized; stack traces are not copied into DLT headers or the failure projection.
 - A malformed DLT record stores only bounded size/hash and safe parse metadata in PostgreSQL; raw poison bytes remain access-controlled by Kafka retention and are not exposed through the operator API.
+- Audited replay preserves the validated canonical envelope and order-ID key, strips old exception/delivery metadata, and injects new transport correlation and W3C trace context. Direct row edits, offset changes, and ad hoc Kafka resends are prohibited.
 
 ## Ledger integrity and audit safety
 
-- Only a provider-confirmed payment can enter the accounting transaction. The transaction locks that payment, inserts its complete balanced journal, and changes the payment to `CAPTURE_ACCOUNTED`; a failed deferred check rolls back every effect.
+- Only a provider-confirmed payment can enter the accounting transaction. The transaction locks that payment, inserts its complete balanced journal, changes the payment to `CAPTURE_ACCOUNTED`, and appends the outbox event; a failed deferred check or outbox append rolls back every effect.
 - Concurrent and repeated requests converge on the same journal because the payment row serializes writers and PostgreSQL independently enforces unique capture source/payment keys.
 - Domain code rejects fewer than two entries, mixed currencies, non-positive amounts, overflow, and unequal totals before SQL. PostgreSQL rechecks row and aggregate invariants at commit and verifies the capture's exact accounts, amount, payment, and order.
 - Posted transaction and entry rows reject update/delete. Corrections append an exact linked reversal and retain the original evidence.
@@ -122,14 +125,19 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 - High-cardinality identifiers are not metric labels. Telemetry export failure never fails the business transaction.
 - Sampling must preserve error traces at an operationally useful rate without trusting client sampling flags as authorization.
 
-## Operator controls and audit
+## Replay controls and future operator API
+
+- The implemented `scripts/replay-dead-letter` interface targets one replayable catalog UUID and requires an actor and a 10–500 character reason. It generates a new transport correlation/trace; its leased claim and owner-guarded result updates append immutable replay audit rows.
+- The tool cannot replay malformed/non-replayable records, alter the canonical envelope/key, edit offsets, or mutate financial state. `REPLAYED` proves broker acknowledgement only.
+
+The following controls apply to the future operator HTTP workflow and are not implemented by the CLI:
 
 - Operator endpoints require HTTPS and explicit scopes; deployment should additionally restrict network access.
 - List endpoints are paginated, filtered, and bounded. Deployment-edge rate limits are required before internet exposure. Failure details are safe projections rather than raw tables.
 - Retry commands require a 10–500 character reason and idempotency key.
 - Retry dispatch rechecks operation status, retryability, and current domain state inside the acceptance transaction.
 - An append-only audit records operator subject, mutation, reason, resource, before/after status, original and retry correlation IDs, trace ID, and timestamp. Protected access logs cover operator reads.
-- Operators cannot directly change payment or ledger state, edit Kafka offsets, or mutate outbox/inbox rows through the API.
+- Operators cannot directly change payment or ledger state, edit Kafka offsets, or mutate outbox/inbox rows through the future API.
 
 ## Security test strategy
 
@@ -137,14 +145,14 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 - JWT algorithm-confusion, signing-key rotation, initial JWKS outage, and expired-cache failure tests.
 - Owner-versus-other-owner object authorization tests using indistinguishable `404` responses.
 - Header/body boundary and malformed JSON fuzz tests.
-- Concurrent idempotency and operator-retry tests.
-- Multi-instance retry-worker claim, expired-lease takeover, and stale-worker completion-rejection tests.
+- Concurrent HTTP idempotency tests; operator-HTTP retry tests remain future.
+- Multi-instance outbox/replay claims, expired-lease takeover, and stale-owner completion-rejection tests.
 - Provider contract tests for malformed IDs, wrong amount/currency, oversized body, timeout, and unknown outcome.
 - Direct PostgreSQL tests proving balance, immutability, unique source, and state constraints.
 - Concurrent ledger-posting tests proving one payment produces one journal and one payment accounting transition.
 - Database-role tests proving the runtime user cannot perform DDL or update/delete immutable ledger/audit rows while Flyway can migrate.
-- Kafka tests for malformed event, unknown version, duplicate delivery, poison record, retry exhaustion, and DLT publication failure.
-- DLT-catalog PostgreSQL outage tests proving no offset commit, idempotent redelivery, alerting, and no recursive DLT.
+- Kafka tests for malformed event, unknown version, duplicate delivery, the publish/marker crash window, poison records, retry exhaustion, and DLT publication failure.
+- DLT-catalog tests for safe evidence, idempotent source coordinates, replay eligibility, lease safety, and immutable audit. Database-outage alerting remains a production-operability follow-up.
 - Captured structured-log, in-memory trace-exporter, outbox-header, and DLT-record assertions that seeded secret markers never appear.
 - Production-profile startup tests proving no mock service or permissive authentication can be enabled before a public payment route exists.
 

@@ -23,7 +23,7 @@ The goal is not a feature-complete commerce product. The goal is to prove correc
 
 ## Current delivery status
 
-The Create Order slice is implemented. Authenticated clients can create one positive INR order in `CREATED` state and read an owned order. The idempotency claim, order, and original `201` response snapshot commit atomically. Payments, provider calls, ledger records, outbox/Kafka, notifications, and operator recovery remain planned and are not invoked by the active endpoints.
+The public Create Order slice is implemented. Authenticated clients can create one positive INR order in `CREATED` state and read an owned order; no public route starts payment. Non-public module slices implement provider authorization/capture, immutable capture accounting, and transactional outbox/Kafka notification delivery. Capture accounting atomically commits payment `CAPTURE_ACCOUNTED`, the balanced journal, and one outbox event. A leased publisher and idempotent consumer deliver one logical notification database effect with at-least-once semantics, and a narrow audited CLI can replay validated DLT records. Order `COMPLETED`, payment `CAPTURED`, public financial orchestration, and the operator HTTP workflow remain planned.
 
 ## Actors
 
@@ -38,7 +38,7 @@ The Create Order slice is implemented. Authenticated clients can create one posi
 - Create an order exactly once for a client-scoped idempotency key.
 - Validate all order and payment state changes explicitly.
 - Keep external payment calls outside database transactions.
-- Finalize successful capture, order state, ledger entries, and outbox event in one PostgreSQL transaction.
+- Atomically account a provider-confirmed capture by committing payment `CAPTURE_ACCOUNTED`, balanced ledger entries, and an outbox event in one PostgreSQL transaction.
 - Publish and consume with at-least-once delivery while preventing duplicate business effects.
 - Preserve correlation and distributed trace context across HTTP, asynchronous publication, Kafka retries, and consumption.
 - Expose sanitized, auditable operator recovery without direct database or Kafka access.
@@ -56,21 +56,21 @@ The Create Order slice is implemented. Authenticated clients can create one posi
 
 ## Target end-to-end behavior
 
-Only steps 1–2 and the order-only part of step 3 are active. The remaining steps require separately approved milestones.
+Steps 1–3 are active through the public API. Steps 4–6 and 10–12 are implemented behind non-public/module or background-worker boundaries. Steps 7–9 and the general operator API in step 13 require later milestones.
 
 1. The client sends `POST /api/v1/orders` with a bearer token, `Idempotency-Key`, optional `X-Correlation-Id`, and a valid order request.
 2. LedgerFlow validates authentication, payload, supported currency, idempotency-key syntax, and request ownership before creating data.
 3. A unique client-and-operation-scoped idempotency record and order are created in PostgreSQL. A later milestone starts the payment workflow without changing the original Create Order replay result.
 4. The payment module calls the mock provider through an outbound HTTP port. Authorization and capture use stable provider operation keys so uncertain calls can be queried and safely retried.
 5. Normal success is processed synchronously. No PostgreSQL transaction remains open while waiting for the provider.
-6. After confirmed capture, one PostgreSQL transaction updates payment and order state, creates a balanced ledger transaction, and inserts one outbox event.
-7. The original HTTP result is persisted for idempotent replay. A successful completed order returns `201 Created`.
+6. After confirmed capture, one PostgreSQL transaction changes payment to `CAPTURE_ACCOUNTED`, creates a balanced ledger transaction, and inserts one outbox event. It does not complete the order or introduce a final payment `CAPTURED` state.
+7. A future orchestration milestone updates the public result and any final order/payment states without recreating the ledger or payment-captured event. A successful completed order remains a target behavior.
 8. A terminal provider decline still creates the order and returns `201 Created` with `PAYMENT_DECLINED`; it creates no ledger or outbox rows.
 9. Exhausted temporary failures or unresolved timeouts return `202 Accepted` with `PAYMENT_RETRY_PENDING`. The original response remains replayable while the current resource state is available through `GET /api/v1/orders/{orderId}`.
 10. The outbox publisher claims due rows with a lease, publishes to Kafka, waits for broker acknowledgement, and marks them published. A crash can cause duplicate publication but not event loss.
 11. The notification consumer inserts an inbox record and notification in one PostgreSQL transaction. An existing inbox event ID makes a duplicate delivery a successful no-op.
-12. A transient consumer failure is retried three times through retry topics and then sent to a dead-letter topic. A non-retryable schema, version, or integrity failure goes directly there. A dead-letter listener records an inspectable failed operation.
-13. An authorized operator can inspect a sanitized failure and issue an idempotent retry command. Retrying reuses the original business or event identifier.
+12. A transient consumer failure receives three bounded blocking retries after the initial attempt and is then sent to a dead-letter topic. A non-retryable schema, version, or integrity failure goes there without transient retries. A dead-letter listener catalogs safe, inspectable evidence.
+13. The current narrow CLI can replay a validated catalog row with an actor, reason, and new transport correlation/trace while preserving the envelope and key. A secured operator inspection/retry HTTP workflow remains future work.
 
 ## Functional requirements
 
@@ -101,7 +101,7 @@ Only steps 1–2 and the order-only part of step 3 are active. The remaining ste
 - **FR-017:** A confirmed capture creates one immutable ledger transaction with exactly one `PAYMENT_CLEARING` debit and one `MERCHANT_PAYABLE` credit for the same positive INR amount.
 - **FR-018:** Database constraints and a deferred constraint trigger reject an unbalanced, incomplete, mixed-currency, or non-positive ledger transaction at commit.
 - **FR-019:** A unique capture reference prevents multiple ledger transactions for the same payment.
-- **FR-020:** Payment `CAPTURED`, order `COMPLETED`, ledger rows, and the payment-captured outbox event commit in one PostgreSQL transaction.
+- **FR-020:** Payment `CAPTURE_ACCOUNTED`, ledger rows, and the payment-captured outbox event commit in one PostgreSQL transaction. This milestone does not change order state or add payment `CAPTURED`.
 - **FR-021:** If that transaction fails, none of its local changes commit. Recovery reconciles the provider operation and repeats local finalization idempotently.
 
 ### Kafka and notifications
@@ -110,7 +110,7 @@ Only steps 1–2 and the order-only part of step 3 are active. The remaining ste
 - **FR-023:** Events use a versioned envelope, globally unique event ID, order ID as Kafka key, UTC timestamp, correlation ID, and propagated W3C trace context.
 - **FR-024:** The notification consumer provides at-least-once processing and deduplicates by event ID in PostgreSQL.
 - **FR-025:** Inbox deduplication and notification creation commit atomically.
-- **FR-026:** A transient processing failure receives three non-blocking retries with configured backoffs and then moves to `ledgerflow.payment-captured.v1.dlt`; non-retryable schema, version, and integrity failures go directly there.
+- **FR-026:** A transient processing failure receives three bounded blocking retries after the initial attempt and then moves to `ledgerflow.payment-captured.v1.dlt`; non-retryable schema, version, and integrity failures go there without transient retries. DLT acknowledgement precedes the source offset commit.
 - **FR-027:** A DLT record always retains original Kafka coordinates, payload hash/size, and sanitized failure metadata; it retains parsed event ID, key, and validated payload only when those values are valid. Failure to publish to the DLT does not commit the failed source offset.
 
 ### Correlation, tracing, and recovery
@@ -131,7 +131,9 @@ Only steps 1–2 and the order-only part of step 3 are active. The remaining ste
 - **Observability:** A healthy flow is traceable from HTTP ingress through provider calls, outbox publication, Kafka consumption, and notification persistence.
 - **Testability:** PostgreSQL, Kafka, and mock-provider behavior are exercised through real protocol boundaries in integration tests.
 
-## Current Create Order acceptance criteria
+## Delivered milestone acceptance criteria
+
+The `AC-M3` criteria record the delivered public Create Order slice; `AC-M5B` records the delivered non-public messaging slice. Statements about what Milestone 3 did not introduce are historical scope assertions, not claims that those capabilities are still absent.
 
 - **AC-M3-001:** A valid scoped request returns `201`, a UUIDv7 `CREATED` order, positive INR minor units, UTC timestamps, `Location`, and a correlation ID.
 - **AC-M3-002:** The same subject, key, and canonical payload returns the byte-equivalent original body and location with `Idempotency-Replayed: true`, without another order.
@@ -141,6 +143,14 @@ Only steps 1–2 and the order-only part of step 3 are active. The remaining ste
 - **AC-M3-006:** GET returns the owned order and returns the same `404` shape for absent and non-owned IDs.
 - **AC-M3-007:** PostgreSQL constraints enforce key uniqueness, SHA-256 lengths, positive INR money, valid state, completion consistency, and timestamp ordering.
 - **AC-M3-008:** No payment, provider, ledger, outbox, Kafka, notification, or operator behavior is introduced.
+
+- **AC-M5B-001:** One capture-accounting transaction commits payment `CAPTURE_ACCOUNTED`, the balanced journal, and exactly one matching payment-captured outbox row, or rolls them all back.
+- **AC-M5B-002:** The canonical envelope fields are exactly `eventId`, `eventType`, `schemaVersion`, `aggregateId`, `correlationId`, `causationId`, `occurredAt`, and `data`; causation is the stable capture request UUID.
+- **AC-M5B-003:** Multiple publishers safely claim with `SKIP LOCKED`; publication occurs outside the claim transaction and `PUBLISHED` is owner-guarded after broker acknowledgement.
+- **AC-M5B-004:** A crash after Kafka acknowledgement but before the outbox marker can republish the same event ID, and the inbox still permits only one logical notification database effect.
+- **AC-M5B-005:** One initial consumer attempt plus three bounded blocking retries precede acknowledged DLT publication; validated poison records are cataloged and replayable through an audited CLI.
+- **AC-M5B-006:** Kafka uses W3C trace headers and a validated correlation header. Replay preserves the business envelope/key while starting new transport correlation/trace context.
+- **AC-M5B-007:** Delivery is documented as atomic PostgreSQL business-plus-outbox and at-least-once publish/consume, never as end-to-end exactly once.
 
 ## Target full-flow acceptance criteria
 
@@ -154,9 +164,9 @@ The following remain proposed for later milestones:
 - **AC-006:** Latency succeeds within the configured provider timeout; temporary failure retries once; unresolved timeout or exhausted temporary failure returns `202 PAYMENT_RETRY_PENDING` and creates an inspectable operation.
 - **AC-007:** Every invalid payment or order transition is rejected by unit tests, and stale concurrent updates are rejected by optimistic locking.
 - **AC-008:** Direct attempts to commit unbalanced, incomplete, non-positive, or mixed-currency ledger rows fail at the database boundary.
-- **AC-009:** Fault injection at every capture-finalization statement proves capture state, order state, ledger entries, and outbox event are all committed or all rolled back.
+- **AC-009:** Fault injection at every capture-accounting statement proves payment `CAPTURE_ACCOUNTED`, ledger entries, and outbox event are all committed or all rolled back. Later order/payment finalization must not recreate those effects.
 - **AC-010:** A publisher crash after Kafka acknowledgement but before marking the outbox row can produce a duplicate event, and the consumer still creates one notification.
-- **AC-011:** A transient consumer failure receives one initial attempt plus exactly three retries before DLT; non-retryable schema, version, or integrity failures go directly to DLT. The DLT record becomes visible through the operator API.
+- **AC-011:** A transient consumer failure receives one initial attempt plus exactly three bounded blocking retries before DLT; non-retryable schema, version, or integrity failures go to DLT without transient retries. The catalog is inspectable now; operator HTTP visibility remains future work.
 - **AC-012:** Repeating an operator retry command does not schedule duplicate work; a successful retry resolves the failed operation and preserves the original business/event identifier.
 - **AC-013:** Trace tests show connected HTTP client/server spans, provider spans, Kafka producer spans, and Kafka consumer processing spans. Correlation IDs appear in responses, event headers, and structured logs.
 - **AC-014:** Customer tokens cannot read another subject's order, and customer tokens cannot call operator endpoints.

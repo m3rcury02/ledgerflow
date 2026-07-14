@@ -7,5 +7,6 @@ public record CapturedPayment(
     UUID orderId,
     long amountMinor,
     String currency,
+    UUID captureRequestId,
     long version,
     CaptureAccountingStatus accountingStatus) {}

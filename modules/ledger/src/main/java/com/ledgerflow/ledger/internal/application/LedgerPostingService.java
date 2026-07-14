@@ -9,6 +9,8 @@ import com.ledgerflow.ledger.internal.domain.JournalPosting;
 import com.ledgerflow.ledger.internal.domain.JournalType;
 import com.ledgerflow.ledger.internal.persistence.JdbcLedgerStore;
 import com.ledgerflow.ledger.internal.persistence.StoredJournal;
+import com.ledgerflow.messaging.api.AppendPaymentCapturedEvent;
+import com.ledgerflow.messaging.api.OutboxEventAppender;
 import com.ledgerflow.payments.api.CaptureAccountingStatus;
 import com.ledgerflow.payments.api.CapturedPayment;
 import com.ledgerflow.payments.api.PaymentAccounting;
@@ -24,12 +26,17 @@ public class LedgerPostingService implements LedgerPosting {
 
   private final JdbcLedgerStore ledgerStore;
   private final PaymentAccounting paymentAccounting;
+  private final OutboxEventAppender outboxEventAppender;
   private final Clock clock;
 
   public LedgerPostingService(
-      JdbcLedgerStore ledgerStore, PaymentAccounting paymentAccounting, Clock clock) {
+      JdbcLedgerStore ledgerStore,
+      PaymentAccounting paymentAccounting,
+      OutboxEventAppender outboxEventAppender,
+      Clock clock) {
     this.ledgerStore = ledgerStore;
     this.paymentAccounting = paymentAccounting;
+    this.outboxEventAppender = outboxEventAppender;
     this.clock = clock;
   }
 
@@ -40,7 +47,10 @@ public class LedgerPostingService implements LedgerPosting {
     CapturedPayment payment = paymentAccounting.lockCapture(command.paymentId());
     Optional<StoredJournal> existing = ledgerStore.findPaymentCapture(payment.paymentId());
     if (payment.accountingStatus() == CaptureAccountingStatus.ACCOUNTED) {
-      return replayExisting(payment, existing);
+      PostedJournal replay = replayExisting(payment, existing);
+      String originalCorrelationId = existing.orElseThrow().posting().correlationId();
+      appendOutbox(payment, replay, originalCorrelationId);
+      return replay;
     }
     if (existing.isPresent()) {
       throw new LedgerIntegrityException(
@@ -58,7 +68,9 @@ public class LedgerPostingService implements LedgerPosting {
     Instant now = clock.instant();
     StoredJournal stored = ledgerStore.insert(posting, now);
     paymentAccounting.markCaptureAccounted(payment.paymentId(), payment.version(), now);
-    return view(stored, false);
+    PostedJournal result = view(stored, false);
+    appendOutbox(payment, result, command.correlationId());
+    return result;
   }
 
   @Override
@@ -126,6 +138,19 @@ public class LedgerPostingService implements LedgerPosting {
         stored.postedAt(),
         posting.reversesTransactionId(),
         replayed);
+  }
+
+  private void appendOutbox(CapturedPayment payment, PostedJournal journal, String correlationId) {
+    outboxEventAppender.appendPaymentCaptured(
+        new AppendPaymentCapturedEvent(
+            payment.paymentId(),
+            payment.orderId(),
+            journal.transactionId(),
+            payment.amountMinor(),
+            payment.currency(),
+            payment.captureRequestId(),
+            correlationId,
+            journal.postedAt()));
   }
 
   private void validateCorrectionReason(String reason) {

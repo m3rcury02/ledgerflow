@@ -1,11 +1,11 @@
-# Payment and Ledger Recovery Runbook
+# Payment, Ledger, and Messaging Recovery Runbook
 
-- Status: Milestone 5A development runbook
+- Status: Milestone 5B development runbook
 - Last updated: 2026-07-13
 
 ## Scope and current limitation
 
-This runbook covers authorization/capture failures, crash recovery, and non-public ledger accounting for provider-confirmed captures. Milestone 5A provides tested module use cases but intentionally exposes no public or operator endpoint: final order and outbox effects do not exist yet. The secured inspection/retry API and operator audit trail remain later work.
+This runbook covers authorization/capture failures, crash recovery, non-public capture accounting, outbox publication, notification consumption, DLT inspection, and narrow audited replay. The current slices intentionally expose no public payment or operator endpoint. Final order/payment workflow states and the secured general operations API remain later work.
 
 In a deployed environment, support staff may perform the read-only inspection below and escalate with the payment ID and correlation ID. They must not invoke the test fixture, update payment rows, delete attempt history, or resend a provider request with a new request ID.
 
@@ -19,7 +19,7 @@ In a deployed environment, support staff may perform the read-only inspection be
 | `DECLINED`, `CAPTURE_DECLINED` | Provider confirmed a business decline | Terminal; never retry automatically or manually as the same operation |
 | `AUTHORIZED` | Authorization is confirmed | Capture may start once, with its independent persisted request ID |
 | `CAPTURE_CONFIRMED` | Provider capture is confirmed but no capture journal committed | Invoke the approved internal ledger posting use case; do not resend provider capture |
-| `CAPTURE_ACCOUNTED` | Exactly one matching balanced capture journal committed with this state | Treat ledger posting as complete; a repeated internal posting returns the original journal |
+| `CAPTURE_ACCOUNTED` | Exactly one matching balanced capture journal and payment-captured outbox event committed with this state | Treat capture accounting as complete; a repeated internal posting verifies and returns the original journal/event |
 | `FAILED` | Provider response was invalid or contradictory | Investigate configuration/provider contract; do not retry automatically |
 
 ## Read-only inspection
@@ -69,12 +69,71 @@ Ledger posting has one local `READ COMMITTED` transaction after provider success
 1. lock the payment row;
 2. verify `CAPTURE_CONFIRMED` or a matching replay in `CAPTURE_ACCOUNTED`;
 3. insert the journal header and entries;
-4. transition payment to `CAPTURE_ACCOUNTED`; and
-5. allow deferred balance/source validation to run at commit.
+4. transition payment to `CAPTURE_ACCOUNTED`;
+5. append the canonical payment-captured outbox event through `messaging.api`; and
+6. allow deferred balance/source validation to run at commit.
 
-If the process stops before commit, PostgreSQL rolls back both state and journal; retry the same internal posting command. If commit completed but the response was lost, retry finds `CAPTURE_ACCOUNTED` and returns the original journal. Same-payment calls serialize on the row lock, and unique source/payment indexes prevent duplicate journal transactions.
+If the process stops before commit, PostgreSQL rolls back state, journal, and outbox; retry the same internal posting command. If commit completed but the response was lost, retry finds `CAPTURE_ACCOUNTED`, verifies the original outbox content, and returns the original journal. Same-payment calls serialize on the row lock, and unique source/payment/outbox keys prevent duplicate effects.
 
-Do not interpret `CAPTURE_ACCOUNTED` as final order completion or an emitted event. If deferred validation fails, do not disable triggers or patch rows: preserve the error and correlation ID, contain further financial processing, and fix the code/schema forward. If business evidence requires a correction, use the approved compensation command with a specific reason; never update or delete the posted transaction or entries. The current command creates one exact reversal and does not call the provider or imply a refund.
+Do not interpret `CAPTURE_ACCOUNTED` as final order `COMPLETED`, final payment `CAPTURED`, or proof that Kafka has published the outbox event. If deferred validation or outbox append fails, do not disable triggers or patch rows: preserve the error and correlation ID, contain further financial processing, and fix the code/schema forward. If business evidence requires a correction, use the approved compensation command with a specific reason; never update or delete the posted transaction or entries. The current command creates one exact reversal and does not call the provider, remove the capture event, or imply a refund.
+
+## Outbox inspection and delivery recovery
+
+Use a read-only role to inspect a specific event or payment. Do not update status, attempt counts, leases, or timestamps.
+
+```sql
+SELECT event_id, aggregate_id, topic, event_key, event_type, schema_version,
+       correlation_id, causation_id, occurred_at, status,
+       cycle_attempt_count, total_attempt_count, available_at,
+       lease_owner, lease_until, last_failure_code, last_failed_at, published_at
+FROM outbox_events
+WHERE event_id = '<event-id>' OR aggregate_id = '<payment-id>'
+ORDER BY created_at, event_id;
+```
+
+`PENDING` is waiting for its next attempt. `IN_FLIGHT` is owned until `lease_until`; do not steal an unexpired lease. `PUBLISHED` means the broker acknowledged a send and the owner-guarded marker committed. `FAILED` means the 10-attempt cycle exhausted and needs investigation; no general outbox retry command exists yet.
+
+The publisher claims with `SELECT ... FOR UPDATE SKIP LOCKED`, commits the lease, publishes outside PostgreSQL, and marks `PUBLISHED` only after broker acknowledgement. A process stop after acknowledgement but before the marker leaves an expired lease that will publish the same event ID again. This is expected at-least-once behavior; the notification inbox absorbs a matching duplicate.
+
+## Notification and dead-letter recovery
+
+The main listener makes one initial attempt plus three bounded blocking retries. After exhaustion, or immediately for non-retryable validation/integrity failures, it publishes to `ledgerflow.payment-captured.v1.dlt`; the source offset advances only after that publication is acknowledged. The DLT listener catalogs the original coordinates, bounded hash/size, sanitized failure, and allowlisted safe headers. It stores a validated canonical envelope/key only when safe to replay and never stores malformed raw poison bytes.
+
+Inspect the catalog with a read-only role:
+
+```sql
+SELECT id, event_id, original_topic, original_partition, original_offset,
+       payload_hash, payload_size, failure_code, failure_summary, attempt_count,
+       status, replayable, replay_count, replay_available_at,
+       replay_lease_owner, replay_lease_until, last_replay_failure_code,
+       dead_lettered_at, replayed_at
+FROM dead_letter_records
+WHERE id = '<dead-letter-record-id>';
+```
+
+Only a row with `replayable = true` and eligible `OPEN` state may be replayed. Configure the usual runtime database and Kafka environment, then run:
+
+```bash
+scripts/replay-dead-letter \
+  '<dead-letter-uuid>' \
+  '<actor>' \
+  '<specific reason of at least 10 characters>'
+```
+
+The script runs the application in non-web mode with Kafka listeners and the outbox publisher disabled. It claims the row with a lease, preserves the canonical envelope and order-ID Kafka key, removes old exception/delivery headers, generates a new replay request and transport correlation, injects a new W3C trace, waits for broker acknowledgement, and appends immutable `message_replay_audit` evidence. `REPLAYED` proves broker acknowledgement only; inbox deduplication may make consumption a successful no-op.
+
+Relevant defaults and environment overrides are:
+
+| Behavior | Environment variable | Default |
+| --- | --- | --- |
+| Main / DLT topic | `LEDGERFLOW_KAFKA_PAYMENT_CAPTURED_TOPIC` / `LEDGERFLOW_KAFKA_PAYMENT_CAPTURED_DLT_TOPIC` | `ledgerflow.payment-captured.v1` / `ledgerflow.payment-captured.v1.dlt` |
+| Outbox enabled / batch / lease | `LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED` / `LEDGERFLOW_OUTBOX_BATCH_SIZE` / `LEDGERFLOW_OUTBOX_LEASE_DURATION` | `false` / `25` / `30s` |
+| Outbox attempts / base / cap / jitter | `LEDGERFLOW_OUTBOX_MAX_ATTEMPTS` / `LEDGERFLOW_OUTBOX_BASE_BACKOFF` / `LEDGERFLOW_OUTBOX_MAX_BACKOFF` / `LEDGERFLOW_OUTBOX_JITTER_RATIO` | `10` / `1s` / `256s` / `0.2` |
+| Notification / DLT consumers | `LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED` / `LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED` | `false` / `false` |
+| Consumer retry sequence | `LEDGERFLOW_NOTIFICATION_FIRST_RETRY_BACKOFF` / `LEDGERFLOW_NOTIFICATION_SECOND_RETRY_BACKOFF` / `LEDGERFLOW_NOTIFICATION_THIRD_RETRY_BACKOFF` | `1s` / `5s` / `30s` |
+| Broker acknowledgement / replay lease | `LEDGERFLOW_KAFKA_ACK_TIMEOUT` / `LEDGERFLOW_REPLAY_LEASE_DURATION` | `10s` / `30s` |
+
+Never edit outbox/inbox/DLT/audit rows, change consumer offsets, copy malformed payloads out of Kafka, or use an ad hoc producer to resend a message. If a catalog row is non-replayable or the audited command rejects it, contain and escalate rather than bypassing the guard.
 
 ## Retry policy and timeouts
 
@@ -111,7 +170,9 @@ Do not:
 - retry a confirmed decline;
 - resend provider capture after `CAPTURE_CONFIRMED` or `CAPTURE_ACCOUNTED`;
 - update/delete ledger transactions or entries, disable ledger triggers, or alter a posted account identity;
+- change outbox/inbox/notification/DLT/audit rows or Kafka offsets directly;
+- resend an event outside `scripts/replay-dead-letter` or change its envelope/key;
 - repair a financial error in place instead of appending an approved correction; or
-- describe `CAPTURE_CONFIRMED` as accounted, or `CAPTURE_ACCOUNTED` as final order/outbox completion.
+- describe `CAPTURE_CONFIRMED` as accounted, or `CAPTURE_ACCOUNTED` as final order/payment completion or proof of Kafka publication.
 
 If the tested recovery use case is not available through an approved secured operational entry point, contain and escalate rather than improvising direct database or provider changes.

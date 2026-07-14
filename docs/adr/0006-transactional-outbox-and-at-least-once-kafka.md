@@ -1,79 +1,67 @@
 # ADR 0006: Use a Transactional Outbox and Idempotent At-Least-Once Kafka Processing
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-11
+- Accepted: 2026-07-13
 - Decision owners: LedgerFlow maintainers
 
 ## Context
 
-PostgreSQL business data and a Kafka event cannot be atomically committed with a normal local transaction. Directly publishing before or after the database commit creates event-without-data or data-without-event failure windows. Kafka and consumer failures also produce redelivery.
+PostgreSQL business data and a Kafka record cannot be atomically committed with a normal local transaction. Publishing before or after the database commit creates an event-without-data or data-without-event failure window. Broker, process, and consumer failures also produce redelivery.
 
-The MVP explicitly requires at-least-once publication and consumption, bounded retries, a dead-letter topic, and one notification record.
+This milestone starts from a provider-confirmed payment. It does not implement public payment orchestration, order `COMPLETED`, or a final payment `CAPTURED` state.
 
 ## Decision
 
-The capture-finalization PostgreSQL transaction inserts one immutable outbox row with:
+The existing capture-accounting `READ COMMITTED` transaction locks the payment and atomically:
 
-- globally unique event ID;
-- unique logical deduplication key for the payment-captured event;
-- event type `com.ledgerflow.payment.captured` and version `1`;
-- order ID Kafka partition key;
-- versioned JSON data;
-- correlation ID; and
-- persisted W3C trace context.
+1. creates or verifies the immutable balanced journal;
+2. changes the payment to `CAPTURE_ACCOUNTED`; and
+3. appends one immutable outbox row through `messaging.api`.
 
-A polling publisher claims due rows in short transactions using `FOR UPDATE SKIP LOCKED` and an owner token/lease. It publishes outside the claim transaction, waits for broker acknowledgement with `acks=all`, and marks the row published only with an owner-guarded update.
+The event type is `com.ledgerflow.payment.captured`, schema version `1`; payment ID is the aggregate ID, order ID is the Kafka key, and the stable provider capture request UUID is causation. The canonical envelope contains exactly, in order, `eventId`, `eventType`, `schemaVersion`, `aggregateId`, `correlationId`, `causationId`, `occurredAt`, and `data`. A unique `payment-captured:{paymentId}` key makes a repeated append verify the original event instead of creating another.
 
-The outbox guarantee is at-least-once. Producer idempotence reduces Kafka-client retry duplicates but does not close the crash window between broker acknowledgement and the PostgreSQL published marker. Lease expiry republishes the same event ID.
+A dedicated publisher supports multiple application instances. A short transaction claims due or expired rows with `SELECT ... FOR UPDATE SKIP LOCKED`, records an owner token and lease, and commits. Publication happens outside PostgreSQL. Only after `acks=all` does an owner-guarded transaction mark the row `PUBLISHED`.
 
-The notification listener validates type/version, computes a canonical hash, and uses record processing with manual/controlled offset commit. One PostgreSQL transaction inserts an inbox row and one notification. A repeated event ID with the same hash is a successful no-op; the same ID with a different hash is an integrity failure.
+One publication cycle has 10 total attempts. Failures use bounded exponential backoff starting at one second, capped at 256 seconds, with configurable jitter. Exhaustion leaves a durable `FAILED` row. A general outbox retry workflow is deferred.
 
-Transient consumer failures use non-blocking retry topics after 1 second, 5 seconds, and 30 seconds: one initial attempt plus three retries, then `ledgerflow.payment-captured.v1.dlt`. Non-retryable schema/version/integrity failures go directly to the DLT. Retry and DLT publication must receive broker acknowledgement before the source offset commits.
+The notification listener processes `ledgerflow.payment-captured.v1` with record acknowledgement. It validates the exact envelope, type/version, order-ID key, identity headers, money, and ID relationships. One PostgreSQL transaction inserts the event ID and canonical SHA-256 hash into `notification_inbox` and creates one notification. The same ID and hash is a successful no-op; the same ID with changed canonical content is an integrity failure.
 
-A DLT catalog listener atomically stores original topic/partition/offset, payload hash/size, parsed identity/key/validated payload when available, and a sanitized failure with its operator failure record. Malformed bytes are not copied to PostgreSQL and are non-replayable. The DLT offset commits only after cataloging; database failure pauses/retries with alerting and no recursive DLT.
+Transient failures receive one initial attempt plus three bounded blocking retries. An exhausted or non-retryable poison record is published to `ledgerflow.payment-captured.v1.dlt`; broker acknowledgement is required before the source offset advances.
 
-Operator replay republishes the same valid event ID/key/body, strips old retry/DLT/exception headers, adds failure/retry IDs and a new retry correlation/trace linked to the original, and resets delivery attempts. Broker acknowledgement marks the DLT row `REPLAYED`; only a committed or already-identical notification effect resolves it and the failed operation. Inbox constraints keep replay idempotent.
+The DLT listener catalogs bounded safe evidence by original topic/partition/offset. It stores validated canonical content/key only when replayable and never stores malformed raw bytes. The narrow `scripts/replay-dead-letter <dead-letter-uuid> <actor> <reason>` command leases one replayable row, preserves the envelope and key, removes old exception/delivery metadata, generates new transport correlation/trace context, waits for broker acknowledgement, and appends immutable replay audit records. It is not a general Kafka resend facility or an operator HTTP API.
 
-Non-blocking retry topics may reorder records. The tradeoff is accepted because the MVP emits one terminal payment-captured event per order and the consumer is idempotent.
+## Delivery guarantees
 
-Outbox publishing has a ten-attempt cycle: initial send plus nine retries after 1/2/4/8/16/32/64/128/256-second base delays with ±20% jitter. Exhaustion marks outbox failed and opens its operation atomically. An operator retry resets only cycle attempts/availability while retaining cumulative attempts/audit. It does not use Kafka's DLT because Kafka itself may be unavailable.
+- PostgreSQL payment `CAPTURE_ACCOUNTED`, ledger journal, and outbox append are atomic.
+- Outbox-to-Kafka publication is at least once. A crash after broker acknowledgement and before the PostgreSQL marker can publish the same event again.
+- Kafka consumption is at least once. A database commit followed by an offset-commit failure causes redelivery.
+- Event-ID/hash inbox deduplication and a unique notification event ID provide exactly one logical notification database side effect for a stable event ID and content.
+- LedgerFlow does not claim end-to-end exactly-once delivery.
 
 ## Consequences
 
-### Positive
-
-- Committed business data always has a durable event to publish.
-- Kafka and process failures do not require distributed transactions.
-- Duplicate publication and consumption are safe and testable.
-- Poison events stop blocking healthy records and remain inspectable.
-
-### Costs and risks
-
-- Publication is eventually consistent and can be duplicated.
-- Polling, leases, retry topics, DLT cataloging, and replay require operational monitoring.
-- Non-blocking retries sacrifice ordering.
-- Stored event schemas and payload hashes require stable canonicalization/versioning.
+Committed capture accounting always leaves durable publishable evidence, multiple publishers can work safely, and duplicate publication/consumption are expected and tested. The cost is eventual consistency, polling/lease state, bounded poison-message handling, and operational retention/inspection requirements. Blocking consumer retries temporarily pause that partition but are bounded and avoid extra retry topics.
 
 ## Alternatives considered
 
 ### Dual-write PostgreSQL and Kafka
 
-Rejected because every ordering leaves an unrecoverable split-brain window.
+Rejected because every ordering leaves a split-brain failure window.
 
-### Kafka transactions or an exactly-once claim
+### Kafka transactions or an end-to-end exactly-once claim
 
-Rejected because the business transaction is in PostgreSQL and consumer side effects are also PostgreSQL. Inbox idempotency states the end-to-end behavior more accurately.
+Rejected because the business transaction and consumer side effect are in PostgreSQL. Inbox idempotency states the actual guarantee more accurately.
 
 ### Change-data capture/Debezium
 
-Deferred because it adds deployment infrastructure beyond the MVP. The outbox schema can support a future relay change.
+Deferred because it adds deployment infrastructure beyond this milestone. The outbox boundary permits a later relay replacement.
 
-### Infinite blocking retries
+### Unbounded retries or arbitrary operator resend
 
-Rejected because poison records can starve partitions and hide failures from operators.
+Rejected because poison records can starve work and an unaudited resend can change identity or bypass validation.
 
 ## References
 
 - [Apache Kafka delivery design](https://kafka.apache.org/documentation/#design_deliverysemantics)
-- [Spring Kafka non-blocking retry pattern](https://docs.spring.io/spring-kafka/reference/retrytopic/how-the-pattern-works.html)
 - [Spring Kafka exception and dead-letter handling](https://docs.spring.io/spring-kafka/reference/kafka/annotation-error-handling.html)

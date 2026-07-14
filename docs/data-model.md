@@ -3,7 +3,7 @@
 - Status: Partially implemented
 - Last updated: 2026-07-13
 
-PostgreSQL is the source of truth. Flyway creates all structures, constraints, indexes, and trigger functions. Integration tests apply every migration to an empty PostgreSQL Testcontainer. `orders` and `idempotency_records` are implemented by `V001`; `payments` and `payment_attempt_history` by `V002`; and `ledger_accounts`, `ledger_transactions`, `ledger_entries`, plus the payment accounting-state extension by `V003`. Later tables remain proposed and must not be inferred to exist.
+PostgreSQL is the source of truth. Flyway creates all structures, constraints, indexes, and trigger functions. Integration tests apply every migration to an empty PostgreSQL Testcontainer. `V001` creates orders and HTTP idempotency; `V002` creates payments and attempt history; `V003` creates the immutable ledger and `CAPTURE_ACCOUNTED`; `V004` creates the transactional outbox; and `V005` creates the notification inbox, notification records, dead-letter catalog, and replay audit. General operator workflow tables remain proposed and must not be inferred to exist.
 
 ## General conventions
 
@@ -180,42 +180,32 @@ PostgreSQL `CHECK` constraints cannot safely enforce an aggregate across other r
 
 | Column | Type | Rules |
 | --- | --- | --- |
-| `event_id` | `uuid` | Primary key |
+| `event_id` | `uuid` | Primary key, PostgreSQL UUIDv7 |
 | `deduplication_key` | `varchar(200)` | Unique logical event key, not null |
 | `aggregate_type` | `varchar(64)` | Not null |
 | `aggregate_id` | `uuid` | Not null |
 | `event_type` | `varchar(128)` | Not null |
-| `event_version` | `smallint` | Not null, `>= 1` |
-| `payload` | `jsonb` | Versioned event data, not null |
-| `headers` | `jsonb` | Correlation and trace propagation only |
+| `schema_version` | `smallint` | Not null, `>= 1` |
+| `topic`, `event_key` | `varchar(249)`, `varchar(200)` | Validated, not null |
+| `payload` | `jsonb` | Canonical versioned envelope, immutable |
+| `payload_hash` | `bytea` | SHA-256, exactly 32 bytes |
+| `correlation_id` | `varchar(64)` | Original business correlation, validated |
+| `causation_id` | `uuid` | Stable provider capture request UUID |
+| `occurred_at` | `timestamptz` | Business occurrence time in UTC |
+| `traceparent`, `tracestate` | `varchar(55)`, `varchar(512)` | Nullable validated W3C origin context |
 | `status` | `varchar(16)` | `PENDING`, `IN_FLIGHT`, `PUBLISHED`, `FAILED` |
 | `cycle_attempt_count` | `integer` | Not null, `>= 0` |
 | `total_attempt_count` | `bigint` | Not null, `>= 0` |
 | `available_at` | `timestamptz` | Not null |
 | `lease_owner` | `varchar(100)` | Nullable |
 | `lease_until` | `timestamptz` | Nullable |
-| `last_failure_code` | `varchar(64)` | Nullable |
+| `last_failure_code`, `last_failed_at` | `varchar(64)`, `timestamptz` | Nullable consistent pair |
 | `published_at` | `timestamptz` | Nullable |
 | `created_at` | `timestamptz` | Not null |
 
-Indexes and checks:
+For payment capture, `deduplication_key` is `payment-captured:{paymentId}`, aggregate type is `PAYMENT`, aggregate ID is payment ID, and the Kafka key is order ID. A duplicate append verifies the persisted immutable identity and payload hash; changed content is an integrity failure. A trigger rejects deletion or mutation of event identity, envelope, causation, correlation, trace origin, and creation time.
 
-- polling index `(available_at, created_at) WHERE status = 'PENDING'`;
-- recovery index `(lease_until) WHERE status = 'IN_FLIGHT'`, with expiry compared to current time in the query;
-- published rows require `published_at` and no lease;
-- in-flight rows require lease owner and expiry;
-- pending rows have no lease or published timestamp;
-- failed rows require a failure code and have no lease or published timestamp;
-- published rows have no failure code;
-- unique event ID is preserved through all retries;
-- payload and headers are JSON objects; and
-- the MVP payment-captured event type, version, aggregate, and deduplication-key format are checked.
-
-For payment capture, `deduplication_key` is `payment-captured:{paymentId}`. If that key already exists, finalization verifies that event ID-independent business data matches rather than inserting another event. The lease duration must exceed the configured worst-case Kafka publish duration or be renewed by heartbeat. Every publish, requeue, and status update compares the current lease owner token so a stale publisher cannot overwrite a newer claim.
-
-The publisher selects due rows in batches using `FOR UPDATE SKIP LOCKED`, assigns an owner token and configurable lease, and publishes outside the claim transaction. One cycle has 10 total publish attempts: the initial attempt plus nine retries after base delays of 1, 2, 4, 8, 16, 32, 64, 128, and 256 seconds, with configurable ±20% jitter. Tests disable jitter and shorten delays without changing counts. Exhaustion changes the row to `FAILED` and inserts its `OUTBOX_PUBLISH` failed operation in one PostgreSQL transaction.
-
-An authorized outbox retry atomically sets `status = 'PENDING'`, `available_at = now()`, clears lease/failure fields, and resets `cycle_attempt_count` to zero while preserving `total_attempt_count` and audit history.
+Partial indexes support due `PENDING` rows and expired `IN_FLIGHT` leases. The publisher selects with `FOR UPDATE SKIP LOCKED`, assigns an owner token and lease in a short transaction, and sends outside PostgreSQL. Publish/requeue/failed-marker updates require that owner. There are 10 total attempts per cycle; exponential base delays start at one second and cap at 256 seconds with configurable jitter. Exhaustion leaves the durable row `FAILED`. A general outbox retry command is future work.
 
 ### `notification_inbox`
 
@@ -223,7 +213,7 @@ An authorized outbox retry atomically sets `status = 'PENDING'`, `available_at =
 | --- | --- | --- |
 | `event_id` | `uuid` | Primary key and idempotency key |
 | `event_type` | `varchar(128)` | Not null |
-| `event_version` | `smallint` | Not null |
+| `schema_version` | `smallint` | Not null |
 | `topic` | `varchar(249)` | Not null |
 | `partition_id` | `integer` | Not null, `>= 0` |
 | `offset_value` | `bigint` | Not null, `>= 0` |
@@ -267,103 +257,53 @@ The inbox and notification insert share one transaction. No delivery address or 
 | `safe_headers` | `jsonb` | Allowlisted correlation/trace/retry metadata |
 | `failure_code`, `failure_summary` | `varchar(64)`, `varchar(500)` | Sanitized, not null |
 | `attempt_count` | `integer` | Not null, `>= 1` |
-| `status` | `varchar(16)` | `OPEN`, `REPLAYED`, or `RESOLVED` |
+| `status` | `varchar(20)` | `OPEN`, `REPLAYING`, `REPLAYED`, or `RESOLVED` |
 | `replayable` | `boolean` | True only for a validated event/key/payload |
 | `replay_count` | `integer` | Not null, `>= 0` |
+| `replay_available_at` | `timestamptz` | Nullable claim eligibility time |
+| `replay_lease_owner`, `replay_lease_until` | `varchar(100)`, `timestamptz` | Present only while replaying |
+| `last_replay_failure_code`, `last_replay_failed_at` | `varchar(64)`, `timestamptz` | Nullable consistent pair |
 | `dead_lettered_at`, `replayed_at`, `resolved_at` | `timestamptz` | Later timestamps nullable |
 | `version` | `bigint` | Not null |
 
 Unique `(consumer_name, original_topic, original_partition, original_offset)` makes DLT cataloging idempotent. Malformed bytes are hashed and measured but are not copied into the catalog; parsed event ID, key, and validated payload stay null and `replayable` is false. A replayable record requires all three parsed values.
 
-Replay preserves immutable event ID, key, body, and the envelope's original business correlation. It strips all prior delivery-attempt, retry-topic, DLT routing, and exception headers; adds failure/retry-request identifiers and the new retry correlation ID; and injects a new producer trace linked to the stored origin context. `REPLAYED` means broker acknowledgement only. The record becomes `RESOLVED` only when notification processing commits or confirms an identical prior effect. A repeated DLT after replay reopens the same failed operation and points it to the latest DLT record.
+Replay preserves immutable event ID, key, canonical body, and the envelope's original business correlation. It strips prior delivery/DLT/exception metadata and injects a replay request ID, new transport correlation, and new W3C trace context. `REPLAYED` means only that Kafka acknowledged the replay; it is not a claim that a notification was newly created. Source-evidence columns are immutable and rows cannot be deleted.
 
-The DLT listener inserts or verifies this catalog row and opens the linked notification-consume failed operation in one PostgreSQL transaction. It commits the DLT-topic offset only after that transaction succeeds. PostgreSQL failure pauses/retries the DLT record with bounded backoff and alerting; it never recursively sends a catalog failure to another DLT.
+The DLT listener inserts or verifies this catalog row before acknowledging the DLT record. Malformed input stores only hash, size, coordinates, and sanitized metadata; raw poison bytes and an invalid parsed body are not stored.
 
-### `failed_operations`
-
-| Column | Type | Rules |
-| --- | --- | --- |
-| `id` | `uuid` | Primary key |
-| `operation_type` | `varchar(32)` | `PAYMENT_AUTHORIZATION`, `PAYMENT_CAPTURE`, `OUTBOX_PUBLISH`, or `NOTIFICATION_CONSUME` |
-| `resource_type` | `varchar(32)` | Not null |
-| `resource_id` | `uuid` | Not null |
-| `source_reference` | `varchar(200)` | Stable deduplication reference |
-| `dead_letter_record_id` | `uuid` | Nullable FK to the latest DLT record for notification-consume failures |
-| `status` | `varchar(24)` | `OPEN`, `RETRY_REQUESTED`, `RETRYING`, `RESOLVED` |
-| `retryable` | `boolean` | Not null |
-| `attempt_count` | `integer` | Not null, `>= 1` |
-| `failure_code` | `varchar(64)` | Not null |
-| `failure_summary` | `varchar(500)` | Sanitized, not null |
-| `retry_payload` | `jsonb` | Nullable, allowlisted fields only |
-| `correlation_id` | `varchar(64)` | Not null |
-| `origin_traceparent` | `varchar(55)` | Nullable validated failed-operation context |
-| `origin_tracestate` | `varchar(512)` | Nullable validated trace state |
-| `version` | `bigint` | Not null |
-| `first_failed_at`, `last_failed_at` | `timestamptz` | Not null |
-| `resolved_at` | `timestamptz` | Nullable |
-
-A partial unique index on `(operation_type, source_reference)` for `OPEN`, `RETRY_REQUESTED`, and `RETRYING` prevents duplicate active failures.
-
-Malformed/unparsed DLT input creates a non-retryable `NOTIFICATION_CONSUME` operation. Only a DLT record with `replayable = true` can accept a notification retry.
-
-For malformed input, `resource_type` is `DEAD_LETTER_RECORD`, `resource_id` is the catalog row ID, `source_reference` is the original Kafka coordinate tuple, and `retry_payload` is null.
-
-### `operation_retry_requests`
+### `message_replay_audit`
 
 | Column | Type | Rules |
 | --- | --- | --- |
-| `id` | `uuid` | Primary key |
-| `operation_id` | `uuid` | Not null FK to failed operation |
-| `requested_by` | `varchar(200)` | Operator JWT subject |
-| `key_hash`, `request_hash` | `bytea` | SHA-256, 32 bytes |
-| `reason` | `varchar(500)` | Not null, 10–500 characters |
-| `status` | `varchar(16)` | `ACCEPTED`, `IN_PROGRESS`, `COMPLETED`, `FAILED` |
-| `correlation_id` | `varchar(64)` | New retry correlation, not null |
-| `request_traceparent` | `varchar(55)` | Nullable validated operator-request context |
-| `request_tracestate` | `varchar(512)` | Nullable validated trace state |
-| `available_at` | `timestamptz` | Not null |
-| `lease_owner` | `varchar(100)` | Nullable, required in progress |
-| `lease_until` | `timestamptz` | Nullable, required in progress |
-| `response_status` | `smallint` | Immutable `202` after acceptance |
-| `response_body` | `jsonb` | Immutable accepted-command response |
-| `response_location` | `varchar(300)` | Immutable operation Location |
-| `version` | `bigint` | Not null |
-| `requested_at`, `completed_at` | `timestamptz` | Completion nullable |
+| `id` | `uuid` | Primary key, UUIDv7 |
+| `replay_request_id` | `uuid` | Stable identity for one CLI invocation |
+| `dead_letter_record_id` | `uuid` | Not null FK to catalog row |
+| `actor` | `varchar(200)` | Validated operator/service identity |
+| `reason` | `varchar(500)` | Required, 10–500 characters |
+| `action` | `varchar(16)` | `REQUESTED`, `STARTED`, `PUBLISHED`, `FAILED`, or `RESOLVED` |
+| `correlation_id` | `varchar(64)` | New replay transport correlation |
+| `failure_code`, `failure_summary` | `varchar(64)`, `varchar(500)` | Required only for `FAILED` |
+| `occurred_at` | `timestamptz` | Not null UTC instant |
 
-Unique `(operation_id, requested_by, key_hash)` implements operator-command idempotency; the concrete operation ID is part of both operation scope and request fingerprint. The immutable response fields provide exact `202` replay. A partial unique index on `(operation_id) WHERE status IN ('ACCEPTED','IN_PROGRESS')` permits only one active retry request even when concurrent operators use different keys. Acceptance also compares the failed-operation version.
+Rows are append-only through an update/delete rejection trigger. The current replay path records request/publication/failure evidence; additional lifecycle actions are reserved by the schema.
 
-A worker claims `ACCEPTED` work through `UPDATE ... WHERE status = 'ACCEPTED' AND available_at <= now()` and records an owner token/lease. Renew, takeover after expiry, completion, and failure are owner/version guarded. The linked failed operation moves `RETRY_REQUESTED -> RETRYING` on claim. A stale worker cannot execute or complete work after takeover.
-
-The acceptance transaction inserts the immutable `202` snapshot, moves the failed operation `OPEN -> RETRY_REQUESTED`, and writes audit. Claim moves request/operation to `IN_PROGRESS`/`RETRYING` together. Payment and outbox completion update request, failed operation, and audit in the transaction that proves the durable effect. A replayed notification carries failure and retry-request IDs; its inbox/notification transaction also changes DLT/request/failed-operation to resolved/completed. Failure returns the operation to `OPEN`, marks the request `FAILED`, and appends audit. Lease fields exist only in `IN_PROGRESS`; terminal requests require `completed_at` and no lease.
-
-### `operator_audit`
-
-| Column | Type | Rules |
-| --- | --- | --- |
-| `id` | `uuid` | Primary key |
-| `operator_subject` | `varchar(200)` | Not null |
-| `action` | `varchar(32)` | `RETRY_REQUESTED`, `RETRY_COMPLETED`, or `RETRY_FAILED` |
-| `operation_id`, `retry_request_id` | `uuid` | Not null references |
-| `reason` | `varchar(500)` | Required on request; copied for immutable evidence |
-| `prior_status`, `new_status` | `varchar(24)` | Not null |
-| `original_correlation_id`, `retry_correlation_id`, `trace_id` | `varchar(64)` | Not null |
-| `occurred_at` | `timestamptz` | Not null |
-
-Insert-only database permissions and an update/delete rejection trigger make audit rows append-only.
+General `failed_operations`, operator retry-request tables, and an operator HTTP audit model are future work and are not created by `V005`.
 
 ## Capture accounting transaction
 
-After provider capture is confirmed, the implemented ledger slice runs one `READ COMMITTED` transaction:
+After provider capture is confirmed, the implemented capture-accounting slice runs one `READ COMMITTED` transaction:
 
 1. lock the payment by ID with `SELECT ... FOR UPDATE` through `payments.api`;
 2. verify `CAPTURE_CONFIRMED`, or verify a matching existing journal for `CAPTURE_ACCOUNTED`;
 3. insert one `PAYMENT_CAPTURE` journal transaction using its unique source/payment keys;
-4. insert the clearing debit and merchant-payable credit; and
-5. transition payment to `CAPTURE_ACCOUNTED` while retaining provider evidence.
+4. insert the clearing debit and merchant-payable credit;
+5. transition payment to `CAPTURE_ACCOUNTED` while retaining provider evidence; and
+6. append the canonical payment-captured outbox event through `messaging.api`, using the capture request UUID as causation.
 
-Deferred validation runs before commit. Any error rolls back both payment state and journal rows. At `READ COMMITTED`, the payment lock serializes same-payment posting: a waiter observes the committed accounted state and replays its journal. Unique indexes remain database backstops for callers that fail to follow the locking convention. Operations that later introduce cross-payment, account-period, or aggregate-balance decisions must reassess the isolation level.
+Deferred validation runs before commit. Any error rolls back payment state, journal rows, and outbox together. At `READ COMMITTED`, the payment lock serializes same-payment posting: a waiter observes the committed accounted state and verifies/replays its journal and outbox. Unique indexes remain database backstops for callers that fail to follow the locking convention. Operations that later introduce cross-payment, account-period, or aggregate-balance decisions must reassess the isolation level.
 
-Provider HTTP calls never run inside this boundary. Final `CAPTURED`, order `COMPLETED`, idempotency response finalization, and outbox insertion are future work and are not represented by `V003`.
+Provider HTTP calls never run inside this boundary. Final payment `CAPTURED`, order `COMPLETED`, and idempotency response finalization remain future work. `V004` adds the outbox table; it does not change those public workflow states.
 
 ## Kafka contract
 
@@ -372,14 +312,11 @@ Provider HTTP calls never run inside this boundary. Final `CAPTURED`, order `COM
 | Purpose | Topic |
 | --- | --- |
 | Main | `ledgerflow.payment-captured.v1` |
-| Retry 1 | `ledgerflow.payment-captured.v1.retry-1` |
-| Retry 2 | `ledgerflow.payment-captured.v1.retry-2` |
-| Retry 3 | `ledgerflow.payment-captured.v1.retry-3` |
 | Dead letter | `ledgerflow.payment-captured.v1.dlt` |
 
-The main and retry records use order ID as key. Production topics are provisioned outside the application with matching partition counts and explicit retention/ACL settings. Auto-creation is disabled outside local/test profiles.
+Main and replay records use order ID as key. Production topics are provisioned outside the application with explicit retention/ACL settings. Auto-creation is disabled.
 
-Retries are non-blocking after 1 second, 5 seconds, and 30 seconds. This means one initial processing attempt plus three retries before DLT. Retry topics improve partition availability but do not preserve cross-message ordering; this is acceptable because the MVP emits only one terminal payment-captured event per order and consumers deduplicate by event ID.
+The notification listener makes one initial processing attempt plus three bounded blocking retries with the configured retry delay. Poison input is published to the DLT and acknowledged before the source offset advances. No retry topics are used.
 
 ### Event envelope
 
@@ -389,10 +326,11 @@ The canonical event bytes are the validated typed envelope serialized in the exa
 {
   "eventId": "550e8400-e29b-41d4-a716-44665544000a",
   "eventType": "com.ledgerflow.payment.captured",
-  "eventVersion": 1,
-  "occurredAt": "2026-07-11T19:00:01Z",
-  "producer": "ledgerflow",
+  "schemaVersion": 1,
+  "aggregateId": "550e8400-e29b-41d4-a716-446655440002",
   "correlationId": "demo-order-001",
+  "causationId": "550e8400-e29b-41d4-a716-446655440003",
+  "occurredAt": "2026-07-11T19:00:01Z",
   "data": {
     "orderId": "550e8400-e29b-41d4-a716-446655440001",
     "paymentId": "550e8400-e29b-41d4-a716-446655440002",
@@ -404,11 +342,11 @@ The canonical event bytes are the validated typed envelope serialized in the exa
 }
 ```
 
-Kafka headers carry `event_id`, `event_type`, `event_version`, `x-correlation-id`, and OpenTelemetry-injected trace context. Consumers validate envelope/type/version before domain handling. Unknown versions and integrity-invalid records go directly to DLT rather than being retried or silently ignored.
+The envelope has exactly these top-level fields in this order: `eventId`, `eventType`, `schemaVersion`, `aggregateId`, `correlationId`, `causationId`, `occurredAt`, and `data`. Unknown fields are rejected. `aggregateId` equals payment ID and `causationId` is the stable provider capture request UUID.
+
+Kafka headers carry `event_id`, `event_type`, `schema_version`, `x-correlation-id`, and OpenTelemetry-injected W3C trace context. Consumers validate envelope/type/version, the order-ID record key, identity headers, and data relationships before domain handling. Unknown versions and integrity-invalid records follow the DLT path rather than being silently ignored.
 
 ## Failure modes and recovery
-
-The first row describes the active slice; later rows are target behavior for their respective milestones.
 
 | Failure | Durable state | Recovery |
 | --- | --- | --- |
@@ -417,19 +355,19 @@ The first row describes the active slice; later rows are target behavior for the
 | Provider succeeded; result persistence fails | Payment remains active with a stable request ID and `STARTED` event | Lookup records success/decline without another provider effect |
 | Provider response times out after processing | Payment is authorization/capture unknown | Lookup same request ID; resend only after provider returns `NOT_FOUND` |
 | Capture is provider-confirmed | Payment is `CAPTURE_CONFIRMED` | Retry the idempotent ledger posting boundary; no provider resend |
-| Process stops during ledger posting | Payment and journal both commit, or neither commits | Retry posting; row lock and unique keys return the original journal without duplicates |
-| Balance/source/correction trigger fails | Payment accounting and ledger transaction both roll back | Non-retryable integrity operation; investigate and fix forward |
-| Kafka unavailable | Outbox pending/leased with attempt count | Automatic backoff, then operator retry after limit |
+| Process stops during capture accounting | Payment, journal, and outbox all commit, or none commits | Retry posting; row lock and unique keys return the original journal/event without duplicates |
+| Balance/source/outbox constraint fails | Payment accounting, ledger transaction, and outbox all roll back | Investigate and fix forward; do not patch rows |
+| Kafka unavailable | Outbox is pending/leased with attempt counts | Automatic bounded backoff; after 10 attempts it remains `FAILED` for inspection |
 | Publish succeeds; mark fails | Outbox lease eventually expires | Publish duplicate; consumer inbox prevents duplicate notification |
 | Consumer DB commit succeeds; offset commit fails | Inbox and notification exist | Redelivery is a no-op and offset can commit |
-| Consumer repeatedly fails | Message reaches DLT | DLT listener records failed operation; operator republishes same event ID |
+| Consumer repeatedly fails | Message reaches DLT after initial plus three retries | DLT listener catalogs safe evidence; audited CLI can replay a validated record |
 | DLT publication fails | Source offset remains uncommitted | Kafka redelivers and recovery retries DLT publication |
 
 ## Migration and retention rules
 
 - Initial schema is delivered through ordered Flyway migrations and never edited after merge.
 - Financial and idempotency records have no automatic deletion in the MVP.
-- Published outbox, inbox, notification, failed-operation, and audit retention must be set before production launch through an operations/data-retention ADR.
+- Published outbox, inbox, notification, dead-letter, and replay-audit retention must be set before production launch through an operations/data-retention ADR.
 - Schema rollback uses forward corrective migrations. Application rollback is allowed only while the deployed schema remains backward compatible.
 
 ## References

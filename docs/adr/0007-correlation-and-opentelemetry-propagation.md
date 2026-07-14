@@ -1,67 +1,45 @@
-# ADR 0007: Propagate Correlation and OpenTelemetry Context End to End
+# ADR 0007: Propagate Correlation and OpenTelemetry Context Through Kafka
 
-- Status: Proposed
+- Status: Accepted for implemented Kafka propagation; operator linking remains proposed
 - Date: 2026-07-11
+- Accepted: 2026-07-13
 - Decision owners: LedgerFlow maintainers
 
 ## Context
 
-The MVP crosses inbound HTTP, provider HTTP, delayed outbox publication, Kafka retries/DLT, consumer processing, and operator recovery. Thread-local logging alone cannot connect these operations, and an outbox delay breaks naive in-memory trace propagation.
+Inbound HTTP, provider HTTP, delayed outbox publication, Kafka consumption, DLT handling, and replay do not share a thread or lifetime. A business correlation identifier is useful for operator search, while W3C trace context provides distributed-tracing semantics. Neither is an authorization credential.
 
-Correlation identifiers and distributed trace context solve related but different problems. Neither is an authorization credential.
+The repository already validates and propagates HTTP correlation IDs. This ADR accepts the implemented Kafka propagation only. A secured operator HTTP recovery workflow and trace links from an operator request remain future work.
 
 ## Decision
 
-Use W3C `traceparent` and `tracestate` through OpenTelemetry for distributed tracing. Use a separate `X-Correlation-Id` for operator-facing search and structured logs.
+The outbox row stores the validated business correlation ID plus the originating W3C `traceparent` and optional `tracestate`. The delayed publisher restores that origin where available, creates an OpenTelemetry producer span, and injects current W3C trace headers into the Kafka record. The Kafka correlation header is `x-correlation-id`; identity headers include `event_id`, `event_type`, and `schema_version`.
 
-At HTTP ingress:
+The notification and DLT listeners extract Kafka W3C headers before processing. Invalid or absent context cannot become trusted application state. The event envelope retains the original business correlation independently of delivery headers.
 
-- accept a valid 1–64 character correlation ID matching `[A-Za-z0-9._-]+` or generate a UUID replacement;
-- return the effective value on every response;
-- extract valid W3C trace context or start a new trace; and
-- do not accept arbitrary baggage in the MVP.
+DLT replay preserves the canonical envelope and Kafka key but removes prior exception, DLT-routing, and delivery metadata. It creates a new replay request ID, transport correlation ID, and independent producer trace. Thus the replay is observable as a later operation rather than a misleading immediate child of the original send. Linking a future operator HTTP request to stored origin context remains proposed.
 
-Outbound provider HTTP injects trace context and the effective correlation ID.
-
-The outbox row persists correlation ID plus the approved trace context captured when the event is created. The delayed publisher restores that context, creates a producer span, and injects its context into Kafka headers. Consumers extract the Kafka context before creating process spans.
-
-Automatic retry attempts create distinct spans while retaining event correlation and causation. Failed-operation evidence stores validated originating trace context. An operator retry starts a new trace/correlation and creates span links to both the operator request and failed operation/event rather than pretending it is an immediate child.
-
-For DLT replay, the immutable event envelope keeps its original business correlation. Kafka headers use the new retry correlation and newly injected producer trace; old delivery/retry/exception headers are removed. The retry request ID provides explicit causation.
-
-Structured logs use stable fields such as `correlation_id`, `trace_id`, `span_id`, `operation`, `order_id`, `payment_id`, `event_id`, `attempt`, `outcome`, and bounded `error_code`.
-
-APIs, Kafka/DLT headers, operator projections, and span attributes/events must not contain bearer tokens, payment references, idempotency keys, request/response bodies, raw provider responses, operator reasons, secrets, or stack traces. Protected structured server error logs may contain redacted internal stack traces under restricted access and retention. IDs are not metric labels. Telemetry export is asynchronous and failure cannot fail business processing.
+Structured logs use bounded fields such as `correlation_id`, `trace_id`, `span_id`, `operation`, `payment_id`, `event_id`, `attempt`, `outcome`, and stable error code. Kafka headers, spans, logs, DLT rows, and replay audit must not contain bearer tokens, payment-method references, idempotency keys, raw payloads/provider responses, secrets, or stack traces. IDs are not metric labels, and telemetry export failure cannot roll back business processing.
 
 ## Consequences
 
-### Positive
+Outbox delay and replay preserve observable causality without conflating business and trace identifiers. The costs are persisted operational metadata, explicit header allowlists, retention requirements, and tests for propagation/redaction. Sampling may still omit successful traces.
 
-- Operators can follow one flow across synchronous and asynchronous boundaries.
-- Outbox delay does not erase trace causality.
-- Manual recovery remains linked without creating misleading parent/child timing.
-- Explicit allowlists reduce telemetry data leakage and cardinality risk.
-
-### Costs and risks
-
-- Trace context becomes persisted operational metadata with retention implications.
-- Instrumentation and redaction require integration tests.
-- Sampling may omit some successful traces.
-- Correlation and tracing libraries add runtime configuration and exporter failure modes.
+Operator-request correlation, authorization, failure inspection, and span-link policy will be accepted only with the future operator HTTP milestone.
 
 ## Alternatives considered
 
 ### Use correlation ID as the trace ID
 
-Rejected because trace identifiers have protocol semantics and should be managed by OpenTelemetry.
+Rejected because trace IDs have W3C/OpenTelemetry protocol semantics.
 
-### Start a new unrelated trace at Kafka consumption
+### Start unrelated Kafka traces
 
-Rejected because it prevents end-to-end causality analysis.
+Rejected because it discards useful causality across the outbox delay.
 
-### Put correlation ID in unrestricted W3C baggage
+### Preserve old transport headers during replay
 
-Rejected to avoid propagating untrusted arbitrary baggage and accidental attribute expansion.
+Rejected because stale delivery/exception metadata is misleading and may leak implementation detail.
 
 ### Fail business work when telemetry export fails
 

@@ -8,7 +8,7 @@
 - Last updated: 2026-07-13
 - Approved by: LedgerFlow maintainer
 - Approval date: 2026-07-13
-- Current milestone: Milestone 5A — Immutable ledger posting (`Complete`); no later milestone is approved
+- Current milestone: Milestone 5B — Transactional outbox and Kafka delivery (`In Progress`)
 - Canonical plan path: `docs/plans/mvp-execplan.md` by explicit maintainer request
 
 ## Purpose and outcome
@@ -52,7 +52,7 @@ The repository contains the verified foundation and completed Create Order, paym
 - `docs/architecture.md`, `docs/development-workflow.md`, `README.md`, and this plan record the approved bootstrap choices and developer commands.
 - ADR 0001 establishes the ADR process; ADR 0003 is accepted for Create Order, ADR 0004 for the provider/payment state machine, and ADR 0005 for ledger posting.
 
-The maintainer's 2026-07-13 ledger-only request accepts ADR 0005 and approves Milestone 5A below. It deliberately excludes order transitions, outbox, Kafka, notifications, public routes, and operator APIs. ADRs 0002 and 0006 through 0008 remain proposed.
+The maintainer's 2026-07-13 transactional-outbox and Kafka request approves the revised Milestone 5B below and accepts the outbox/Kafka decision in ADR 0006. It deliberately excludes public payment/order/operator endpoints and final order-state orchestration. ADR 0007 is accepted only for the Kafka propagation implemented by this milestone; operator recovery tracing remains proposed.
 
 The maintainer explicitly requested this ExecPlan at `docs/plans/mvp-execplan.md`. This is a one-plan path exception to `.agent/PLANS.md`, which normally specifies `.agent/plans/YYYY-MM-DD-<name>.md`. Do not create a duplicate plan.
 
@@ -68,7 +68,7 @@ The maintainer explicitly requested this ExecPlan at `docs/plans/mvp-execplan.md
 - A test/local HTTP mock payment provider with stable operation keys and deterministic faults.
 - PostgreSQL 18, Flyway, explicit Spring `JdbcClient` SQL, and PostgreSQL Testcontainers.
 - Immutable balanced double-entry posting for confirmed capture.
-- Transactional outbox, Kafka publication, inbox deduplication, notification persistence, retry topics, DLT catalog, and operator replay.
+- Transactional outbox, Kafka publication, inbox deduplication, notification persistence, bounded consumer retries, DLT catalog, and operator replay.
 - Correlation IDs, structured logs, OpenTelemetry HTTP/Kafka propagation, metrics, health, and sanitized failure records.
 - Unit, integration, contract, architecture, concurrency, crash-window, security, and end-to-end tests.
 - A laptop-sized Docker Compose environment for PostgreSQL, Kafka, Valkey, Keycloak, OpenTelemetry Collector, Prometheus, Grafana, Tempo, and Loki, controlled by repository scripts.
@@ -114,35 +114,33 @@ The implemented `application/src/testFixtures/openapi/mock-payment-provider.yaml
 - A future `orders.api` package will own only cross-module commands and guarded order transitions that are actually needed.
 - `payments.api` currently exposes the narrow locked accounting view and state transition needed by ledger; public/provider workflow APIs remain module-internal until an approved coordinator needs them.
 - `ledger.api` exposes idempotent payment-capture posting and exact compensating correction operations.
-- `messaging.api` exposes `appendOutboxEvent` joined to the caller's transaction.
-- `notifications.api` exposes idempotent event processing to the Kafka adapter.
+- `messaging.api` exposes typed payment-captured envelope types and `OutboxEventAppender`, which must join the caller's transaction.
+- `notifications.api` exposes only the narrow audited `DeadLetterReplay` command; Kafka processing remains module-internal.
 - `operations.api` accepts sanitized failure facts, resolution facts, and retry commands.
 
 Cross-module callers depend only on these APIs. Payment domain and provider ports do not depend on Spring HTTP, JDBC, or Kafka adapters.
 
 ### Persistence
 
-Flyway migrations create the tables, checks, indexes, functions, triggers, and seed accounts specified by `docs/data-model.md`. The first three are implemented; later files are planned:
+Flyway migrations create the tables, checks, indexes, functions, triggers, and seed accounts specified by `docs/data-model.md`. The first five are implemented:
 
 1. `V001__create_orders_and_idempotency.sql`
 2. `V002__create_payment_tables.sql`
 3. `V003__create_immutable_ledger.sql`
-4. `V004__create_operations_tables.sql`
-5. `V005__create_transactional_outbox.sql`
-6. `V006__create_notification_inbox_and_dlt_tables.sql`
+4. `V004__create_transactional_outbox.sql`
+5. `V005__create_notification_inbox_and_dead_letters.sql`
 
 Once merged, these migrations are immutable. Corrections use later versions.
 
-The successful capture-finalization transaction must update payment/order and insert one balanced ledger transaction, entries, and logical outbox event atomically. It completes the order idempotency snapshot with `201` only when the original POST remains in progress; an already completed `202` snapshot is preserved. Provider calls and Kafka calls never run inside this transaction.
+The implemented capture-accounting transaction locks a provider-confirmed payment, inserts one balanced ledger transaction and its entries, transitions the payment to `CAPTURE_ACCOUNTED`, and appends one logical outbox event atomically. Provider and Kafka calls never run inside this transaction. Final payment/order transitions and public workflow orchestration remain a later milestone.
 
 ### Kafka interfaces
 
 - Main topic: `ledgerflow.payment-captured.v1`
-- Retry topics: `.retry-1`, `.retry-2`, `.retry-3`
 - Dead-letter topic: `.dlt`
 - Consumer group: `ledgerflow-notifications-v1`
 - Record key: order ID
-- Event type/version: `com.ledgerflow.payment.captured`, version `1`
+- Event type/schema: `com.ledgerflow.payment.captured`, schema version `1`
 - Attempts: one initial processing attempt plus retries after 1 second, 5 seconds, and 30 seconds, then DLT
 
 The event envelope, safe data, headers, deduplication behavior, and DLT catalog are fixed in `docs/data-model.md`.
@@ -299,48 +297,55 @@ Only the current milestone is approved or in progress. Later milestones remain `
   - SQL examples show trial/account balances and chronological payment journal history.
   - No order, outbox, Kafka, notification, operator, or public API behavior is introduced.
 
-### Milestone 5B — Finalize order state and transactional outbox
+### Milestone 5B — Add transactional outbox and Kafka delivery
 
-- Status: Proposed
-- Intended outcome: An accounted capture transitions to final `CAPTURED`, completes its order, persists the replayable HTTP outcome, and writes one logical outbox event in one PostgreSQL transaction.
+- Status: In Progress
+- Intended outcome: Capture accounting writes one logical versioned outbox event in the same PostgreSQL transaction as the balanced ledger/payment operation. A dedicated multi-instance-safe worker publishes it to Kafka at least once, and an idempotent consumer creates one notification despite duplicate delivery. Bounded failures reach a cataloged dead-letter topic and validated records can be replayed through an audited command-line operation.
 - Implementation work:
-  - Apply the outbox migration, including unique logical event keys and owner-guarded lease fields.
-  - Require an existing valid `CAPTURE_ACCOUNTED` journal before finalization; transition payment/order and insert outbox atomically without reposting the ledger.
-  - Persist safe event data, correlation ID, and W3C trace context with event type/version.
-  - Extend the active order route only after every finalization component exists.
+  - Apply `V004` for the outbox and `V005` for inbox, notifications, DLT catalog, and replay audit. Operations API tables remain future work.
+  - Extend the existing `READ_COMMITTED` capture-accounting transaction with a `Propagation.MANDATORY` outbox append. Do not add order completion, final `CAPTURED`, public routes, or provider calls.
+  - Define a canonical envelope containing event ID, type, schema version, aggregate ID, correlation ID, causation ID, occurred-at timestamp, and typed payment-captured data. Persist validated W3C trace context separately from the immutable envelope.
+  - Implement leased polling with `FOR UPDATE SKIP LOCKED`, per-claim owner tokens, safe lease expiry, acknowledged Kafka sends, bounded exponential publisher retries, and owner-guarded completion/failure updates. Kafka I/O must not occur in a PostgreSQL transaction.
+  - Implement record consumption with same-ID/same-hash no-op, same-ID/different-hash integrity failure, atomic inbox/notification insertion, and record-level offset commits.
+  - Configure one initial consumer attempt plus three bounded retries, direct DLT for non-retryable input, acknowledged DLT forwarding, and idempotent DLT cataloging.
+  - Add an explicit test seam for a process failure after Kafka acknowledgement but before the outbox marker. Lease expiry must republish the same event ID and the inbox must prevent a second notification.
+  - Add narrow command-line DLT replay that accepts only cataloged, validated records; preserves immutable event ID/key/body; strips delivery exception headers; publishes with a new correlation/trace context; and writes append-only request/result audit. Do not add the proposed operator HTTP API.
+  - Update architecture, data/domain model, threat model, runbook, README, ADR 0006, the Kafka-applicable portion of ADR 0007, and this plan with accurate at-least-once guarantees.
 - Validation commands:
-  - `./gradlew integrationTest --tests '*CaptureFinalizationIntegrationTest'`
-  - `./gradlew integrationTest --tests '*CaptureCrashRecoveryIntegrationTest'`
-  - `./gradlew integrationTest --tests '*OrderApiIntegrationTest'`
+  - `./gradlew :modules:messaging:test :modules:notifications:test`
+  - `./gradlew :application:integrationTest --tests '*TransactionalOutboxIntegrationTest'`
+  - `./gradlew :application:integrationTest --tests '*OutboxPublisherIntegrationTest'`
+  - `./gradlew :application:integrationTest --tests '*KafkaRetryAndDltIntegrationTest'`
+  - `./gradlew architectureTest documentationCheck`
   - `./gradlew clean verify`
 - Observable acceptance:
-  - Accounted payment, order completion, idempotency response, and outbox converge without another provider or ledger effect.
-  - Concurrent/repeated finalizers create one final state and one logical event.
-  - Public responses and replay behavior match OpenAPI.
-
-### Milestone 6 — Publish, consume, retry, dead-letter, and notify
-
-- Status: Proposed
-- Intended outcome: The committed event reaches Kafka at least once and creates exactly one notification despite duplicates; failures follow bounded retry topics and become cataloged DLT operations.
-- Implementation work:
-  - Apply `V006` for inbox, notifications, DLT catalog, and the DLT linkage added to existing operation records.
-  - Implement leased polling with `SKIP LOCKED`, owner tokens, safe lease duration/renewal, broker acknowledgement, the specified initial-plus-nine 1/2/4/8/16/32/64/128/256-second jittered retry cycle, atomic failure projection, and operator-visible exhaustion/reset semantics.
-  - Implement the versioned Kafka envelope and OpenTelemetry/correlation headers.
-  - Implement record consumer, same-ID/same-hash no-op, same-ID/different-hash integrity failure, atomic inbox/notification, and post-commit offset behavior.
-  - Configure one initial attempt plus three non-blocking retries at 1/5/30 seconds, direct DLT for non-retryable input, acknowledged DLT forwarding, and idempotent DLT cataloging.
-- Validation commands:
-  - `./gradlew integrationTest --tests '*OutboxPublisherIntegrationTest'`
-  - `./gradlew integrationTest --tests '*NotificationConsumerIntegrationTest'`
-  - `./gradlew integrationTest --tests '*KafkaRetryAndDltIntegrationTest'`
-  - `./gradlew clean verify`
-- Observable acceptance:
+  - A new capture journal, `CAPTURE_ACCOUNTED` transition, and one logical outbox row commit or roll back together; replay/concurrency does not create another logical event.
   - Kafka outage leaves a durable due/failed outbox row and never marks it published without acknowledgement.
   - Crash after acknowledgement can publish the same event ID twice while producing one notification.
   - Consumer crash after database commit but before offset commit produces one notification after redelivery.
   - Transient processing receives exactly four total attempts; poison/version/hash-conflict events reach the DLT appropriately.
   - Failed DLT publication leaves the source offset uncommitted.
   - Malformed records catalog safe hash/size/coordinates without raw bytes and are not replayable.
-  - DLT-catalog database failure commits no offset, retries with alerting, and creates no recursive DLT.
+  - A validated DLT record can be replayed only through an audited command using an explicit actor and reason; malformed input cannot be replayed.
+  - Event and transport headers contain the required envelope identity, correlation, causation, and propagated W3C trace context.
+  - Documentation states PostgreSQL business/outbox atomicity, at-least-once publication and consumption, and one idempotent notification side effect without claiming exactly-once end-to-end delivery.
+
+### Milestone 6 — Finalize order and expose the complete public workflow
+
+- Status: Proposed
+- Intended outcome: An accounted and event-recorded capture transitions to final `CAPTURED`, completes its order, and connects the existing public order workflow without repeating provider, ledger, or outbox effects.
+- Implementation work:
+  - Define the coordinator and narrow order/payment APIs needed for guarded finalization.
+  - Preserve the existing Create Order replay contract while exposing current workflow state accurately.
+  - Add no new event for an already-recorded capture; verify the existing outbox identity instead.
+- Validation commands:
+  - `./gradlew :application:integrationTest --tests '*CaptureFinalizationIntegrationTest'`
+  - `./gradlew :application:integrationTest --tests '*OrderApiIntegrationTest'`
+  - `./gradlew clean verify`
+- Observable acceptance:
+  - Final payment/order transitions are guarded and idempotent.
+  - Provider, ledger, and outbox effects are not repeated.
+  - Public responses and replay behavior match OpenAPI.
 
 ### Milestone 7 — Add secured operator recovery and end-to-end observability
 
@@ -408,7 +413,7 @@ The JDK does not provide Spring MVC integration, bean validation, JDBC pooling a
 
 - the web and validation stack introduces an embedded server and JSON/input-processing surface, so later API milestones must add request limits, contract tests, authorization, and supported-version patching;
 - JDBC, PostgreSQL, and Flyway introduce database credentials, connections, and migration authority, so configuration is externalized, tests use disposable PostgreSQL, and deployment must separate migration-owner and runtime roles before production;
-- Kafka introduces background network clients and future broker credentials, so this milestone adds dependencies only—no topic, producer, consumer, or connection-on-startup behavior;
+- Kafka introduces background network clients and broker credentials. The scaffolding milestone added dependencies without startup behavior; Milestone 5B activates the publisher and consumers only through explicit configuration, keeps topic auto-creation disabled, and externalizes connection/security settings;
 - the resource-server starter changes the security surface and will require an explicitly approved issuer, audience, algorithms, scopes, and failure behavior before business routes exist;
 - Actuator exposes only health, info, and Prometheus endpoints in the scaffold; production network policy and authorization must restrict any later sensitive endpoint; and
 - Micrometer/OpenTelemetry can create outbound traffic and high-cardinality or sensitive telemetry, so exporters are disabled in the context test and later milestones must configure bounded export, redaction, safe dimensions, and collector trust.
@@ -466,7 +471,7 @@ Provide documented explicit local/test/demo configuration with PostgreSQL 18.4 a
 | Consumer DB failure before commit | Offset not committed; retry handles record again |
 | Consumer DB commit then offset failure | Redelivery finds same event ID/hash and performs no duplicate notification |
 | Event ID with changed payload | Integrity failure; no domain effect; direct DLT |
-| Transient consumer failure | Initial plus three retry-topic attempts, then DLT |
+| Transient consumer failure | Initial attempt plus three bounded blocking retries, then DLT |
 | DLT publication failure | Source offset remains uncommitted and record is redelivered |
 | DLT catalog duplication | Original topic/partition/offset unique constraint makes cataloging idempotent |
 | Concurrent operator retries | One active retry and one command result; all others replay/conflict |
@@ -552,6 +557,10 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - [x] `2026-07-13 12:56Z` — Implemented the framework-independent ledger model, payment/ledger module APIs, V003 immutable journal and deferred constraints, atomic `CAPTURE_ACCOUNTED` boundary, replayable exact corrections, and focused balance/duplicate/concurrency/rollback tests without public, order, outbox, or Kafka behavior.
 - [x] `2026-07-13 12:56Z` — Added read-only balance/history SQL and aligned ADRs, architecture, domain/data model, threat model, README, runbook, and architecture rules with the delivered ledger-only scope. Focused unit and PostgreSQL ledger integration suites pass; full verification remains pending.
 - [x] `2026-07-13 13:18Z` — Ran `./gradlew --version` and `./gradlew clean verify --console=plain` on Java 25/Gradle 9.6.1 after fixing one test-only line-length finding; all 56 formatting, static-analysis, unit, PostgreSQL integration, architecture, Compose, OpenAPI, and documentation task actions passed.
+- [x] `2026-07-13 15:41Z` — Recorded explicit maintainer approval for transactional outbox and Kafka delivery, inspected the clean worktree and existing `READ_COMMITTED` capture-accounting boundary, and revised Milestone 5B to include outbox publication, inbox/notification, bounded DLT handling, Kafka trace propagation, and narrow audited command-line replay while excluding public order/payment/operator APIs.
+- [x] `2026-07-13 16:17Z` — Implemented V004/V005, the atomic capture-accounting/outbox append, leased multi-instance publisher, versioned envelope and Kafka headers, notification inbox/deduplication, bounded consumer retries and DLT catalog, audited command-line replay, Kafka Testcontainers coverage, crash-window proof, and accurate at-least-once documentation.
+- [x] `2026-07-13 16:20Z` — Clean Java 25 `-Xlint:all -Werror` compilation passed for 123 production sources plus every unit, integration, and architecture source. All 27 unit tests and all five Spring Modulith/ArchUnit checks passed through the cached JUnit launcher; Google Java Format, ktlint, and Checkstyle checks passed.
+- [ ] `2026-07-13 16:23Z` — Required `./gradlew clean verify` and Kafka Testcontainers execution remain pending. The wrapper reports Gradle 9.6.1/Java 25 but this sandbox denies Gradle's wildcard-IP socket and access to `/var/run/docker.sock`; a repeat local PostgreSQL start is likewise denied Unix-socket creation. V004/V005 syntax and representative state transitions were validated earlier against local PostgreSQL 18.4.
 
 ## Surprises and discoveries
 
@@ -560,7 +569,7 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - The accepted architecture originally deferred the base package, concrete feature modules, and Gradle project structure. The maintainer's Milestone 1 approval selected `com.ledgerflow`, six feature projects, and one deployable application project. ADR 0003 was later accepted for Create Order and ADR 0004 for Milestone 4; the remaining business-flow ADRs stay proposed.
 - PostgreSQL row `CHECK` constraints cannot enforce a balance across multiple entries. A deferred constraint trigger on both parent and entry changes is necessary to reject even an empty ledger transaction.
 - Provider capture and the local database cannot be atomic. Stable provider operation keys, lookup, and idempotent local finalization are required; a database transaction held across HTTP would not solve this gap.
-- Non-blocking Kafka retry topics keep failed records durable and partitions available but sacrifice ordering. One terminal event per order and event-ID idempotency make that tradeoff acceptable for the MVP.
+- Bounded blocking Kafka retries temporarily pause the affected partition, but preserve a smaller and more auditable topic topology. The 1/5/30-second schedule and one terminal event per order keep that tradeoff acceptable for the MVP; sustained failures still move to DLT.
 - Spring Boot 4.1's BOM imports the Testcontainers 2.0.5 BOM, so the PostgreSQL, Kafka, and Redis-compatible test modules remain versionless without declaring a second platform dependency.
 - Spring Modulith treats only a module's base package as exposed by default; an `api` subpackage must be annotated as a named interface. The ledger and payment API packages use compile-only `spring-modulith-api` annotations from the existing Modulith BOM, and the architecture test rejects non-exposed cross-module access.
 - Testcontainers 2 deprecates its legacy generic PostgreSQL container package. The integration test uses `org.testcontainers.postgresql.PostgreSQLContainer` and enables Java 25 native access for JNA-backed container discovery.
@@ -590,7 +599,7 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - **2026-07-11 — Use stable provider operation keys and explicit unknown states.** A timeout is not proof of failure.
 - **2026-07-11 — Use `PAYMENT_CLEARING` debit and `MERCHANT_PAYABLE` credit.** This balances the demo without assuming revenue ownership.
 - **2026-07-11 — Use PostgreSQL polling outbox plus Kafka inbox.** At-least-once behavior is explicit and does not require distributed transactions or Debezium.
-- **2026-07-11 — Use one initial consumer attempt plus three retry-topic attempts at 1/5/30 seconds.** Then publish to DLT; non-retryable input goes directly there.
+- **2026-07-13 — Use one initial consumer attempt plus three bounded blocking retries at 1/5/30 seconds.** Then publish to DLT; non-retryable validation or integrity failures go directly there. This supersedes the original retry-topic proposal and avoids extra retry-topic operations for the MVP.
 - **2026-07-11 — Use JWT resource-server security.** Operator retry is privileged; the application consumes but does not issue tokens.
 - **2026-07-11 — Use UUIDv4 from the JDK.** Superseded for order IDs by the maintainer's 2026-07-13 UUIDv7 requirement and PostgreSQL 18's native `uuidv7()` support; no dependency is added.
 - **2026-07-13 — Make order creation one short idempotency transaction.** Claiming the unique scoped key, inserting the order, and persisting the original response snapshot commit together. This avoids committed leases or incomplete resources before external payment work exists; ADR 0003 must reflect this accepted slice-specific boundary.
@@ -599,16 +608,19 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - **2026-07-13 — Reuse Spring Boot-managed JDBC/Jackson dependencies and the JDK HTTP client for payments.** The payments feature declares the already-approved Data JDBC and Jackson starters because its adapter compiles against those APIs. The JDK client supplies connect/request timeouts without a resilience or HTTP-client library. No new production dependency family or manually managed version is introduced; retry and classification remain explicit domain/application behavior.
 - **2026-07-13 — Treat timeout and post-call crashes as unknown outcomes, not temporary failures.** Authorization/capture recovery always queries the provider with the persisted request ID; only `NOT_FOUND` permits a same-ID resend. This accepts ADR 0004 for the payment boundary and prevents duplicate provider effects.
 - **2026-07-13 — Persist provider success as `CAPTURE_CONFIRMED`.** `CAPTURE_ACCOUNTED` now means the balanced journal also committed; final `CAPTURED` remains reserved for later order/outbox finalization.
-- **2026-07-13 — Split ledger posting from final outbox activation at the maintainer's explicit scope boundary.** Milestone 5A transitions `CAPTURE_CONFIRMED -> CAPTURE_ACCOUNTED` in the same transaction as the journal. Milestone 5B remains unapproved and owns `CAPTURED`, order completion, HTTP finalization, and outbox. ADRs 0004 and 0005 record the split.
+- **2026-07-13 — Split ledger posting from final outbox activation at the maintainer's explicit scope boundary.** Milestone 5A transitions `CAPTURE_CONFIRMED -> CAPTURE_ACCOUNTED` in the same transaction as the journal. At that point Milestone 5B was unapproved; the later transactional-outbox approval activated only the outbox/Kafka/notification portion while final `CAPTURED`, order completion, and HTTP orchestration moved to Milestone 6. ADRs 0004 through 0006 record the resulting boundaries.
 - **2026-07-13 — Use Spring `READ_COMMITTED`, payment-row locking, and uniqueness for ledger idempotency.** Same-payment writers serialize on `SELECT ... FOR UPDATE`; unique payment/source indexes are database backstops. No new production dependency is necessary because existing Spring transaction/JDBC capabilities cover the boundary. ADR 0005 records the isolation decision.
 - **2026-07-13 — Export `payments.api` and `ledger.api` as Spring Modulith named interfaces.** Compile-only annotation dependencies use the already selected Modulith BOM and add no runtime library. This makes the documented API/internal distinction enforceable by the existing architecture check.
+- **2026-07-13 — Attach the first payment-captured outbox event to the existing capture-accounting transaction.** `LedgerPostingService.postPaymentCapture` is the current complete business transaction: it locks the provider-confirmed payment, writes the balanced journal, and records `CAPTURE_ACCOUNTED`. A mandatory `messaging.api` append makes those effects and the event atomic without prematurely adding final order/public workflow behavior. This accepts ADR 0006 for the approved scope.
+- **2026-07-13 — Use a canonical `schemaVersion` envelope with aggregate and causation identity.** The immutable envelope contains the fields required by the maintainer; the initial causation ID is the stable provider capture request ID, while replay request identity remains transport/audit metadata so replay does not mutate the event body.
+- **2026-07-13 — Deliver replay as a narrow audited command-line operation.** Validated DLT catalog records can be requested with an explicit actor/reason and republished with acknowledgement and append-only audit; malformed records are never replayable. The proposed secured operator HTTP API remains outside this milestone.
 - **2026-07-11 — Validate OpenAPI without server code generation.** Contract tests enforce conformance without generated framework coupling.
 - **2026-07-11 — Contract the mock provider separately and exclude it from the main artifact.** Its external HTTP behavior is validated without exposing simulator controls in production.
 - **2026-07-11 — Separate Flyway owner and runtime database roles.** Migration authority does not grant the application DDL or mutation rights over immutable financial/audit data.
 
 ## Outcome and follow-up
 
-Current outcome: Milestones 1 through 5A are complete. The repository has a verified multi-project application foundation, validated local dependency/observability environment, an OpenAPI-first secured Create Order slice, and non-public payment/provider and ledger slices. V001 proves UUIDv7 orders and durable Create Order idempotency. V002 and PostgreSQL/provider tests prove explicit legal transitions, stable provider request IDs, bounded retry, terminal declines, lookup-first crash recovery, optimistic concurrency, and immutable attempt evidence without holding a transaction across HTTP. V003 and ledger tests prove two-or-more-entry/equal-total domain rules, integer INR capture postings, payment/order links, deferred PostgreSQL balance/source validation, atomic `CAPTURE_ACCOUNTED` transition, sequential and concurrent idempotency, append-only rows, and exact compensating corrections. No outbox, Kafka producer/consumer, notification, operator API, public payment behavior, or final order/capture orchestration has been created. Milestone 5B and later milestones remain proposed and require separate approval.
+Current outcome: Milestones 1 through 5A are complete. Milestone 5B implementation is present and awaits the required full wrapper/Testcontainers verification, which the current sandbox cannot execute because it denies Gradle socket creation and Docker daemon access. The approved slice adds V004/V005, an atomic payment-accounting/outbox boundary, an immutable versioned payment-captured envelope, a leased multi-instance publisher, Kafka trace propagation, inbox-backed notification idempotency, bounded retry and DLT cataloging, and audited command-line replay. It deliberately does not add operator HTTP APIs, public payment behavior, final order/capture orchestration, or end-to-end exactly-once claims. Focused Java 25 compilation, formatting, static checks, unit tests, migration validation against PostgreSQL 18, documentation checks, and Git whitespace checks pass; Kafka Testcontainers and `./gradlew clean verify` remain pending in an environment with Docker and socket permissions.
 
 When all milestones are complete, update this section with:
 

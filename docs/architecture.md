@@ -2,7 +2,7 @@
 
 ## Status
 
-This document defines the architectural constraints for LedgerFlow. Milestones 1 and 2 established the application and local infrastructure, Milestone 3 added the Create Order HTTP/persistence slice, Milestone 4 added the non-public payment/provider boundary, and Milestone 5A adds non-public immutable ledger posting. Order/payment orchestration, final capture state, outbox, and messaging remain unimplemented.
+This document defines the architectural constraints for LedgerFlow. Milestones 1 and 2 established the application and local infrastructure, Milestone 3 added the Create Order HTTP/persistence slice, Milestone 4 added the non-public payment/provider boundary, Milestone 5A added immutable ledger posting, and Milestone 5B added the transactional outbox, Kafka relay, idempotent notification consumer, dead-letter catalog, and audited command-line replay. Public payment orchestration, order completion, a final payment `CAPTURED` state, and operator HTTP workflows remain future work.
 
 ## Architectural goals
 
@@ -65,7 +65,9 @@ The `payments` module uses a hexagonal boundary because provider I/O is replacea
 
 The `ledger` module keeps a framework-independent journal model because balance, immutability, and compensation rules need focused unit tests. Its small `ledger.api` is the only cross-module posting surface. Ledger posting uses the `payments.api` accounting boundary; it does not import payment internals or query payment tables. Spring transactions and JDBC remain internal adapters, and ArchUnit verifies that the ledger domain does not depend on them.
 
-Milestone 5A intentionally introduces one directed feature dependency: `ledger -> payments.api`. A capture-posting transaction locks the payment through that API, inserts the ledger transaction and entries, and marks it `CAPTURE_ACCOUNTED`. The payments module never calls ledger, so the dependency remains acyclic. A later coordinator may call both public APIs but must not bypass either module's internals.
+Capture accounting has two directed feature dependencies: `ledger -> payments.api` and `ledger -> messaging.api`. A capture-posting transaction locks the payment, inserts the ledger transaction and entries, marks it `CAPTURE_ACCOUNTED`, and invokes the mandatory-transaction outbox appender. Payments and messaging do not call ledger, so the dependencies remain acyclic. A later coordinator may call the public APIs but must not bypass module internals.
+
+The `messaging.api.OutboxEventAppender` is deliberately narrow: it appends one typed payment-captured event only when a caller already owns a PostgreSQL transaction. The messaging module owns canonical envelope serialization, outbox persistence, leases, retry timing, Kafka publication, and W3C trace-header injection. The notifications module owns validation, inbox deduplication, notification persistence, bounded consumer retry, the DLT catalog, and audited replay. Neither consumer nor replay path may call ledger or mutate financial state.
 
 ADR 0004 accepts one narrow database-boundary exception: the payment-owned `V002` constraint trigger reads only an order's ID, amount, and currency to reject a payment whose copied money differs from its referenced order. Application code still cannot query another module's tables, and a PostgreSQL integration test verifies this invariant. This exception does not authorize general cross-module SQL.
 
@@ -99,21 +101,34 @@ Migration rules:
 - destructive or long-running migrations require an ExecPlan with compatibility, recovery, and rollout details; and
 - a module accesses only tables it owns unless an accepted ADR defines a controlled exception.
 
-The current local, production-design, and integration-test baseline is PostgreSQL 18. Migrations use ordered `VNNN__description.sql` names. `V001` owns orders and HTTP idempotency; `V002` owns payments and append-only payment attempt history; `V003` owns ledger accounts, journal transactions, entries, deferred balance checks, and the interim payment accounting state required by their atomic boundary.
+The current local, production-design, and integration-test baseline is PostgreSQL 18. Migrations use ordered `VNNN__description.sql` names. `V001` owns orders and HTTP idempotency; `V002` owns payments and append-only payment attempt history; `V003` owns ledger accounts, journal transactions, entries, deferred balance checks, and `CAPTURE_ACCOUNTED`; `V004` owns the transactional outbox; and `V005` owns the notification inbox, notification records, dead-letter catalog, and append-only replay audit.
 
-### Ledger transaction and isolation boundary
+### Capture-accounting transaction and isolation boundary
 
 Payment-provider I/O completes before accounting starts. `LedgerPosting.postPaymentCapture` then opens one PostgreSQL `READ COMMITTED` transaction and performs this sequence:
 
 1. lock the payment row through `payments.api` using `SELECT ... FOR UPDATE`;
 2. accept `CAPTURE_CONFIRMED`, or verify and replay an existing `CAPTURE_ACCOUNTED` journal;
 3. insert one journal header and all entries;
-4. transition the locked payment to `CAPTURE_ACCOUNTED` with its expected version; and
-5. let deferred ledger constraints validate the complete journal before commit.
+4. transition the locked payment to `CAPTURE_ACCOUNTED` with its expected version;
+5. append one immutable, deduplicated payment-captured outbox row through `messaging.api`; and
+6. let deferred ledger constraints validate the complete journal before commit.
 
-The payment row is the same-payment serialization point. Under `READ COMMITTED`, a concurrent writer waits, then observes `CAPTURE_ACCOUNTED` and returns the existing matching journal. Unique source and payment indexes prevent duplicates even if a future caller fails to follow the lock convention. A constraint or state failure rolls back the payment transition and every ledger row. This reasoning does not cover future cross-payment or account-period invariants; such behavior must reassess isolation in an ADR.
+The payment row is the same-payment serialization point. Under `READ COMMITTED`, a concurrent writer waits, then observes `CAPTURE_ACCOUNTED` and verifies the existing journal and outbox event. Unique journal and outbox deduplication keys prevent duplicates even if a future caller fails to follow the lock convention. A constraint, state, or outbox failure rolls back the payment transition, journal, entries, and event together. Order state is unchanged: this transaction does not imply order `COMPLETED` or payment `CAPTURED`. This reasoning does not cover future cross-payment or account-period invariants; such behavior must reassess isolation in an ADR.
 
 Posted ledger rows reject update and delete. Corrections append an exact reversing transaction linked to the original rather than mutating history. Production privileges must prevent the application role from disabling triggers or applying DDL; the current local/test owner credential is a development convenience, not the production authorization model.
+
+### Outbox publication and notification consumption
+
+The dedicated publisher uses short owner-token lease transactions. Each instance claims due or expired rows with `SELECT ... FOR UPDATE SKIP LOCKED`, commits the claim, publishes outside PostgreSQL, waits for `acks=all`, and then marks the row `PUBLISHED` only through an owner-guarded update. Multiple instances can work concurrently. A send may therefore be duplicated if the process stops after broker acknowledgement but before the marker commits.
+
+Publication has at most 10 attempts per cycle with exponential backoff capped at 256 seconds and configurable jitter. Failed rows remain durable and inspectable; this milestone does not expose an outbox retry API. The default main topic is `ledgerflow.payment-captured.v1`, keyed by order ID.
+
+The notification listener validates the exact envelope, key, type, version, money, and identity relationships. It makes one initial attempt plus three bounded blocking retries for transient failures. A poison record is published to `ledgerflow.payment-captured.v1.dlt` and acknowledged before the source offset advances. Inbox event-ID/hash deduplication and the unique notification event ID make matching redelivery a successful no-op; the same event ID with different canonical content is an integrity failure.
+
+The DLT listener catalogs bounded safe evidence. Malformed raw bytes are not copied into PostgreSQL. The narrow command-line replay accepts only catalog rows already marked replayable, records actor/reason/correlation audit events, preserves the canonical envelope and Kafka key, removes old exception/delivery metadata, and injects new transport correlation and trace headers. There is no general Kafka resend command and no operator HTTP workflow in this milestone.
+
+These boundaries provide atomic PostgreSQL business data plus outbox, at-least-once publication, and at-least-once consumption. They provide exactly one logical notification database side effect for a stable event ID and content; they do not provide end-to-end exactly-once delivery.
 
 ## Money and time
 
@@ -146,6 +161,8 @@ Integration tests must cover replay, mismatched reuse, concurrency, and failure 
 
 Production logs are structured records rather than free-form concatenated text. Every inbound request accepts a valid `X-Correlation-Id` or creates one, returns it in the response, includes it in logs, and propagates it to supported outbound calls.
 
+Outbox rows persist the originating correlation ID and validated W3C `traceparent`/`tracestate`. Kafka publication creates a producer span and injects current W3C trace headers; listeners extract those headers before processing. A DLT replay starts independent transport correlation and trace context while retaining the envelope's original business correlation. Operator-request and stored-origin span linking remains future work.
+
 Untrusted correlation IDs must be length- and character-limited before logging. Logs must not contain credentials, tokens, secret configuration, full financial payloads, or unnecessary personal data.
 
 Secrets are supplied through environment variables or an approved secret-management system. Source code, configuration, fixtures, documentation, and example files contain placeholders only. Secret scanning should run in CI.
@@ -170,7 +187,7 @@ Spring Modulith verifies logical application modules, API/internal access, and c
 
 Keycloak stores its data in a separate database on the local PostgreSQL instance; embedded H2 is not used. Valkey is an ephemeral Redis-compatible cache service and is not an approved application datastore. Local Kafka is a single combined broker/controller in KRaft mode. Prometheus, Grafana, Tempo, Loki, and OpenTelemetry Collector provide a self-contained observability path without committing credentials or choosing a production observability vendor.
 
-The Create Order slice accepts ADR 0003's scoped idempotency decision and validates JWTs against an issuer/JWK configuration. The non-public payment harness accepts ADR 0004 and exercises a separate deterministic provider fixture over HTTP; no public route invokes it. The ledger slice accepts ADR 0005 and is exercised through module APIs in PostgreSQL integration tests; it adds no public route. Selecting development containers still does not authorize messaging integration. Production identity, real payment provider, broker, cache, observability, persistence roles, deployment topology, TLS, retention, backup, and sizing remain subject to approved implementation or deployment milestones.
+The Create Order slice accepts ADR 0003's scoped idempotency decision and validates JWTs against an issuer/JWK configuration. The non-public payment harness accepts ADR 0004 and exercises a separate deterministic provider fixture over HTTP; no public route invokes it. Capture accounting accepts ADR 0005, and the implemented outbox/Kafka behavior accepts ADRs 0006 and 0007 within their documented scope. Production identity, real payment provider, broker security, cache use, persistence roles, deployment topology, TLS, retention, backup, and sizing remain subject to approved implementation or deployment milestones.
 
 ## Decisions intentionally deferred
 
@@ -179,7 +196,6 @@ The following require product or operational evidence and are not selected by th
 - public API versioning policy;
 - OpenAPI code generation;
 - deployment platform and topology;
-- asynchronous messaging or an event broker;
 - caches, search engines, or additional datastores;
 - extraction into independently deployed services.
 

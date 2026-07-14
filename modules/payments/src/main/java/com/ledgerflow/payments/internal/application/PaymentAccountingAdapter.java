@@ -31,6 +31,7 @@ public class PaymentAccountingAdapter implements PaymentAccounting {
         payment.orderId(),
         payment.amount().amountMinor(),
         payment.amount().currency(),
+        payment.captureRequestId(),
         payment.version(),
         status);
   }
