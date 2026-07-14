@@ -15,9 +15,74 @@
       {
         "name": "operator",
         "description": "LedgerFlow operator recovery operations"
+      },
+      {
+        "name": "admin",
+        "description": "LedgerFlow administrative operations"
       }
     ]
   },
+  "clientScopes": [
+    {
+      "name": "ledgerflow.orders.read",
+      "description": "Read customer-owned LedgerFlow orders",
+      "protocol": "openid-connect",
+      "attributes": {
+        "display.on.consent.screen": "true",
+        "include.in.token.scope": "true"
+      }
+    },
+    {
+      "name": "ledgerflow.orders.write",
+      "description": "Create customer-owned LedgerFlow orders",
+      "protocol": "openid-connect",
+      "attributes": {
+        "display.on.consent.screen": "true",
+        "include.in.token.scope": "true"
+      }
+    },
+    {
+      "name": "ledgerflow.operations.read",
+      "description": "Read sanitized LedgerFlow operational failures",
+      "protocol": "openid-connect",
+      "attributes": {
+        "display.on.consent.screen": "true",
+        "include.in.token.scope": "true"
+      }
+    },
+    {
+      "name": "ledgerflow.operations.retry",
+      "description": "Request audited LedgerFlow operational retries",
+      "protocol": "openid-connect",
+      "attributes": {
+        "display.on.consent.screen": "true",
+        "include.in.token.scope": "true"
+      }
+    },
+    {
+      "name": "ledgerflow-api-audience",
+      "description": "Add the LedgerFlow resource-server audience",
+      "protocol": "openid-connect",
+      "attributes": {
+        "display.on.consent.screen": "false",
+        "include.in.token.scope": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "ledgerflow-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "ledgerflow-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
   "clients": [
     {
       "clientId": "ledgerflow-api",
@@ -28,7 +93,17 @@
       "publicClient": false,
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
-      "serviceAccountsEnabled": false
+      "serviceAccountsEnabled": false,
+      "defaultClientScopes": [
+        "roles",
+        "ledgerflow-api-audience"
+      ],
+      "optionalClientScopes": [
+        "ledgerflow.orders.read",
+        "ledgerflow.orders.write",
+        "ledgerflow.operations.read",
+        "ledgerflow.operations.retry"
+      ]
     }
   ]
 }

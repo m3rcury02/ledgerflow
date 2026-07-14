@@ -78,6 +78,7 @@ During development, run the smallest relevant checks:
 ./gradlew openApiValidate
 ./gradlew composeValidate
 ./gradlew documentationCheck
+./scripts/security-scan
 ```
 
 Expected task responsibilities:
@@ -90,9 +91,12 @@ Expected task responsibilities:
 - `openApiValidate`: validate every OpenAPI document.
 - `composeValidate`: resolve and validate `compose.yaml` using the non-secret `.env.example` defaults.
 - `documentationCheck`: check Markdown formatting, internal links, and required document structure.
+- `scripts/security-scan`: build the executable artifact and use the pinned container scanner for repository secrets/misconfiguration, packaged Java dependencies, and every Compose image.
 - `verify`: depend on every task above.
 
-`integrationTest`, `composeValidate`, and `verify` require a working Docker-compatible container runtime with Docker Compose.
+`integrationTest`, `composeValidate`, `verify`, and `scripts/security-scan` require a working Docker-compatible container runtime with Docker Compose. The security scan is intentionally separate from `verify` because it downloads vulnerability intelligence, scans large images, and needs read-only access to the privileged Docker socket. Run it for security, dependency, build-image, or Compose-image changes and in the scheduled CI security workflow.
+
+The security scan fails on fixed HIGH or CRITICAL findings and committed-secret detections. Do not suppress or ignore a result merely to pass the build. An approved exception must name the vulnerability or rule, affected component, owner, rationale, compensating control, and expiry; keep the exception reviewable in version control. Refresh scanner intelligence on every execution and protect the CI runner because Docker-socket readers can inspect host containers and images.
 
 Operate local dependencies through `scripts/dev-up`, `scripts/dev-down`, `scripts/dev-reset`, and `scripts/dev-status`. `dev-reset` is destructive and deletes all local named volumes; it never applies to a shared or production environment.
 
@@ -107,6 +111,12 @@ Before declaring a task complete, run from a clean build state:
 ./gradlew clean verify
 ```
 
+For a change that affects security controls, dependencies, or container images, also run:
+
+```text
+./scripts/security-scan
+```
+
 Confirm that:
 
 - Gradle is running through the wrapper on Java 25;
@@ -115,6 +125,7 @@ Confirm that:
 - the working-tree diff contains only approved changes;
 - relevant documentation and contracts match the delivered behavior; and
 - every acceptance criterion has observable evidence.
+- the applicable supply-chain scan completed with no unapproved finding.
 
 Record the commands and results in the ExecPlan or change summary.
 

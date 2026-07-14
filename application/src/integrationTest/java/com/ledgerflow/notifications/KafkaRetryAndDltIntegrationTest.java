@@ -1,6 +1,7 @@
 package com.ledgerflow.notifications;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 
 import com.ledgerflow.messaging.api.EventEnvelopeCodec;
@@ -17,6 +18,7 @@ import java.util.UUID;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataAccessException;
 import org.springframework.kafka.core.KafkaTemplate;
 
 class KafkaRetryAndDltIntegrationTest extends KafkaIntegrationTest {
@@ -52,6 +54,7 @@ class KafkaRetryAndDltIntegrationTest extends KafkaIntegrationTest {
     assertThat(inboxCount()).isOne();
     assertThat(replayStatus(deadLetter.id())).isEqualTo("REPLAYED");
     assertThat(replayAuditActions(deadLetter.id())).containsExactly("REQUESTED", "PUBLISHED");
+    assertReplayAuditIsImmutable(deadLetter.id());
   }
 
   @Test
@@ -245,6 +248,28 @@ class KafkaRetryAndDltIntegrationTest extends KafkaIntegrationTest {
         .param("recordId", recordId)
         .query(String.class)
         .list();
+  }
+
+  private void assertReplayAuditIsImmutable(UUID recordId) {
+    assertThatThrownBy(
+            () ->
+                jdbcClient
+                    .sql(
+                        """
+                        UPDATE message_replay_audit SET reason = 'tampered privileged reason'
+                        WHERE dead_letter_record_id = :recordId
+                        """)
+                    .param("recordId", recordId)
+                    .update())
+        .isInstanceOf(DataAccessException.class);
+    assertThatThrownBy(
+            () ->
+                jdbcClient
+                    .sql("DELETE FROM message_replay_audit WHERE dead_letter_record_id = :recordId")
+                    .param("recordId", recordId)
+                    .update())
+        .isInstanceOf(DataAccessException.class);
+    assertThat(replayAuditActions(recordId)).containsExactly("REQUESTED", "PUBLISHED");
   }
 
   private boolean databaseContains(String marker) {

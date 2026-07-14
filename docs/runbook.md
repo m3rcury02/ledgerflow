@@ -171,6 +171,46 @@ Graceful shutdown uses a `25s` Spring phase timeout, a `20s` application work-dr
 
 Controlled fault injection requires an active `local`, `test`, or `integration-test` profile and is disabled by default. Local operators may set `LEDGERFLOW_FAULT_INJECTION_ENABLED=true` with one allowlisted point, `FAIL` or `DELAY`, and a delay no greater than ten seconds. Never enable this setting in production; startup rejects it outside an allowed profile.
 
+## HTTP security and throttling diagnosis
+
+Order routes require a valid JWT with the configured exact issuer, `ledgerflow-api` audience, RS256
+signature, valid time claims, the route scope, and `customer` or `admin` realm role. A safe `401`
+indicates missing or invalid authentication. A safe `403` indicates insufficient scope/role. Do not
+log, paste, or persist the bearer token while diagnosing either result. `operator` alone cannot read
+customer orders, and the reserved operator path does not mean an operator HTTP API exists.
+
+Create Order returns `413` for an oversized payload, `415` for unsupported media type or content
+encoding, and `429` with `Retry-After` when the per-instance subject window is exhausted. Relevant
+environment overrides and defaults are:
+
+| Behavior | Environment variable | Default |
+| --- | --- | --- |
+| Maximum create body | `LEDGERFLOW_MAX_WRITE_PAYLOAD` | `16KB` |
+| Writes per subject/window | `LEDGERFLOW_WRITE_RATE_LIMIT_REQUESTS` | `60` |
+| Window | `LEDGERFLOW_WRITE_RATE_LIMIT_WINDOW` | `1m` |
+| Maximum tracked subject hashes | `LEDGERFLOW_WRITE_RATE_LIMIT_MAX_PRINCIPALS` | `10000` |
+| Aggregate request headers | `SERVER_MAX_HTTP_REQUEST_HEADER_SIZE` | `16KB` |
+
+This limiter stores bounded hashes and coordinates only one application instance. A surge spread
+across instances or unauthenticated traffic must be contained at the trusted ingress. Do not raise
+limits during an incident until traffic identity, downstream capacity, and the global edge policy
+have been reviewed. Problem details and structured logs contain correlation IDs, not request bodies,
+tokens, idempotency keys, or rejected payment/card-like values.
+
+## Vulnerability and secret scan response
+
+Run `scripts/security-scan` from a trusted Docker host after dependency, security, build-image, or
+Compose-image changes. It refreshes the scanner database, builds the application artifact, and
+scans repository content/configuration, packaged Java dependencies, and every image resolved from
+Compose. Read-only Docker-socket access is still highly privileged; isolate and protect the runner.
+
+A fixed HIGH/CRITICAL vulnerability or committed-secret finding fails the command. Prefer upgrading
+or removing the affected component within an approved milestone. Do not add an ignore merely to
+make CI green. Any temporary exception requires maintainer approval and must record the identifier,
+component, owner, rationale, compensating control, and expiry in version control. Rotate and revoke
+any real secret immediately, remove it from current content, assess history exposure, and follow the
+secret owner's incident procedure; deleting only the latest line is not sufficient containment.
+
 ## Escalation and prohibited actions
 
 Escalate immediately when a payment remains active/unknown beyond the provider's reconciliation objective, lookup gives contradictory evidence, the same request ID appears with different payloads, history mutation is attempted, or optimistic conflicts repeat without convergence.

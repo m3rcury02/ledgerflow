@@ -105,6 +105,7 @@ extensions.configure<SpotlessExtension> {
             "Makefile",
             "scripts/dev-*",
             "scripts/replay-*",
+            "scripts/security-*",
         )
         targetExclude("**/build/**", ".gradle/**")
         trimTrailingWhitespace()
@@ -250,6 +251,7 @@ val documentationCheck =
                 "scripts/dev-reset",
                 "scripts/dev-status",
                 "scripts/replay-dead-letter",
+                "scripts/security-scan",
             )
         val markdownFiles =
             fileTree(rootDir) {
@@ -300,5 +302,15 @@ tasks.register("verify") {
         mockProviderOpenApiValidate,
         composeValidate,
         documentationCheck,
+    )
+}
+
+tasks.register<Exec>("securityScan") {
+    group = "verification"
+    description = "Scans repository secrets, packaged dependencies, and Compose images."
+    commandLine(
+        layout.projectDirectory
+            .file("scripts/security-scan")
+            .asFile.absolutePath,
     )
 }

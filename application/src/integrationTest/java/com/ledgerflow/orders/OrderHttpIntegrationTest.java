@@ -139,6 +139,92 @@ class OrderHttpIntegrationTest extends PostgreSqlIntegrationTest {
   }
 
   @Test
+  void rejectsUnsupportedAmbiguousAndOversizedRequestsBeforePersistence() throws Exception {
+    mockMvc
+        .perform(
+            post("/api/v1/orders?admin=true")
+                .with(writeJwt("strict-query-customer"))
+                .header("Idempotency-Key", "strict-query-key-0001")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(VALID_REQUEST))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("invalid_request"));
+
+    mockMvc
+        .perform(
+            post("/api/v1/orders")
+                .with(writeJwt("strict-media-customer"))
+                .header("Idempotency-Key", "strict-media-key-0001")
+                .contentType(MediaType.TEXT_PLAIN)
+                .content(VALID_REQUEST))
+        .andExpect(status().isUnsupportedMediaType())
+        .andExpect(jsonPath("$.code").value("unsupported_media_type"));
+
+    mockMvc
+        .perform(
+            post("/api/v1/orders")
+                .with(writeJwt("strict-encoding-customer"))
+                .header("Idempotency-Key", "strict-encoding-key-0001")
+                .header("Content-Encoding", "gzip")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(VALID_REQUEST))
+        .andExpect(status().isUnsupportedMediaType())
+        .andExpect(jsonPath("$.code").value("unsupported_media_type"));
+
+    mockMvc
+        .perform(
+            post("/api/v1/orders")
+                .with(writeJwt("strict-duplicate-customer"))
+                .header("Idempotency-Key", "strict-duplicate-key-0001")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    """
+                    {
+                      "amount": {"amountMinor": 100, "amountMinor": 200, "currency": "INR"}
+                    }
+                    """))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("invalid_request"));
+
+    String sensitiveMarker = "forbidden-payment-field-secret-marker";
+    mockMvc
+        .perform(
+            post("/api/v1/orders")
+                .with(writeJwt("strict-sensitive-customer"))
+                .header("Idempotency-Key", "strict-sensitive-key-0001")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(
+                    """
+                    {
+                      "amount": {"amountMinor": 100, "currency": "INR"},
+                      "cardNumber": "pan-input-must-be-rejected",
+                      "cvv": "cvv-input-must-be-rejected",
+                      "marker": "%s"
+                    }
+                    """
+                        .formatted(sensitiveMarker)))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("invalid_request"))
+        .andExpect(
+            result ->
+                assertThat(result.getResponse().getContentAsString())
+                    .doesNotContain(sensitiveMarker));
+
+    String oversized = "x".repeat(17 * 1024);
+    mockMvc
+        .perform(
+            post("/api/v1/orders")
+                .with(writeJwt("strict-size-customer"))
+                .header("Idempotency-Key", "strict-size-key-0001")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"clientReference\":\"" + oversized + "\"}"))
+        .andExpect(status().isContentTooLarge())
+        .andExpect(jsonPath("$.code").value("payload_too_large"));
+
+    assertThat(jdbcClient.sql("SELECT count(*) FROM orders").query(Long.class).single()).isZero();
+  }
+
+  @Test
   void returnsOnlyAnOrderOwnedByTheAuthenticatedSubject() throws Exception {
     MvcResult created = create("customer-1", "http-read-key-0001", VALID_REQUEST);
     String orderId = JsonPath.read(created.getResponse().getContentAsString(), "$.orderId");
@@ -156,6 +242,12 @@ class OrderHttpIntegrationTest extends PostgreSqlIntegrationTest {
     mockMvc
         .perform(get("/api/v1/orders/{orderId}", UUID.randomUUID()).with(readJwt("customer-1")))
         .andExpect(status().isNotFound());
+
+    mockMvc
+        .perform(
+            get("/api/v1/orders/{orderId}?include=payment", orderId).with(readJwt("customer-1")))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("invalid_request"));
   }
 
   @Test
@@ -181,12 +273,116 @@ class OrderHttpIntegrationTest extends PostgreSqlIntegrationTest {
                 .with(
                     jwt()
                         .jwt(token -> token.claims(claims -> claims.remove("sub")))
-                        .authorities(new SimpleGrantedAuthority("SCOPE_ledgerflow.orders.write")))
+                        .authorities(
+                            new SimpleGrantedAuthority("SCOPE_ledgerflow.orders.write"),
+                            new SimpleGrantedAuthority("ROLE_customer")))
                 .header("Idempotency-Key", "http-subject-key-0001")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(VALID_REQUEST))
         .andExpect(status().isUnauthorized())
         .andExpect(jsonPath("$.code").value("unauthorized"));
+
+    mockMvc
+        .perform(
+            post("/api/v1/orders")
+                .with(
+                    jwt()
+                        .jwt(token -> token.subject("scope-only-customer"))
+                        .authorities(new SimpleGrantedAuthority("SCOPE_ledgerflow.orders.write")))
+                .header("Idempotency-Key", "http-role-key-0001")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(VALID_REQUEST))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("forbidden"));
+
+    mockMvc
+        .perform(
+            get("/api/v1/operator/operations")
+                .with(
+                    jwt()
+                        .jwt(token -> token.subject("customer-not-operator"))
+                        .authorities(
+                            new SimpleGrantedAuthority("SCOPE_ledgerflow.operations.read"),
+                            new SimpleGrantedAuthority("ROLE_customer"))))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("forbidden"));
+
+    mockMvc
+        .perform(
+            get("/api/v1/operator/operations")
+                .with(
+                    jwt()
+                        .jwt(token -> token.subject("operator-without-scope"))
+                        .authorities(new SimpleGrantedAuthority("ROLE_operator"))))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("forbidden"));
+  }
+
+  @Test
+  void emitsSecureHeadersAndHstsOnlyForHttps() throws Exception {
+    var insecure =
+        mockMvc
+            .perform(
+                get("/api/v1/orders/{orderId}", UUID.randomUUID()).with(readJwt("header-customer")))
+            .andExpect(status().isNotFound())
+            .andExpect(
+                header().string("Cache-Control", "no-cache, no-store, max-age=0, must-revalidate"))
+            .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+            .andExpect(header().string("X-Frame-Options", "DENY"))
+            .andExpect(
+                header()
+                    .string(
+                        "Content-Security-Policy",
+                        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; "
+                            + "form-action 'none'"))
+            .andExpect(header().string("Referrer-Policy", "no-referrer"))
+            .andExpect(
+                header()
+                    .string(
+                        "Permissions-Policy",
+                        "camera=(), microphone=(), geolocation=(), payment=(), usb=()"))
+            .andExpect(header().string("Cross-Origin-Resource-Policy", "same-site"))
+            .andExpect(header().string("Cross-Origin-Opener-Policy", "same-origin"))
+            .andReturn();
+    assertThat(insecure.getResponse().getHeader("Strict-Transport-Security")).isNull();
+
+    mockMvc
+        .perform(
+            get("/api/v1/orders/{orderId}", UUID.randomUUID())
+                .secure(true)
+                .with(readJwt("secure-header-customer")))
+        .andExpect(status().isNotFound())
+        .andExpect(
+            header().string("Strict-Transport-Security", "max-age=31536000 ; includeSubDomains"));
+  }
+
+  @Test
+  void rateLimitsExternallyExposedWritesPerAuthenticatedSubject() throws Exception {
+    for (int attempt = 0; attempt < 60; attempt++) {
+      mockMvc
+          .perform(
+              post("/api/v1/orders")
+                  .with(writeJwt("rate-limited-customer"))
+                  .header("Idempotency-Key", "rate-limit-key-" + attempt)
+                  .contentType(MediaType.APPLICATION_JSON)
+                  .content("{}"))
+          .andExpect(status().isBadRequest());
+    }
+
+    mockMvc
+        .perform(
+            post("/api/v1/orders")
+                .with(writeJwt("rate-limited-customer"))
+                .header("Idempotency-Key", "rate-limit-key-exceeded")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(VALID_REQUEST))
+        .andExpect(status().isTooManyRequests())
+        .andExpect(
+            header().string("Retry-After", org.hamcrest.Matchers.matchesPattern("[1-9][0-9]*")))
+        .andExpect(jsonPath("$.code").value("rate_limit_exceeded"))
+        .andExpect(jsonPath("$.correlationId").isNotEmpty());
+
+    assertThat(jdbcClient.sql("SELECT count(*) FROM orders").query(Long.class).single()).isZero();
   }
 
   private MvcResult create(String subject, String key, String request) throws Exception {
@@ -205,13 +401,17 @@ class OrderHttpIntegrationTest extends PostgreSqlIntegrationTest {
       String subject) {
     return jwt()
         .jwt(token -> token.subject(subject))
-        .authorities(new SimpleGrantedAuthority("SCOPE_ledgerflow.orders.write"));
+        .authorities(
+            new SimpleGrantedAuthority("SCOPE_ledgerflow.orders.write"),
+            new SimpleGrantedAuthority("ROLE_customer"));
   }
 
   private org.springframework.test.web.servlet.request.RequestPostProcessor readJwt(
       String subject) {
     return jwt()
         .jwt(token -> token.subject(subject))
-        .authorities(new SimpleGrantedAuthority("SCOPE_ledgerflow.orders.read"));
+        .authorities(
+            new SimpleGrantedAuthority("SCOPE_ledgerflow.orders.read"),
+            new SimpleGrantedAuthority("ROLE_customer"));
   }
 }

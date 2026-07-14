@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ENV_FILE=${LEDGERFLOW_ENV_FILE:-"$ROOT_DIR/.env"}
+TRIVY_IMAGE='ghcr.io/aquasecurity/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f'
+TRIVY_CACHE_VOLUME=${LEDGERFLOW_TRIVY_CACHE_VOLUME:-ledgerflow-trivy-cache}
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  ENV_FILE="$ROOT_DIR/.env.example"
+fi
+
+docker info >/dev/null
+docker pull "$TRIVY_IMAGE" >/dev/null
+
+docker compose \
+  --env-file "$ENV_FILE" \
+  --file "$ROOT_DIR/compose.yaml" \
+  config --quiet
+
+"$ROOT_DIR/gradlew" --no-daemon :application:bootJar --console=plain
+
+echo "Scanning repository secrets and configuration"
+docker run --rm \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  --volume "$ROOT_DIR:/workspace:ro" \
+  --volume "$TRIVY_CACHE_VOLUME:/root/.cache/trivy" \
+  "$TRIVY_IMAGE" \
+  fs \
+  --timeout 15m \
+  --scanners secret,misconfig \
+  --exit-code 1 \
+  --severity HIGH,CRITICAL \
+  --table-mode detailed \
+  --no-progress \
+  --skip-dirs /workspace/.git \
+  --skip-dirs /workspace/.gradle \
+  --skip-dirs /workspace/.idea \
+  --skip-dirs /workspace/.vscode \
+  --skip-dirs /workspace/out \
+  --skip-dirs '/workspace/**/build' \
+  --skip-files /workspace/.env \
+  /workspace
+
+echo "Scanning packaged Java dependencies"
+docker run --rm \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  --volume "$ROOT_DIR:/workspace:ro" \
+  --volume "$TRIVY_CACHE_VOLUME:/root/.cache/trivy" \
+  "$TRIVY_IMAGE" \
+  rootfs \
+  --timeout 15m \
+  --scanners vuln \
+  --pkg-types library \
+  --java-db-repository ghcr.io/aquasecurity/trivy-java-db:1 \
+  --ignore-unfixed \
+  --exit-code 1 \
+  --severity HIGH,CRITICAL \
+  --table-mode detailed \
+  --no-progress \
+  /workspace/application/build/libs
+
+mapfile -t COMPOSE_IMAGES < <(
+  docker compose \
+    --env-file "$ENV_FILE" \
+    --file "$ROOT_DIR/compose.yaml" \
+    config --images | sort --unique
+)
+
+image_scan_failed=0
+for image in "${COMPOSE_IMAGES[@]}"; do
+  echo "Scanning container image $image"
+  docker image inspect "$image" >/dev/null 2>&1 || docker pull "$image" >/dev/null
+  if ! docker run --rm \
+    --cap-drop=ALL \
+    --security-opt=no-new-privileges \
+    --volume /var/run/docker.sock:/var/run/docker.sock:ro \
+    --volume "$TRIVY_CACHE_VOLUME:/root/.cache/trivy" \
+    "$TRIVY_IMAGE" \
+    image \
+    --timeout 15m \
+    --scanners vuln \
+    --ignore-unfixed \
+    --exit-code 1 \
+    --severity HIGH,CRITICAL \
+    --table-mode detailed \
+    --no-progress \
+    "$image"; then
+    image_scan_failed=1
+  fi
+done
+
+if [[ $image_scan_failed -ne 0 ]]; then
+  echo "One or more Compose images have unsuppressed fixed HIGH or CRITICAL findings." >&2
+  exit 1
+fi
+
+echo "Security scan completed without unsuppressed fixed HIGH or CRITICAL findings"

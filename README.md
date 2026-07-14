@@ -19,6 +19,14 @@ Do not install Gradle separately. The committed Gradle 9.6.1 Wrapper is the supp
 
 The lifecycle checks formatting, static analysis, unit tests, PostgreSQL Testcontainers repository/HTTP/concurrency tests, Spring Modulith and ArchUnit rules, OpenAPI, and documentation. The equivalent convenience command is `make verify`.
 
+Security-sensitive, dependency, or container-image changes also run the separate Docker-backed supply-chain check:
+
+```bash
+./scripts/security-scan
+```
+
+The command builds the application artifact, scans repository configuration and committed content for secrets, scans packaged Java dependencies, and scans every Compose image. It fails on unsuppressed fixed HIGH or CRITICAL vulnerabilities. It uses a version-and-digest-pinned Trivy container and read-only Docker-socket access for image inspection; run it only on a trusted development or CI host.
+
 ## Local dependency environment
 
 Start all local dependencies and wait until Compose reports all nine services healthy:
@@ -57,7 +65,7 @@ Useful readiness checks with the default environment are:
 ```bash
 docker compose --env-file .env.example config --quiet
 docker compose --env-file .env.example exec -T postgres pg_isready -U ledgerflow -d ledgerflow
-docker compose --env-file .env.example exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list
+docker compose --env-file .env.example exec -T kafka nc -z 127.0.0.1 29092
 docker compose --env-file .env.example exec -T valkey valkey-cli ping
 curl --fail http://localhost:8081/realms/ledgerflow/.well-known/openid-configuration
 curl --fail http://localhost:9090/-/ready
@@ -66,7 +74,9 @@ curl --fail http://localhost:3200/ready
 curl --fail http://localhost:3100/ready
 ```
 
-Grafana starts with Prometheus, Tempo, and Loki data sources already provisioned. Keycloak imports the `ledgerflow` realm with `customer` and `operator` roles but no local user credentials. Kafka runs one combined broker/controller in KRaft mode; ZooKeeper is not present. These settings are intentionally local-only and are not a production deployment design.
+Grafana starts with Prometheus, Tempo, and Loki data sources already provisioned. Keycloak imports the `ledgerflow` realm with `customer`, `operator`, and `admin` roles, reusable order/operation scopes, and a `ledgerflow-api` audience mapper, but no users, passwords, or client secrets. Kafka uses Apache's official 4.3.1 native image and runs one combined broker/controller in KRaft mode; ZooKeeper is not present. These settings are intentionally local-only and are not a production deployment design.
+
+Keycloak imports a realm file only when that realm does not already exist. After a committed realm-definition change, an existing local PostgreSQL volume retains its prior realm; review the destructive warning and run `./scripts/dev-reset` only when it is safe to discard all local infrastructure data. A fresh-volume validation must be used when preserving existing local data.
 
 ## Run the application locally
 
@@ -87,7 +97,9 @@ Flyway applies `V001__create_orders_and_idempotency.sql` through `V005__create_n
 
 ## Create Order API
 
-The imported local realm intentionally contains roles but no users or credentials. Supply a JWT from your configured development issuer whose `sub` identifies the customer and whose scope contains `ledgerflow.orders.write` or `ledgerflow.orders.read` as appropriate.
+The imported local realm intentionally contains roles and scopes but no users or credentials. Provision local identities outside version control. Supply a JWT from the configured issuer with audience `ledgerflow-api`, an allowlisted `customer` or `admin` realm role, and `ledgerflow.orders.write` or `ledgerflow.orders.read` scope as appropriate. `operator` alone cannot access a customer's order.
+
+The API rejects unknown or duplicate JSON properties, query parameters on create, compressed request bodies, unsupported media types, and create-order bodies larger than 16 KiB by default. Each application instance permits 60 create attempts per authenticated subject per minute by default; the response supplies `Retry-After` when the limit is reached. These tunable defenses use `LEDGERFLOW_MAX_WRITE_PAYLOAD`, `LEDGERFLOW_WRITE_RATE_LIMIT_REQUESTS`, `LEDGERFLOW_WRITE_RATE_LIMIT_WINDOW`, and `LEDGERFLOW_WRITE_RATE_LIMIT_MAX_PRINCIPALS`. A production ingress must still enforce aggregate multi-instance and unauthenticated volumetric limits.
 
 Create one positive INR order:
 

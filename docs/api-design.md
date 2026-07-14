@@ -1,7 +1,7 @@
 # LedgerFlow MVP API Design
 
 - Status: Partially implemented
-- Last updated: 2026-07-13
+- Last updated: 2026-07-14
 - Authoritative contract: `application/src/main/openapi/ledgerflow.yaml`
 
 This document explains the active Create Order slice. The OpenAPI document is authoritative for
@@ -19,13 +19,39 @@ and operator recovery remain future milestones and are not exposed by the applic
 - Money: positive `int64` minor units plus a three-letter currency; the MVP accepts `INR` only
 - Unknown JSON properties: rejected with `400`
 
-The order-write scope is `ledgerflow.orders.write`; the order-read scope is
-`ledgerflow.orders.read`. The authenticated JWT `sub` owns the resource. A caller-supplied customer
-identifier is never accepted.
+Tokens must be RS256-signed JWTs with the configured exact issuer, audience `ledgerflow-api`, valid
+expiry/not-before claims, and both the route scope and an allowlisted Keycloak realm role. The
+order-write scope is `ledgerflow.orders.write`; the order-read scope is
+`ledgerflow.orders.read`. Active order routes permit `customer` or `admin`, but not `operator`
+alone. The authenticated JWT `sub` owns the resource. A caller-supplied customer identifier is
+never accepted. Future `/api/v1/operator/**` routes are already fail-closed behind
+`ledgerflow.operations.read` or `ledgerflow.operations.retry` plus `operator` or `admin`, but no
+operator HTTP operation is implemented or present in OpenAPI.
 
 `X-Correlation-Id` is optional. A value must contain 1–64 characters matching
 `[A-Za-z0-9._-]+`; otherwise LedgerFlow replaces it. Every response carries the selected value and
 structured application logs include it.
+
+Responses use Spring's safe API header baseline plus `Content-Security-Policy: default-src 'none'`,
+`Referrer-Policy: no-referrer`, restrictive permissions and cross-origin policies, MIME sniffing
+protection, frame denial, and no-store/no-cache directives. HTTPS responses also carry one-year
+HSTS with subdomains; HTTP development responses deliberately do not.
+
+## Request and resource limits
+
+Order operations accept no undocumented query parameters. `POST /api/v1/orders` accepts only
+`application/json` and no compressed request body. It rejects duplicate or unknown JSON
+properties, excessive nesting/token/string or
+number lengths, and a body larger than the configured limit (16 KiB by default). The server also
+limits aggregate request headers to 16 KiB. Rejections are bounded problem details and occur before
+the order transaction.
+
+Each application instance applies a fixed-window limit to create attempts per authenticated
+subject (60 per minute by default). Only a bounded number of SHA-256 subject hashes is retained;
+raw subjects, bearer tokens, and idempotency keys are not rate-limit state. The first request over
+the limit receives `429`, `Retry-After`, and the correlation ID without a business write. This is
+per-instance defense in depth. A trusted ingress must enforce aggregate and unauthenticated
+volumetric limits across a production deployment.
 
 ## Idempotency contract
 
@@ -152,12 +178,16 @@ The active operations document these responses:
 
 | Status | Meaning |
 | ---: | --- |
-| `400` | Invalid body, UUID, required header, idempotency-key syntax, or validation |
+| `400` | Invalid body, UUID, required header, idempotency-key syntax, unexpected query, or validation |
 | `401` | Missing or invalid bearer authentication |
-| `403` | Authenticated token lacks the required scope |
+| `403` | Authenticated token lacks the required scope or allowlisted realm role |
 | `404` | Order does not exist or is not owned by the subject |
+| `406` | Requested response media type is unsupported |
 | `409` | Idempotency key is bound to a different canonical payload |
+| `413` | Request payload exceeds the configured byte limit |
+| `415` | Request media type or content encoding is unsupported |
 | `422` | A well-formed currency is unsupported; the MVP accepts INR only |
+| `429` | Per-instance subject write limit exceeded; retry after the response delay |
 | `500` | Sanitized unexpected server failure |
 | `503` | PostgreSQL or safe idempotency completion is temporarily unavailable |
 

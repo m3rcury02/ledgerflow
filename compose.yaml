@@ -8,7 +8,7 @@ x-logging: &default-logging
 
 services:
   postgres:
-    image: postgres:18.4-alpine3.22
+    image: postgres:18.4-alpine3.24
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-ledgerflow}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-local-postgres}
@@ -36,7 +36,7 @@ services:
     networks: [ledgerflow]
 
   kafka:
-    image: apache/kafka:4.3.1
+    image: apache/kafka-native:4.3.1
     environment:
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
       KAFKA_NODE_ID: 1
@@ -61,7 +61,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list >/dev/null 2>&1
+        - nc -z 127.0.0.1 29092
       interval: 10s
       timeout: 30s
       retries: 18
@@ -193,7 +193,7 @@ services:
     networks: [ledgerflow]
 
   prometheus:
-    image: prom/prometheus:v3.5.5
+    image: prom/prometheus:v3.13.0
     command:
       - --config.file=/etc/prometheus/prometheus.yaml
       - --storage.tsdb.path=/prometheus
@@ -221,7 +221,7 @@ services:
     networks: [ledgerflow]
 
   grafana:
-    image: grafana/grafana:13.1.0
+    image: grafana/grafana:13.1.0-ubuntu
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me-local-grafana-admin}
@@ -243,7 +243,7 @@ services:
       loki:
         condition: service_healthy
     healthcheck:
-      test: [CMD-SHELL, wget --quiet --spider http://127.0.0.1:3000/api/health]
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:3000/api/health]
       interval: 10s
       timeout: 5s
       retries: 18

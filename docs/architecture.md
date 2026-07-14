@@ -2,7 +2,7 @@
 
 ## Status
 
-This document defines the architectural constraints for LedgerFlow. Milestones 1 and 2 established the application and local infrastructure, Milestone 3 added the Create Order HTTP/persistence slice, Milestone 4 added the non-public payment/provider boundary, Milestone 5A added immutable ledger posting, and Milestone 5B added the transactional outbox, Kafka relay, idempotent notification consumer, dead-letter catalog, audited command-line replay, and bounded resilience controls. Public payment orchestration, order completion, a final payment `CAPTURED` state, and operator HTTP workflows remain future work.
+This document defines the architectural constraints for LedgerFlow. Milestones 1 and 2 established the application and local infrastructure, Milestone 3 added the Create Order HTTP/persistence slice, Milestone 4 added the non-public payment/provider boundary, Milestone 5A added immutable ledger posting, Milestone 5B added the transactional outbox, Kafka relay, idempotent notification consumer, dead-letter catalog, audited command-line replay, and bounded resilience controls, and Milestone 5C hardened the active HTTP security and supply-chain checks. Public payment orchestration, order completion, a final payment `CAPTURED` state, and operator HTTP workflows remain future work.
 
 ## Architectural goals
 
@@ -169,6 +169,26 @@ For HTTP operations requiring idempotency:
 
 Integration tests must cover replay, mismatched reuse, concurrency, and failure recovery.
 
+## HTTP security boundary
+
+LedgerFlow is a stateless OAuth 2.0/OIDC JWT resource server; it never issues tokens or accepts
+cookie authentication. Production JWT trust requires the configured exact issuer and
+`ledgerflow-api` audience, RS256 signatures, valid expiry/not-before claims, a route-specific
+scope, and an allowlisted Keycloak realm role. Active order routes require `customer` or `admin`;
+future operator paths are denied unless the caller has `operator` or `admin` plus the appropriate
+read/retry scope. No operator HTTP behavior is implemented merely by reserving that path.
+
+Object authorization belongs in the owning query boundary. Order reads constrain both order ID
+and JWT subject and return the same `404` for absent and differently owned resources. HTTP route
+authorization is necessary but is not a substitute for this database predicate.
+
+Untrusted HTTP input has byte, structure, media-type, and header bounds before business work.
+Create Order additionally rejects query parameters, compressed bodies, unknown/duplicate JSON
+members, and applies a bounded per-instance subject limiter. The limiter stores only SHA-256
+subject hashes and is defense in depth; a trusted ingress must provide deployment-wide and
+unauthenticated volumetric protection. Secure response headers apply to success and problem
+responses, with HSTS emitted only for HTTPS.
+
 ## Observability and secrets
 
 Production logs are structured records rather than free-form concatenated text. Every inbound request accepts a valid `X-Correlation-Id` or creates one, returns it in the response, includes it in logs, and propagates it to supported outbound calls.
@@ -177,7 +197,7 @@ Outbox rows persist the originating correlation ID and validated W3C `traceparen
 
 Untrusted correlation IDs must be length- and character-limited before logging. Logs must not contain credentials, tokens, secret configuration, full financial payloads, or unnecessary personal data.
 
-Secrets are supplied through environment variables or an approved secret-management system. Source code, configuration, fixtures, documentation, and example files contain placeholders only. Secret scanning should run in CI.
+Secrets are supplied through environment variables or an approved secret-management system. Source code, configuration, fixtures, documentation, and example files contain placeholders only. `scripts/security-scan` uses a version-and-digest-pinned build container to scan committed content, packaged dependencies, and every Compose image. Its vulnerability database must be refreshed in CI; fixed HIGH/CRITICAL findings and secret detections fail unless an explicit, owned, expiring exception is approved.
 
 ## Automated architecture verification
 
@@ -197,7 +217,7 @@ Spring Modulith verifies logical application modules, API/internal access, and c
 
 `compose.yaml` provides pinned local dependencies for development and demonstrations. It is not production topology or authorization guidance. Services bind only to `127.0.0.1`, have bounded laptop-oriented resources and health checks, and are operated through `scripts/dev-*`.
 
-Keycloak stores its data in a separate database on the local PostgreSQL instance; embedded H2 is not used. Valkey is an ephemeral Redis-compatible cache service and is not an approved application datastore. Local Kafka is a single combined broker/controller in KRaft mode. Prometheus, Grafana, Tempo, Loki, and OpenTelemetry Collector provide a self-contained observability path without committing credentials or choosing a production observability vendor.
+Keycloak stores its data in a separate database on the local PostgreSQL instance; embedded H2 is not used. The imported realm defines `customer`, `operator`, and `admin` roles, order/operation scopes, and the API audience mapper without users or credentials. Valkey is an ephemeral Redis-compatible cache service and is not an approved application datastore. Local Kafka uses Apache's official native 4.3.1 image as a single combined broker/controller in KRaft mode; the native distribution was selected over the equivalent JVM image after fixed HIGH image findings were detected. Prometheus, Grafana, Tempo, Loki, and OpenTelemetry Collector provide a self-contained observability path without committing credentials or choosing a production observability vendor.
 
 The Create Order slice accepts ADR 0003's scoped idempotency decision and validates JWTs against an issuer/JWK configuration. The non-public payment harness accepts ADR 0004 and exercises a separate deterministic provider fixture over HTTP; no public route invokes it. Capture accounting accepts ADR 0005, and the implemented outbox/Kafka behavior accepts ADRs 0006 and 0007 within their documented scope. Production identity, real payment provider, broker security, cache use, persistence roles, deployment topology, TLS, retention, backup, and sizing remain subject to approved implementation or deployment milestones.
 

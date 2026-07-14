@@ -16,6 +16,7 @@ A LedgerFlow task is done only when every applicable item below is true and the 
 - Cross-feature access uses the owning feature's API.
 - Hexagonal structure is used only where its justification is recorded.
 - Error handling covers expected failure modes without exposing secrets or internals.
+- Authentication and authorization changes fail closed and include negative tests for missing, invalid, and insufficient identity.
 - New production dependencies include the required justification.
 - No quality check has been disabled, weakened, or bypassed.
 
@@ -40,6 +41,7 @@ A LedgerFlow task is done only when every applicable item below is true and the 
 - OpenAPI validation and affected contract tests pass.
 - Tests are deterministic and do not depend on execution order, local time zone, or the developer's machine.
 - No required test is ignored, quarantined, or conditionally skipped.
+- Security-sensitive input limits, rate limits, and redaction rules have focused boundary tests when applicable.
 
 ## Documentation and operations
 
@@ -48,6 +50,7 @@ A LedgerFlow task is done only when every applicable item below is true and the 
 - Production logs are structured and include correlation IDs at relevant boundaries.
 - Logs and error messages do not expose secrets or unnecessary sensitive data.
 - Configuration and examples contain placeholders rather than real credentials.
+- Security, dependency, build-image, or Compose-image changes pass `./scripts/security-scan` with no unapproved committed-secret, fixed HIGH, or fixed CRITICAL finding.
 - Operational failure and recovery behavior is documented for risky changes.
 
 ## Final verification
@@ -57,6 +60,12 @@ The following commands have run successfully:
 ```text
 ./gradlew --version
 ./gradlew clean verify
+```
+
+When the change affects security, dependencies, or container images, this command has also run successfully:
+
+```text
+./scripts/security-scan
 ```
 
 The final review confirms:

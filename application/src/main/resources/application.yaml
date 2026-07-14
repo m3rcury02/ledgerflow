@@ -45,6 +45,17 @@ spring:
   jackson:
     deserialization:
       fail-on-unknown-properties: true
+    factory:
+      constraints:
+        read:
+          max-document-length: 16384
+          max-name-length: 64
+          max-nesting-depth: 10
+          max-number-length: 20
+          max-string-length: 1024
+          max-token-count: 64
+    read:
+      strict-duplicate-detection: true
   lifecycle:
     timeout-per-shutdown-phase: ${LEDGERFLOW_SHUTDOWN_PHASE_TIMEOUT:25s}
 
@@ -63,6 +74,7 @@ management:
       exposure:
         include: health,info,prometheus
 server:
+  max-http-request-header-size: 16KB
   shutdown: graceful
   error:
     include-message: never
@@ -73,6 +85,11 @@ logging:
       console: ecs
 
 ledgerflow:
+  security:
+    write-requests-per-window: ${LEDGERFLOW_WRITE_RATE_LIMIT_REQUESTS:60}
+    write-window: ${LEDGERFLOW_WRITE_RATE_LIMIT_WINDOW:1m}
+    max-tracked-principals: ${LEDGERFLOW_WRITE_RATE_LIMIT_MAX_PRINCIPALS:10000}
+    max-write-payload: ${LEDGERFLOW_MAX_WRITE_PAYLOAD:16KB}
   messaging:
     topic: ${LEDGERFLOW_KAFKA_PAYMENT_CAPTURED_TOPIC:ledgerflow.payment-captured.v1}
     dead-letter-topic: ${LEDGERFLOW_KAFKA_PAYMENT_CAPTURED_DLT_TOPIC:ledgerflow.payment-captured.v1.dlt}

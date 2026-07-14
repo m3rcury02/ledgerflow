@@ -15,6 +15,8 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -63,12 +65,45 @@ public class OrderProblemHandler {
     MethodArgumentTypeMismatchException.class
   })
   ResponseEntity<ProblemDetail> malformed(Exception exception, HttpServletRequest request) {
+    if (causedByPayloadLimit(exception)) {
+      return problem(
+          HttpStatus.CONTENT_TOO_LARGE,
+          "payload-too-large",
+          "Payload too large",
+          "The request payload exceeds the configured limit.",
+          "payload_too_large",
+          request);
+    }
     return problem(
         HttpStatus.BAD_REQUEST,
         "invalid-request",
         "Invalid request",
         "The request body, path, or required header is invalid.",
         "invalid_request",
+        request);
+  }
+
+  @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+  ResponseEntity<ProblemDetail> unsupportedMediaType(
+      HttpMediaTypeNotSupportedException exception, HttpServletRequest request) {
+    return problem(
+        HttpStatus.UNSUPPORTED_MEDIA_TYPE,
+        "unsupported-media-type",
+        "Unsupported media type",
+        "This operation accepts an uncompressed application/json request.",
+        "unsupported_media_type",
+        request);
+  }
+
+  @ExceptionHandler(HttpMediaTypeNotAcceptableException.class)
+  ResponseEntity<ProblemDetail> unacceptableResponseType(
+      HttpMediaTypeNotAcceptableException exception, HttpServletRequest request) {
+    return problem(
+        HttpStatus.NOT_ACCEPTABLE,
+        "not-acceptable",
+        "Not acceptable",
+        "This operation returns application/json or application/problem+json.",
+        "not_acceptable",
         request);
   }
 
@@ -139,7 +174,7 @@ public class OrderProblemHandler {
         HttpStatus.BAD_REQUEST,
         "invalid-request",
         "Invalid request",
-        exception.getMessage(),
+        "The request contains an invalid value.",
         "invalid_request",
         request);
   }
@@ -179,5 +214,16 @@ public class OrderProblemHandler {
       case "Pattern" -> "invalid_format";
       default -> "invalid";
     };
+  }
+
+  private boolean causedByPayloadLimit(Throwable failure) {
+    Throwable current = failure;
+    while (current != null) {
+      if (current instanceof PayloadTooLargeException) {
+        return true;
+      }
+      current = current.getCause();
+    }
+    return false;
   }
 }

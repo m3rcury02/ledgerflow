@@ -8,7 +8,7 @@
 - Last updated: 2026-07-14
 - Approved by: LedgerFlow maintainer
 - Approval date: 2026-07-13
-- Current milestone: None; Milestone 5B is `Complete`, and later milestones remain `Proposed`
+- Current milestone: Milestone 5C — Security hardening and verification (`In Progress`)
 - Canonical plan path: `docs/plans/mvp-execplan.md` by explicit maintainer request
 
 ## Purpose and outcome
@@ -55,6 +55,8 @@ The repository contains the verified foundation and completed Create Order, paym
 The maintainer's 2026-07-13 transactional-outbox and Kafka request approves the revised Milestone 5B below and accepts the outbox/Kafka decision in ADR 0006. It deliberately excludes public payment/order/operator endpoints and final order-state orchestration. ADR 0007 is accepted only for the Kafka propagation implemented by this milestone; operator recovery tracing remains proposed.
 
 The maintainer's 2026-07-14 resilience request explicitly expands the still-in-progress Milestone 5B with bounded provider circuit/bulkhead controls, distinct timeout budgets, graceful draining, Kafka backpressure, dependency health/startup validation, profile-gated fault injection, and Toxiproxy failure tests. This is one revised active milestone rather than a second concurrent plan. It does not approve public orchestration, operator HTTP APIs, new business states, or schema changes.
+
+The maintainer's 2026-07-14 security request approves Milestone 5C below. It hardens the current order HTTP boundary, local Keycloak roles/scopes, existing privileged replay audit, request/resource limits, sensitive-data controls, and vulnerability scanning. It reserves future operator paths behind operator/admin roles and operation scopes but does not approve the operator recovery API, new privileged actions, public payment orchestration, or a new datastore.
 
 The maintainer explicitly requested this ExecPlan at `docs/plans/mvp-execplan.md`. This is a one-plan path exception to `.agent/PLANS.md`, which normally specifies `.agent/plans/YYYY-MM-DD-<name>.md`. Do not create a duplicate plan.
 
@@ -350,6 +352,40 @@ Only the current milestone is approved or in progress. Later milestones remain `
   - Startup rejects an unavailable database, missing required Kafka topics, unsafe resilience settings, and fault injection outside local/test profiles; temporary Kafka unavailability is observable without deleting the outbox.
   - Toxiproxy tests restore every injected fault and prove recovery. Duplicate delivery after faults creates neither a second ledger journal nor a second notification.
 
+### Milestone 5C — Harden authentication, authorization, input, and supply-chain controls
+
+- Status: In Progress
+- Intended outcome: The existing order API fails closed with production JWT validation, explicit customer/operator/admin role mapping, owner-only reads, bounded and strictly validated requests, secure response headers, and per-instance write throttling. Existing privileged replay actions retain immutable PostgreSQL audit evidence. Local Keycloak can issue correctly scoped/audienced tokens without committed credentials, and one repeatable command scans application dependencies, repository secrets/misconfiguration, and every Compose image for actionable vulnerabilities.
+- Implementation work:
+  - Keep Spring Security's OAuth 2.0 JWT resource server and exact issuer, audience, RS256, expiry, and not-before validation. Add an allowlisted Keycloak `realm_access.roles` converter for `customer`, `operator`, and `admin` while retaining standard `SCOPE_` authorities.
+  - Require both the matching order scope and `customer` or `admin` role on active order routes. Reserve `/api/v1/operator/**` so reads require operation-read scope plus `operator` or `admin`, and writes require operation-retry scope plus `operator` or `admin`; do not add an operator controller or business operation.
+  - Keep owner authorization in the order query itself and return the same `404` for missing and differently owned orders. Expand negative tests for no token, malformed/invalid claims where practical, missing scope, missing/wrong role, operator-route privilege escalation, and cross-customer object access.
+  - Add explicit CSP, referrer, permissions, frame, content-type, cache, and HTTPS-only HSTS policy. Keep CSRF disabled only because bearer-token APIs are stateless and do not use browser cookies.
+  - Limit HTTP request headers and JSON document/body size; reject duplicate JSON properties, excessive nesting/tokens, unsupported media/content encodings, unexpected query parameters, unknown fields, malformed values, and oversized payloads with bounded RFC 9457 responses.
+  - Rate-limit `POST /api/v1/orders` per authenticated subject, with a bounded in-memory key set, deterministic retry metadata, no raw subject in logs/metrics, and externally configurable positive limits. This application limiter is defense in depth per instance; a trusted deployment ingress remains responsible for global multi-instance and unauthenticated volumetric controls.
+  - Add `admin` to the local Keycloak realm, define order/operation OAuth scopes and a `ledgerflow-api` audience mapper, and retain no users, client secrets, or real credentials in the realm import.
+  - Prove `message_replay_audit` update/delete rejection and retain explicit actor/reason validation for the existing CLI replay. Add no migration because V005 already created the required immutable trigger.
+  - Add a version-and-digest-pinned Trivy script that builds/scans the application artifact for dependencies, scans the repository for secrets/misconfiguration, and scans all explicit Compose images. Fail on fixed HIGH/CRITICAL vulnerabilities; document database freshness, suppression governance, and the scanner's Docker-socket privilege.
+  - Update OpenAPI, architecture/API/threat/workflow/definition-of-done/runbook/README documentation, and this plan. Do not add cards, CVVs, PAN fields, provider credentials, operator HTTP behavior, or production secrets.
+- Validation commands:
+  - `./gradlew :modules:orders:test`
+  - `./gradlew :application:integrationTest --tests '*OrderHttpIntegrationTest'`
+  - `./gradlew :application:integrationTest --tests '*SecurityIntegrationTest'`
+  - `./gradlew :application:integrationTest --tests '*KafkaRetryAndDltIntegrationTest'`
+  - `./gradlew openApiValidate architectureTest documentationCheck composeValidate`
+  - `scripts/security-scan`
+  - `./gradlew clean verify`
+- Observable acceptance:
+  - Valid JWTs require exact trust claims, the route scope, and an allowlisted realm role. Missing/invalid tokens return safe `401`; insufficient role/scope returns safe `403`.
+  - Customer A receives `404` for Customer B's order and cannot infer whether it exists. Operator-only role/scope combinations cannot access customer objects, and customers cannot cross the reserved operator boundary.
+  - Active API success and problem responses contain the configured security headers. HSTS appears only for HTTPS requests.
+  - Unknown/duplicate JSON fields, unsupported content type/encoding, unexpected query input, excessive nesting, and payloads over the configured byte/document limits are rejected before a business row is written.
+  - The configured number of writes per subject succeeds or reaches ordinary validation; the next request receives `429`, `Retry-After`, correlation ID, and no business effect. Rate-limit state is bounded and contains no raw bearer token or idempotency key.
+  - Local Keycloak realm JSON contains customer/operator/admin roles, order and operation scopes, and the LedgerFlow API audience without any user password or client secret.
+  - Direct SQL update/delete of privileged replay audit evidence fails. Existing replay tests still show actor, reason, action, correlation, and timestamp evidence.
+  - Seeded bearer/card/CVV/secret markers do not appear in structured logs, trace attributes, problem details, outbox/DLT metadata, or persisted order/idempotency data; card-like fields are rejected as unknown input.
+  - The security scan reports no unsuppressed fixed HIGH/CRITICAL application dependency or Compose-image vulnerability and no committed secret. Any future suppression must name the vulnerability, owner, rationale, and expiry; this milestone adds none silently.
+
 ### Milestone 6 — Finalize order and expose the complete public workflow
 
 - Status: Proposed
@@ -596,6 +632,12 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - [x] `2026-07-14 06:40Z` — Passed formatting, Java 25 `-Xlint:all -Werror`, Checkstyle, all unit tests, Spring Modulith/ArchUnit, both OpenAPI validators, and documentation checks. Focused Docker-backed execution started but the Docker Desktop daemon stopped answering during Testcontainers discovery, before any application assertion ran.
 - [x] `2026-07-14 07:03Z` — With Docker 29.6.1 healthy, passed provider latency/timeout/reset and PostgreSQL/Kafka unavailability/recovery Toxiproxy tests. Corrected the Kafka proxy target to its host-reachable broker listener after the first topology advertised an internal-only hostname.
 - [x] `2026-07-14 07:07Z` — Ran `./gradlew --no-daemon clean verify --console=plain`; all 65 formatting, static-analysis, unit, PostgreSQL/Kafka/Toxiproxy integration, architecture, Compose, OpenAPI, and documentation task actions completed successfully in 3m 46s. The corrected Kafka retry/DLT tests retain four-attempt evidence, and duplicate-delivery tests retain one ledger and notification side effect.
+- [x] `2026-07-14 07:31Z` — Recorded explicit maintainer approval for Milestone 5C, read repository governance/current plan, and inspected the existing resource-server, owner-filtered order query, immutable V005 replay audit, Keycloak realm, input/error handling, configuration, tests, and dirty worktree from the completed resilience milestone.
+- [x] `2026-07-14 07:31Z` — Fixed scope before implementation: harden current routes and reserve operator authorization without implementing operator recovery; add no migration/datastore; use a bounded per-instance JDK limiter plus deployment-edge global limiting; use a pinned build-time scanner rather than a production dependency. Docker became unavailable during scanner-image inspection, so container checks remain pending while implementation proceeds.
+- [x] `2026-07-14 08:42Z` — Implemented exact JWT issuer/audience/algorithm validation, allowlisted realm-role and scope authorization, owner-filtered reads, strict bounded input, secure headers, per-subject write throttling, immutable replay-audit verification, local Keycloak roles/scopes/audience, pinned Trivy tooling, negative/security tests, and aligned contracts and documentation.
+- [x] `2026-07-14 08:42Z` — With Docker 29.6.1 healthy, passed focused security integration tests, validated a fresh-volume Keycloak import, and started all nine Compose dependencies with temporary overrides for occupied PostgreSQL/Valkey host ports. Every service became healthy and the native Kafka 4.3.1 KRaft broker answered a metadata-quorum request.
+- [x] `2026-07-14 08:42Z` — Ran Java 25/Gradle 9.6.1 `./gradlew --no-daemon clean verify --console=plain`; all formatting, static-analysis, unit, PostgreSQL/Kafka/Toxiproxy integration, architecture, Compose, OpenAPI, and documentation checks passed in 2m 7s after correcting one test-only line-length finding.
+- [ ] `2026-07-14 08:44Z` — Resolve or explicitly accept the vulnerability-gate result. Pinned Trivy found no committed secret or fixed HIGH/CRITICAL application-artifact dependency, and `apache/kafka-native:4.3.1` was clean, but eight current official Compose images retain unsuppressed fixed findings. No exception or suppression was inferred; Milestone 5C remains in progress.
 
 ## Surprises and discoveries
 
@@ -617,6 +659,9 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - A newly used integration-test resource exposed duplicate conventional source-directory registration in the Gradle source sets. Removing the redundant declarations preserves the same directories and allows deterministic resource processing.
 - PostgreSQL JDBC does not infer a SQL type for a raw Java `Instant` passed through `JdbcClient`. The payment adapter converts domain `Instant` values to UTC `OffsetDateTime` only at binding time; persisted columns remain `timestamptz` and mapped domain values remain `Instant`.
 - The approved ledger-only scope cannot truthfully use final `CAPTURED`, because the accepted design also requires order/outbox finalization before that state. `CAPTURE_ACCOUNTED` records the narrower atomic payment/ledger boundary and prevents a public final-state claim.
+- Keycloak does not re-import a realm that already exists. The updated local realm was therefore verified with an isolated fresh PostgreSQL volume; existing developer data was preserved, and the README calls out deliberate `dev-reset` when an import update is required locally.
+- Trivy filesystem mode did not inspect dependencies nested in the executable Spring Boot JAR. The scanner uses its root-filesystem target plus the Java vulnerability database for that artifact, reports one language-specific file, and allows fifteen minutes for the large first-run Java database download.
+- The 2026-07-14 Trivy database reports fixed HIGH/CRITICAL findings even in current official Grafana, Loki, Tempo, OpenTelemetry Collector, Prometheus, Keycloak, and Valkey images and the latest PostgreSQL 18.4 Alpine variant. Switching Kafka to the equivalent official native image removed its findings, while safe Grafana/PostgreSQL/Prometheus variant or release changes reduced but did not eliminate the others. Risk acceptance and suppressions require maintainer authority, so the scan remains a visible failing gate.
 
 ## Decision log
 
@@ -652,13 +697,18 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - **2026-07-14 — Use Resilience4j 2.4.0 direct core circuit-breaker and semaphore-bulkhead APIs.** Spring Boot does not supply these state machines, and a mature thread-safe implementation is safer than custom concurrency code. Do not add its Spring/AOP starter or generic retry; explicit result classification and payment recovery remain authoritative. ADR 0009 is required.
 - **2026-07-14 — Put cross-module drain/startup/fault controls in the existing `operations` feature.** A minimal named API lets external-work adapters register in-flight work without exposing their internals. Health and profile guards stay operations-owned; business modules retain their own failure semantics. ADR 0009 records the cross-cutting boundary.
 - **2026-07-14 — Use bounded Kafka polling plus container pausing for backoff.** `max.poll.records`, typed concurrency, pause-immediate behavior, and explicit shutdown timeouts bound memory and allow heartbeats during retry delays. Record acknowledgment and inbox idempotency remain unchanged.
+- **2026-07-14 — Require both scope and allowlisted realm role.** Standard Spring scope conversion remains authoritative for OAuth scopes; a small converter adds only `customer`, `operator`, and `admin` from Keycloak `realm_access.roles`. Order ownership remains a database predicate. No ADR is required because this completes the already proposed security design without changing module or data ownership.
+- **2026-07-14 — Use a bounded per-instance write limiter without a new datastore.** The active application has one public write route and Valkey integration is explicitly out of scope. A JDK implementation avoids a production dependency and stores only bounded hashes of principal keys; deployment ingress must enforce global and unauthenticated volumetric limits across instances. Record this limitation in security documentation; no ADR is required.
+- **2026-07-14 — Use a pinned Trivy container for dependency, secret/configuration, and Compose-image scanning.** The scanner is an explicit build/CI tool rather than runtime code. Pin its image by version and digest, fail on fixed HIGH/CRITICAL findings, and do not hide findings without expiring documented governance. The scanner requires privileged read access to the local Docker socket for image analysis; document that operational implication. No production dependency or ADR is required.
+- **2026-07-14 — Replace the local Kafka JVM image with Apache's official native image at the same 4.3.1 release.** The scanner found fixed HIGH Alpine, Jackson, and unused telnet-library findings in `apache/kafka:4.3.1`; `apache/kafka-native:4.3.1` provides the same approved Kafka/KRaft release and reports none. Its health check uses the image's `nc` utility because the native distribution intentionally omits JVM administration scripts. This is a local infrastructure artifact remediation, not a Kafka protocol/version or production-topology decision.
+- **2026-07-14 — Prefer current official image variants/releases when scans materially reduce findings without changing a service contract.** PostgreSQL remains 18.4 but moves to its Alpine 3.24 variant, Grafana remains 13.1.0 but moves to its Ubuntu variant, and Prometheus moves from the expiring 3.5 LTS line to current LTS 3.13.0. These scan-driven local-development changes reduce fixed HIGH findings but do not silently accept the remaining upstream findings; complete scanner evidence still requires remediation or explicit maintainer risk acceptance.
 - **2026-07-11 — Validate OpenAPI without server code generation.** Contract tests enforce conformance without generated framework coupling.
 - **2026-07-11 — Contract the mock provider separately and exclude it from the main artifact.** Its external HTTP behavior is validated without exposing simulator controls in production.
 - **2026-07-11 — Separate Flyway owner and runtime database roles.** Migration authority does not grant the application DDL or mutation rights over immutable financial/audit data.
 
 ## Outcome and follow-up
 
-Current outcome: Milestones 1 through 5B are complete. The transactional outbox/Kafka and resilience implementation includes exact DLT delivery-attempt evidence; explicit provider deadlines, retry classification, circuit breaking, and bulkheading; bounded shutdown and Kafka intake; readiness/startup checks; local/test-only fault injection; and Toxiproxy recovery coverage. Focused fault tests and the full Java 25 `./gradlew clean verify` lifecycle pass with Docker. No later milestone is approved. The delivered scope still excludes operator HTTP APIs, public payment behavior, final order/capture orchestration, schema changes, and end-to-end exactly-once claims.
+Current outcome: Milestones 1 through 5B are complete. Milestone 5C implementation and all Gradle verification are complete, but the milestone remains in progress because the vulnerability acceptance criterion is not met: eight current official Compose images contain unsuppressed fixed HIGH/CRITICAL findings in the 2026-07-14 Trivy database. The repository secret scan, packaged application dependency scan, and native Kafka image scan are clean. No risk exception or suppression has been inferred. The delivered scope remains limited to current-route authentication/authorization and input/resource defenses, the reserved operator authorization boundary, existing privileged-audit verification, local Keycloak configuration, sensitive-data controls, and supply-chain scanning. It does not approve operator HTTP business behavior, public payment behavior, final order/capture orchestration, a new datastore, or end-to-end exactly-once claims.
 
 When all milestones are complete, update this section with:
 

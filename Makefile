@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help run dev-up dev-down dev-reset dev-status replay-dead-letter format check-format static-analysis test integration-test architecture-test openapi-check compose-check docs-check verify clean
+.PHONY: help run dev-up dev-down dev-reset dev-status replay-dead-letter security-scan format check-format static-analysis test integration-test architecture-test openapi-check compose-check docs-check verify clean
 
 help:
 	@echo "LedgerFlow developer commands"
@@ -10,6 +10,7 @@ help:
 	@echo "  make dev-reset          Delete local data and recreate dependencies"
 	@echo "  make dev-status         Show local dependency health"
 	@echo "  make replay-dead-letter Replay one validated DLT record with audit evidence"
+	@echo "  make security-scan      Scan secrets, dependencies, and Compose images"
 	@echo "  make format             Apply formatting"
 	@echo "  make check-format       Check formatting"
 	@echo "  make static-analysis    Run compiler lint and Checkstyle"
@@ -38,6 +39,9 @@ dev-status:
 
 replay-dead-letter:
 	./scripts/replay-dead-letter "$(DLT_ID)" "$(ACTOR)" "$(REASON)"
+
+security-scan:
+	./scripts/security-scan
 
 format:
 	./gradlew spotlessApply

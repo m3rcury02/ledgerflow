@@ -36,7 +36,9 @@ public class OrderController {
     this.orderService = orderService;
   }
 
-  @PostMapping
+  @PostMapping(
+      consumes = org.springframework.http.MediaType.APPLICATION_JSON_VALUE,
+      produces = org.springframework.http.MediaType.APPLICATION_JSON_VALUE)
   public ResponseEntity<OrderResponse> createOrder(
       @RequestHeader("Idempotency-Key") String rawIdempotencyKey,
       @Valid @RequestBody CreateOrderRequest request,
@@ -63,7 +65,9 @@ public class OrderController {
     return response.body(OrderResponse.from(result.order()));
   }
 
-  @GetMapping("/{orderId}")
+  @GetMapping(
+      value = "/{orderId}",
+      produces = org.springframework.http.MediaType.APPLICATION_JSON_VALUE)
   public OrderResponse getOrder(@PathVariable UUID orderId, JwtAuthenticationToken authentication) {
     OrderView order = orderService.get(orderId, ownerSubject(authentication));
     LOGGER.info("Order read completed: orderId={}", orderId);

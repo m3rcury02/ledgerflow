@@ -1,7 +1,7 @@
 # LedgerFlow MVP Product Requirements
 
 - Status: Partially implemented
-- Last updated: 2026-07-13
+- Last updated: 2026-07-14
 - Related plan: `docs/plans/mvp-execplan.md`
 
 ## Purpose
@@ -23,7 +23,16 @@ The goal is not a feature-complete commerce product. The goal is to prove correc
 
 ## Current delivery status
 
-The public Create Order slice is implemented. Authenticated clients can create one positive INR order in `CREATED` state and read an owned order; no public route starts payment. Non-public module slices implement provider authorization/capture, immutable capture accounting, and transactional outbox/Kafka notification delivery. Capture accounting atomically commits payment `CAPTURE_ACCOUNTED`, the balanced journal, and one outbox event. A leased publisher and idempotent consumer deliver one logical notification database effect with at-least-once semantics, and a narrow audited CLI can replay validated DLT records. Order `COMPLETED`, payment `CAPTURED`, public financial orchestration, and the operator HTTP workflow remain planned.
+The public Create Order slice is implemented. Authenticated clients with the required scope and
+allowlisted realm role can create one positive INR order in `CREATED` state and read only an owned
+order; strict request limits, per-instance subject throttling, and secure response headers protect
+that boundary. No public route starts payment. Non-public module slices implement provider
+authorization/capture, immutable capture accounting, and transactional outbox/Kafka notification
+delivery. Capture accounting atomically commits payment `CAPTURE_ACCOUNTED`, the balanced journal,
+and one outbox event. A leased publisher and idempotent consumer deliver one logical notification
+database effect with at-least-once semantics, and a narrow audited CLI can replay validated DLT
+records. Order `COMPLETED`, payment `CAPTURED`, public financial orchestration, and the operator HTTP
+workflow remain planned.
 
 ## Actors
 
@@ -122,6 +131,16 @@ Steps 1–3 are active through the public API. Steps 4–6 and 10–12 are imple
 - **FR-032:** `POST /api/v1/operator/operations/{operationId}/retries` requires operator retry scope, an idempotency key, and an audit reason.
 - **FR-033:** An operator retry is itself idempotent, audited, and safe under concurrent requests.
 
+### Security and abuse resistance
+
+- **FR-034:** Active order routes require an RS256 JWT with exact configured issuer, `ledgerflow-api` audience, valid time claims, route scope, and `customer` or `admin` realm role.
+- **FR-035:** Order reads constrain both order ID and JWT subject and return an indistinguishable `404` for absent and differently owned resources. An `operator` role alone grants no customer-object access.
+- **FR-036:** Create Order accepts only bounded JSON without query parameters or compressed bodies and rejects duplicate/unknown properties, unsupported media, excessive structure, and oversized content before a business write.
+- **FR-037:** Each application instance bounds create attempts and tracked identities per subject hash and returns `429` with `Retry-After`; a production ingress provides aggregate and unauthenticated volumetric controls.
+- **FR-038:** API problems, logs, traces, persistence, events, and DLT evidence exclude bearer tokens, idempotency keys, request bodies, secret configuration, real payment credentials, PANs, and CVVs.
+- **FR-039:** Secrets come only from environment/secret injection. A pinned repeatable scan checks committed content/configuration, packaged Java dependencies, and all Compose images; fixed HIGH/CRITICAL findings require remediation or an approved owned, expiring exception.
+- **FR-040:** Every privileged replay mutation has immutable actor, reason, action, correlation, and timestamp evidence; PostgreSQL rejects audit update and delete.
+
 ## Quality attributes
 
 - **Correctness:** No successful capture can produce an unbalanced ledger transaction, duplicate ledger effect, missing outbox event, or duplicate notification.
@@ -133,7 +152,7 @@ Steps 1–3 are active through the public API. Steps 4–6 and 10–12 are imple
 
 ## Delivered milestone acceptance criteria
 
-The `AC-M3` criteria record the delivered public Create Order slice; `AC-M5B` records the delivered non-public messaging slice. Statements about what Milestone 3 did not introduce are historical scope assertions, not claims that those capabilities are still absent.
+The `AC-M3` criteria record the delivered public Create Order slice, `AC-M5B` records the delivered non-public messaging slice, and `AC-M5C` records security hardening. Statements about what Milestone 3 did not introduce are historical scope assertions, not claims that those capabilities are still absent.
 
 - **AC-M3-001:** A valid scoped request returns `201`, a UUIDv7 `CREATED` order, positive INR minor units, UTC timestamps, `Location`, and a correlation ID.
 - **AC-M3-002:** The same subject, key, and canonical payload returns the byte-equivalent original body and location with `Idempotency-Replayed: true`, without another order.
@@ -151,6 +170,15 @@ The `AC-M3` criteria record the delivered public Create Order slice; `AC-M5B` re
 - **AC-M5B-005:** One initial consumer attempt plus three bounded pause-based retries precede acknowledged DLT publication; intake remains bounded, and validated poison records are cataloged and replayable through an audited CLI.
 - **AC-M5B-006:** Kafka uses W3C trace headers and a validated correlation header. Replay preserves the business envelope/key while starting new transport correlation/trace context.
 - **AC-M5B-007:** Delivery is documented as atomic PostgreSQL business-plus-outbox and at-least-once publish/consume, never as end-to-end exactly once.
+
+- **AC-M5C-001:** A correctly signed token with exact issuer/audience/time claims, route scope, and `customer`/`admin` role reaches the order use case; wrong signature/issuer/audience, expiry, scope, or role fails safely.
+- **AC-M5C-002:** Two subjects cannot read each other's orders, operator-only identity cannot read customer orders, and customers cannot cross the reserved operator boundary.
+- **AC-M5C-003:** Success and problem responses carry secure headers; HSTS is present only on HTTPS.
+- **AC-M5C-004:** Unexpected query input, compressed/unsupported bodies, duplicate/unknown JSON, and payloads above the configured limit fail before any business row is inserted.
+- **AC-M5C-005:** The configured per-subject attempts are admitted to normal processing and the next receives `429`, `Retry-After`, and correlation ID without a business effect; tracked state is bounded and hashed.
+- **AC-M5C-006:** The local realm declares customer/operator/admin roles, order/operation scopes, and API audience without users, passwords, or client secrets.
+- **AC-M5C-007:** Sensitive marker tests show rejected request/key material absent from API responses, captured logs, and order/idempotency persistence; direct SQL audit update/delete fails.
+- **AC-M5C-008:** The pinned scan finds no unapproved committed secret or fixed HIGH/CRITICAL application-dependency/Compose-image vulnerability.
 
 ## Target full-flow acceptance criteria
 
