@@ -44,6 +44,10 @@ public abstract class PostgreSqlIntegrationTest {
     return POSTGRESQL.getDatabaseName();
   }
 
+  protected static String postgresqlJdbcUrl() {
+    return POSTGRESQL.getJdbcUrl();
+  }
+
   protected static String postgresqlUsername() {
     return POSTGRESQL.getUsername();
   }
@@ -59,6 +63,7 @@ public abstract class PostgreSqlIntegrationTest {
             """
             TRUNCATE TABLE
                 message_replay_audit,
+                terminal_dlt_records,
                 dead_letter_records,
                 notifications,
                 notification_inbox,

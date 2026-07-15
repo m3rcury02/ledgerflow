@@ -5,15 +5,18 @@
 - Status: Proposed
 - Owner: Unassigned; the maintainer assigns an owner when approving a milestone
 - Created: 2026-07-14
-- Last updated: 2026-07-14
+- Last updated: 2026-07-15
 - Approved by: None
 - Approval date: None
-- Current milestone: None; all milestones in this plan are Proposed
+- Current milestone: None; this document is a supporting evidence/design record, not an execution authority
 
-The existing docs/plans/mvp-execplan.md remains In Progress on Milestone 5C. This plan does not
-alter, supersede, or approve work in that plan. No milestone below may start until the maintainer
-either completes the active milestone or explicitly changes its status, then explicitly approves
-one milestone here.
+`docs/plans/mvp-execplan.md` is the sole authority for milestone ordering, approval, progress, and
+completion. Its approved Milestone 5D incorporates this record's R1 and R2 designs. R3 and R4 remain
+separately tracked Proposed follow-ups in the canonical plan; R5 is retained only as the original
+combined validation design. The milestone labels below do not independently authorize work, and
+their statuses must not be used to infer approval. This document remains the evidence, detailed
+finding design, compatibility analysis, and anticipated touch-set reference; do not duplicate it in
+another ExecPlan.
 
 ## Purpose and outcome
 
@@ -36,16 +39,16 @@ break-glass attempts.
 This is a production-readiness remediation, not a general security rewrite or completion of the
 remaining MVP business flow.
 
-## Current state
+## Verified pre-remediation state (2026-07-14)
 
-The investigation was read-only. The working tree was clean before this plan was created. The
+The original investigation was read-only. The working tree was clean before this plan was created. The
 reported abuse review is not stored as a repository file; the five maintainer-supplied findings
 were checked directly against current source, migrations, configuration, tests, and operational
 documentation.
 
 ### Verified behavior and deployment impact
 
-| Finding | Current evidence | Does the behavior still exist? | Deployment impact |
+| Finding | Evidence at review time | Did the behavior exist? | Deployment impact |
 | --- | --- | --- | --- |
 | Actuator exhaustion | OrderSecurityConfiguration permits health and info without authentication on the application security chain. application.yaml has no separate management port. OperationalHealthIndicator calls PostgreSQL and optionally Kafka for readiness. DependencyProbe creates and closes a Kafka Admin on every Kafka probe. | Yes | Blocker for a publicly routed production deployment unless an independently verified management-only network boundary already prevents access. The code and deployment contract must still be corrected before LedgerFlow claims a safe default. |
 | Re-enveloped event duplication | JdbcNotificationStore.process deduplicates notification_inbox only by event_id and notifications has uniqueness only on event_id. NotificationEventValidator validates envelope relationships but cannot prove producer origin. A new event ID with otherwise equivalent capture data inserts another notification. | Yes | Blocker before enabling the production notification consumer. Producer ACLs reduce who can exploit it but do not replace a business-side-effect invariant. |
@@ -53,7 +56,7 @@ documentation.
 | Unbounded resource growth | V001 gives orders and idempotency_records no cleanup or quota structures. OrderService creates one of each for every valid new key. WriteRateLimiter is per-instance, resets on restart, and limits request rate rather than durable storage. Product requirements explicitly retain idempotency rows indefinitely. | Yes | Blocker before sustained or multi-tenant public production. It is not a blocker for a disposable local demonstration. |
 | Caller-asserted, unbounded replay | scripts/replay-dead-letter accepts actor as an argument. ReplayCommandConfiguration reads ledgerflow.replay.actor. DeadLetterReplayService validates only its syntax. JdbcNotificationStore.claimReplay increments replay_count without a maximum, and markReplayFailed makes the record immediately eligible again. | Yes | Blocker before production replay is enabled. A customer-only deployment can proceed only if replay is disabled and the replay Kafka credential has no publish authority. Full MVP operator recovery remains blocked. |
 
-### Existing controls that remain valid
+### Controls already valid at review time
 
 - The application already validates JWT issuer, audience, signature algorithm, scopes, and
   allowlisted roles for active HTTP routes.
@@ -67,7 +70,7 @@ documentation.
 - No H2, cache-backed idempotency, new application datastore, or exactly-once delivery claim is
   present.
 
-### Tests inspected
+### Tests inspected before remediation
 
 - modules/operations/src/test/java/com/ledgerflow/operations/internal/OperationalHealthIndicatorTest.java
   proves sanitized dependency failure and drain status, but not port separation, request
@@ -89,7 +92,7 @@ documentation.
 
 ## Scope and non-goals
 
-### In scope
+### Design scope
 
 - A separate configurable Spring Boot management port with a dedicated management security
   boundary, status-only unauthenticated liveness/readiness responses, and deployment requirements
@@ -850,11 +853,22 @@ rewriting their historical rationale.
 No Gradle version, production dependency version, application module, Compose service, business
 state, or current migration is expected to change.
 
-## Milestones
+## Supporting implementation slices
 
-### Milestone R1 — Isolate and bound management health
+The canonical mappings are:
 
-- Status: Proposed
+- R1 and R2 together map to approved canonical Milestone 5D, executed R1 then R2;
+- R3 remains a separately proposed quota/retention follow-up;
+- R4 remains a separately proposed authenticated/bounded replay follow-up and a gate for canonical
+  Milestone 7B; and
+- R5 is not a separately approvable milestone. The canonical milestone being completed owns its full
+  `./gradlew clean verify` gate.
+
+Only `docs/plans/mvp-execplan.md` may change those statuses or ordering.
+
+### Slice R1 — Isolate and bound management health
+
+- Canonical status: Included in approved Milestone 5D; not independently executable
 - Intended outcome: Health and metrics are served only on a separate protected management port, and
   concurrent readiness requests share bounded dependency work.
 - Implementation work:
@@ -874,9 +888,9 @@ state, or current migration is expected to change.
   - The application port serves no Actuator endpoint.
   - Counting tests prove one managed Admin and one coalesced dependency probe per interval.
 
-### Milestone R2 — Enforce notification semantic idempotency and terminal DLT progress
+### Slice R2 — Enforce notification semantic idempotency and terminal DLT progress
 
-- Status: Proposed
+- Canonical status: Included in approved Milestone 5D; not independently executable
 - Intended outcome: Re-enveloping cannot duplicate a notification, and malformed DLT input cannot
   starve its partition after durable terminal evidence is written.
 - Implementation work:
@@ -897,9 +911,9 @@ state, or current migration is expected to change.
   - Kafka tests prove concurrent semantic deduplication, conflict DLT, malformed-DLT progress, and
     database-outage recovery.
 
-### Milestone R3 — Bound order storage and retain idempotency safely
+### Follow-up R3 — Bound order storage and retain idempotency safely
 
-- Status: Proposed
+- Canonical status: Proposed follow-up; requires separate maintainer approval
 - Intended outcome: New orders are subject to an authoritative customer storage quota, lock waits
   are bounded, and completed idempotency snapshots expire only after the documented retry window.
 - Implementation work:
@@ -920,9 +934,9 @@ state, or current migration is expected to change.
   - The quota, same-key lock timeout, cleanup batch, and replay-at-quota tests pass against
     PostgreSQL.
 
-### Milestone R4 — Authenticate, authorize, and bound DLT replay
+### Follow-up R4 — Authenticate, authorize, and bound DLT replay
 
-- Status: Proposed
+- Canonical status: Proposed follow-up; requires separate maintainer approval
 - Intended outcome: Operators inspect and replay through contract-first JWT-secured routes; actor
   identity cannot be asserted by the caller, and cooldown, normal maximum, break glass, command
   idempotency, and immutable audit are enforced.
@@ -946,9 +960,9 @@ state, or current migration is expected to change.
   - Negative authorization, identity derivation, idempotency, cooldown, cap, break-glass, crash
     window, and immutable audit tests pass.
 
-### Milestone R5 — Run the complete abuse-case and quality gate
+### Validation design R5 — Run the complete abuse-case and quality gate
 
-- Status: Proposed
+- Canonical status: Not separately approvable; validation belongs to the active canonical milestone
 - Intended outcome: All five remediations work together and every repository completion check
   passes with accurate operational documentation.
 - Implementation work:
@@ -973,9 +987,9 @@ state, or current migration is expected to change.
 
 ## Implementation approach
 
-1. Before each milestone, re-read this plan, verify that milestone alone is explicitly approved,
-   inspect git status, and update Metadata and Progress. Do not begin while another milestone is
-   Approved or In Progress.
+1. Before a canonical milestone uses one of these slices, re-read both documents, verify the
+   canonical milestone alone is explicitly approved, inspect git status, and update only the
+   canonical Metadata and Progress. Do not infer approval from this record.
 2. Write the ADR and, where applicable, OpenAPI contract before or with the first implementation
    change. Do not broaden the API beyond the three dead-letter operations and one order-quota error.
 3. Add each Flyway migration once and validate it both from an empty database and from representative
@@ -987,8 +1001,9 @@ state, or current migration is expected to change.
    reasons, approval references, and topic names are not metric labels.
 7. Update focused tests alongside each control, then run that milestone's commands. Fix failures
    within scope; do not weaken a check.
-8. Only R5 runs and records the complete gate. A scan finding requires remediation or explicit
-   maintainer disposition under existing governance; this plan grants neither suppression nor risk
+8. The active canonical milestone runs and records its complete gate; R5 is only the original
+   combined validation design. A scan finding requires remediation or explicit maintainer
+   disposition under existing governance; this record grants neither suppression nor risk
    acceptance.
 
 ### Why these are the smallest safe changes
@@ -1029,9 +1044,10 @@ state, or current migration is expected to change.
 | Storage abuse | Database quota under concurrency, replay at quota, bounded lock wait, no early cleanup, bounded multi-worker cleanup, growth metrics |
 | Replay abuse | JWT-derived identity, read/retry/break-glass separation, command idempotency, cooldown, normal and absolute caps, immutable audit, crash duplicate safe |
 
-### Complete acceptance
+### Combined validation reference
 
-R5 is complete only when:
+If the maintainer eventually approves and completes all five remediations through canonical
+milestones or follow-ups, the combined validation is complete only when:
 
 - every acceptance criterion in all five finding sections has test or documented deployment evidence;
 - V001 through V005 checksums are unchanged;
@@ -1096,13 +1112,12 @@ R5 is complete only when:
 - [x] 2026-07-14 10:10Z — Ran the operations, notifications, and orders unit-test tasks together
   with Spotless and documentation checks; all 19 task actions passed or were up to date. Final git
   status contains only this untracked Proposed plan.
-- [ ] Maintainer explicitly resolves the active Milestone 5C conflict and approves exactly one
-  remediation milestone.
-- [ ] Execute and record Milestone R1.
-- [ ] Execute and record Milestone R2.
-- [ ] Execute and record Milestone R3.
-- [ ] Execute and record Milestone R4.
-- [ ] Execute and record Milestone R5.
+- [x] 2026-07-15 11:14Z — The maintainer made `docs/plans/mvp-execplan.md` the unambiguous source of
+  truth, approved canonical Milestone 5D containing R1/R2, kept R3/R4 separately Proposed, and
+  removed independent execution authority from this supporting record.
+- [x] 2026-07-15 12:39Z — Recorded R1/R2 implementation and verification evidence only in canonical Milestone 5D progress; this supporting record remains non-authoritative.
+- [ ] Revisit R3 only after separate maintainer approval recorded in the canonical plan.
+- [ ] Revisit R4 only after separate maintainer approval recorded in the canonical plan.
 
 ## Surprises and discoveries
 
@@ -1119,14 +1134,14 @@ R5 is complete only when:
   to now and claim SQL has no count predicate.
 - Product requirement FR-008 explicitly promises indefinite idempotency retention. Remediation is a
   deliberate contract change, not merely a cleanup job.
-- The active MVP ExecPlan still has an unresolved vulnerability-gate item. This plan must not be
-  marked Approved concurrently without explicit maintainer action.
+- Milestone 5C subsequently completed. Canonical Milestone 5D now owns approved R1/R2 execution;
+  keeping independent statuses here would recreate the planning ambiguity this amendment resolves.
 
 ## Decision log
 
-- 2026-07-14 — Keep this plan Proposed and separate from docs/plans/mvp-execplan.md. Rationale: the
-  current plan has an In Progress milestone and repository governance permits only one active
-  milestone. ADR required: No.
+- 2026-07-14 — Keep this plan Proposed and separate from docs/plans/mvp-execplan.md (superseded by
+  the 2026-07-15 canonical-plan decision below). Rationale: the current plan then had an In Progress
+  milestone and repository governance permits only one active milestone. ADR required: No.
 - 2026-07-14 — Use one managed Kafka Admin plus a two-second coalesced readiness snapshot. Rationale:
   it removes per-request allocation and burst multiplication while preserving current dependency
   semantics with existing libraries. ADR required: ADR 0010.
@@ -1146,16 +1161,23 @@ R5 is complete only when:
 - 2026-07-14 — Add no production technology. Rationale: PostgreSQL, Spring Security, Kafka,
   Actuator, Micrometer, and JDK concurrency primitives already provide the required controls. ADR
   required: No.
+- 2026-07-15 — Defer all execution status to `docs/plans/mvp-execplan.md`. Rationale: the repository
+  already has one maintainer-designated canonical MVP ExecPlan, and two milestone authorities would
+  drift. R1/R2 are incorporated into canonical Milestone 5D; R3/R4 stay separately proposed there.
+  ADR required: No.
 
 ## Outcome and follow-up
 
-Current outcome: investigation and planning only. All five findings are verified. This Proposed plan
-defines feature-specific deployment blockers, exact control boundaries, four additive migrations,
-compatibility and rollback constraints, operational configuration, expected file scope, and abuse
-regression tests. No remediation is implemented or approved.
+Historical design outcome: all five findings were verified and this supporting record defined their
+feature-specific deployment blockers, control boundaries, migrations, compatibility/rollback
+constraints, operational configuration, expected file scope, and abuse regression tests. The
+canonical plan now records Milestone 5D R1/R2 as implemented and Complete on 2026-07-15 with focused
+and full verification evidence. R3/R4 remain separately Proposed; this supporting record still has
+no independent execution authority.
 
-At completion, replace this section with delivered behavior, migration evidence, complete command
-results, accepted ADRs, deviations approved by the maintainer, and residual risk.
+When a canonical milestone completes, record delivered behavior, migration evidence, command
+results, accepted ADRs, deviations, and residual risk in `docs/plans/mvp-execplan.md`; keep this
+historical design outcome intact.
 
 Separately proposed follow-up work is not approved by this plan. Examples include production cloud
 IaC, a quarantine topic, retention for other event/audit tables, dynamic quota administration, a

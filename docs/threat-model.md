@@ -1,14 +1,14 @@
 # LedgerFlow MVP Threat Model
 
 - Status: Partially implemented
-- Last updated: 2026-07-14
+- Last updated: 2026-07-15
 - Method: asset and trust-boundary review informed by STRIDE and OWASP API Security Top 10
 
 ## Scope
 
 This threat model covers the MVP public API, operator API, modular-monolith process, mock payment-provider boundary, PostgreSQL, Kafka topics, OpenTelemetry export, and administrative retry flow.
 
-The active scope includes the Create Order HTTP/PostgreSQL boundary, the non-public payment/provider integration harness, non-public capture accounting, the transactional outbox publisher, notification consumer/inbox, DLT catalog, and audited replay CLI. Capture accounting commits payment `CAPTURE_ACCOUNTED`, the balanced journal, and outbox event together. Kafka publish/consume is at least once; event-ID/hash constraints permit one logical notification database effect. Public financial orchestration, order `COMPLETED`, payment `CAPTURED`, and the operator HTTP controls below remain launch requirements, not claims about current behavior.
+The active scope includes the Create Order HTTP/PostgreSQL boundary, the non-public payment/provider integration harness, non-public capture accounting, the transactional outbox publisher, notification consumer/inbox, DLT catalog, terminal malformed-DLT evidence, isolated management listener, and audited replay CLI. Capture accounting commits payment `CAPTURE_ACCOUNTED`, the balanced journal, and outbox event together. Kafka publish/consume is at least once; event-ID/hash transport checks plus a versioned semantic-effect constraint prevent the covered capture notification from repeating under a new envelope. Public financial orchestration, order `COMPLETED`, payment `CAPTURED`, and the operator HTTP controls below remain launch requirements, not claims about current behavior.
 
 It does not certify PCI DSS compliance or cover a real payment provider, identity-provider implementation, host/container hardening, Kafka/PostgreSQL control planes, or internet-scale denial-of-service protection.
 
@@ -66,13 +66,13 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 | T-09 | SSRF through configurable provider URL | Access to internal services/metadata | Provider base URI comes only from trusted deployment config, must be absolute HTTP(S), and is never request-supplied; production egress allowlisting is required | Configuration tests, deployment policy, and review |
 | T-10 | SQL injection or mass assignment | Data compromise | Parameterized JDBC, typed commands, explicit field mapping, reject unknown JSON properties | Static analysis and hostile input tests |
 | T-11 | Unbalanced or mutable ledger data | Financial integrity loss | Positive integer checks, currency checks, deferred balance trigger, immutable rows, least-privilege DB role | Direct SQL constraint tests |
-| T-12 | Outbox/Kafka duplicate or reordered records | Duplicate notification or inconsistent projection | Unique event ID, order key, inbox idempotency, one event type per order in MVP | Duplicate/reorder tests |
-| T-13 | Spoofed or malformed Kafka event | Unauthorized notification or consumer crash | Broker TLS/SASL, topic ACLs, schema/type/version validation, bounded sizes, DLT | Invalid-schema and unauthorized-topic tests |
-| T-14 | Repeated transient event failure causes infinite retry or partition starvation | Availability loss | Three bounded pause-based retries after the initial attempt, bounded poll intake/concurrency, then acknowledged DLT publication; invalid input skips transient retries | Retry-count, pause/backpressure, DLT, and acknowledgement tests |
+| T-12 | Duplicate, reordered, or re-enveloped Kafka record | Duplicate notification or inconsistent projection | Event-ID/hash transport idempotency, order key, database-unique versioned semantic effect based on capture ledger identity, content conflict detection | Redelivery, re-enveloping, conflict, and concurrent-insert tests |
+| T-13 | Spoofed or malformed Kafka event | Unauthorized notification, consumer crash, or permanent DLT partition blockage | Broker TLS/SASL, least-privilege topic ACLs, schema/type/version validation, bounded sizes, acknowledged DLT, terminal evidence by actual DLT coordinates | Invalid-schema, semantic-conflict, malformed-route, persistence-outage, and partition-progress tests |
+| T-14 | Repeated transient event failure causes infinite retry or partition starvation | Availability loss | Three bounded pause-based retries after the initial attempt, bounded poll intake/concurrency, then acknowledged DLT publication; terminal DLT data advances only after durable sanitized evidence | Retry-count, pause/backpressure, DLT acknowledgement, evidence-store outage/recovery, and later-record progress tests |
 | T-15 | DLT replay is abused | Repeated workload or notification effects | Narrow CLI, validated replayable catalog entry, required actor/reason, generated transport correlation/trace, owner lease, immutable audit, inbox deduplication; future HTTP scope controls | Replay validation, stale-lease, audit, and duplicate-delivery tests |
 | T-16 | Sensitive values leak through logs/traces/events/errors | Credential or privacy breach | Attribute allowlist, redaction, no bodies/tokens/keys, stable safe error codes; reject payment/card-like public fields; stack traces only in access-restricted redacted server error logs | Captured HTTP/log marker tests plus existing event/trace tests |
 | T-17 | Untrusted correlation/trace headers cause log injection or oversized metadata | Log corruption or resource exhaustion | Validate correlation format/length; standards-compliant trace parser; replace invalid values | Fuzz boundary headers |
-| T-18 | Large bodies, request floods, slow provider, or high-cardinality metrics exhaust resources | Denial of service/cost | 16 KiB request/provider-response limits, strict JSON/header bounds, bounded per-instance subject rate state, provider deadlines/bulkhead/circuit, bounded Kafka intake, and graceful drain; deployment-edge aggregate limits remain required | Request-limit/rate tests, Toxiproxy latency/reset/timeout, circuit/bulkhead, bounded retry, and shutdown tests; load test before launch |
+| T-18 | Large bodies, request/probe floods, slow provider, or high-cardinality metrics exhaust resources | Denial of service/cost | 16 KiB request/provider-response limits, strict JSON/header bounds, bounded per-instance subject rate state, separate non-public management port, coalesced readiness cache, managed Kafka probe client, provider deadlines/bulkhead/circuit, bounded Kafka intake, and graceful drain; deployment-edge aggregate limits remain required | Request-limit/rate tests, 100-caller probe coalescing, management-port HTTP tests, Toxiproxy latency/reset/timeout, circuit/bulkhead, bounded retry, and shutdown tests; load test before launch |
 | T-19 | Secrets committed, vulnerable dependencies/images, or insecure defaults enabled in production | Infrastructure or supply-chain compromise | Environment/secret manager, version-and-digest-pinned Trivy scan, local-only mock profile, production startup guard, and exact expiring image exceptions that are prohibited outside local development | Repository/artifact/all-Compose-image scan, exception-policy validation, and profile tests |
 | T-20 | Operator sees raw stack trace, provider response, or event secret | Internal information disclosure | Sanitized failure projection and allowlisted retry payload; restricted audit API | Serialization snapshot tests |
 
@@ -84,7 +84,7 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 - Standard scopes map to `SCOPE_` authorities. Only `customer`, `operator`, and `admin` are accepted from Keycloak `realm_access.roles`; unrecognized or malformed roles add no authority. Active order routes require their route scope plus `customer` or `admin`.
 - The reserved operator path requires `ledgerflow.operations.read` for GET or `ledgerflow.operations.retry` for other methods plus `operator` or `admin`. No operator handler or business action exists yet.
 - Integration tests use ephemeral signing keys, and the local Keycloak realm defines roles/scopes/audience without users or credentials. No authentication bypass exists in the main artifact.
-- Actuator and mock-provider control endpoints are not exposed on the public API. Mock service code is a separate integration-test fixture and is absent from the production artifact. The payment workflow has no public route, and a real provider must be approved before that changes.
+- Actuator uses a separate management listener. The application port serves no Actuator path; the management context exposes status-only liveness/readiness and Prometheus, with aggregate details disabled. `docs/deployment-security.md` requires deny-by-default network isolation and prohibits public management ingress. Mock service code is a separate integration-test fixture and is absent from the production artifact.
 
 ## Input and external-service safety
 
@@ -105,9 +105,10 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 - Production Kafka uses TLS/SASL and distinct least-privilege principals for main publishing, notification consumption, retry/DLT publishing, and DLT inspection where the platform permits.
 - Topic auto-creation is disabled outside local/test. Deployment validates topic existence, partitions, retention, maximum message size, and ACLs.
 - The producer waits for `acks=all`; idempotent producer mode reduces broker-level duplicates but does not replace outbox/inbox idempotency.
+- Event ID plus canonical hash protects transport redelivery. A separate versioned capture-notification identity uses the immutable ledger transaction ID and compared business content, so re-enveloping cannot repeat the effect and conflicting content fails closed. Neither control replaces authenticated producers or least-privilege ACLs.
 - DLT publication must be confirmed before the source offset is committed. If recovery publication fails, the source record remains eligible for redelivery.
 - Exception headers are bounded and sanitized; stack traces are not copied into DLT headers or the failure projection.
-- A malformed DLT record stores only bounded size/hash and safe parse metadata in PostgreSQL; raw poison bytes remain access-controlled by Kafka retention and are not exposed through the operator API.
+- Missing/malformed original-routing headers and terminal invalid DLT data store only bounded hashes, sizes, allowlisted headers, stable classification, and actual DLT coordinates in immutable PostgreSQL evidence. Raw poison bytes remain access-controlled by Kafka retention. The DLT offset advances only after evidence commits; transient database failure retains it for idempotent redelivery.
 - Audited replay preserves the validated canonical envelope and order-ID key, strips old exception/delivery metadata, and injects new transport correlation and W3C trace context. Direct row edits, offset changes, and ad hoc Kafka resends are prohibited.
 
 ## Ledger integrity and audit safety
@@ -156,10 +157,10 @@ The following controls apply to the future operator HTTP workflow and are not im
 - Direct PostgreSQL tests proving balance, immutability, unique source, and state constraints.
 - Concurrent ledger-posting tests proving one payment produces one journal and one payment accounting transition.
 - Database-role tests proving the runtime user cannot perform DDL or update/delete immutable ledger/audit rows while Flyway can migrate.
-- Kafka tests for malformed event, unknown version, duplicate delivery, the publish/marker crash window, poison records, retry exhaustion, and DLT publication failure.
+- Kafka tests for malformed event, unknown version, duplicate delivery, re-enveloping and semantic conflicts, the publish/marker crash window, poison records, retry exhaustion, malformed DLT routing, terminal-evidence persistence failure/recovery, and partition progress.
 - Toxiproxy tests for provider latency/reset/timeout and temporary PostgreSQL/Kafka loss; recovery assertions restore each fault before completion.
 - Circuit open/half-open/close, bulkhead saturation, decline classification, retry exhaustion, and bounded graceful-drain tests.
-- DLT-catalog tests for safe evidence, idempotent source coordinates, replay eligibility, lease safety, and immutable audit. Database-outage alerting remains a production-operability follow-up.
+- DLT-catalog tests for safe evidence, idempotent original and actual DLT coordinates, immutable terminal evidence, replay eligibility, lease safety, and immutable audit. Provisioned alerts cover terminal intake and evidence-persistence failure; production routing remains a deployment responsibility.
 - Captured structured-log, in-memory trace-exporter, outbox-header, and DLT-record assertions that seeded secret markers never appear.
 - A Docker-backed scan of repository secrets/misconfiguration, packaged Java dependencies, and every explicit Compose image. Any exception requires an owner, rationale, compensating control, and expiry.
 - Production-profile startup tests proving no mock service or permissive authentication can be enabled before a public payment route exists.

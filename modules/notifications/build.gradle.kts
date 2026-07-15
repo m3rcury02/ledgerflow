@@ -9,6 +9,7 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-jackson")
     implementation("org.springframework.boot:spring-boot-starter-kafka")
     implementation("org.springframework.boot:spring-boot-starter-opentelemetry")
+    implementation("io.micrometer:micrometer-core")
     compileOnly(platform("org.springframework.modulith:spring-modulith-bom:$springModulithVersion"))
     compileOnly("org.springframework.modulith:spring-modulith-api")
 

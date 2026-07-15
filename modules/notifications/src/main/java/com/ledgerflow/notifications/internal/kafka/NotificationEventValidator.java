@@ -3,6 +3,7 @@ package com.ledgerflow.notifications.internal.kafka;
 import com.ledgerflow.messaging.api.EventEnvelopeCodec;
 import com.ledgerflow.messaging.api.PaymentCapturedDataV1;
 import com.ledgerflow.messaging.api.PaymentCapturedEventV1;
+import com.ledgerflow.notifications.internal.application.NotificationEffectIdentity;
 import com.ledgerflow.notifications.internal.application.NotificationValidationException;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
@@ -32,7 +33,12 @@ public final class NotificationEventValidator {
     validateEvent(event, eventKey);
     String canonicalPayload = codec.serialize(event);
     return new ValidatedNotificationEvent(
-        event, eventKey, canonicalPayload, codec.hash(canonicalPayload), event.correlationId());
+        event,
+        eventKey,
+        canonicalPayload,
+        codec.hash(canonicalPayload),
+        NotificationEffectIdentity.from(event),
+        event.correlationId());
   }
 
   ValidatedNotificationEvent validate(
@@ -52,7 +58,12 @@ public final class NotificationEventValidator {
       }
       String canonicalPayload = codec.serialize(event);
       return new ValidatedNotificationEvent(
-          event, eventKey, canonicalPayload, codec.hash(canonicalPayload), processingCorrelation);
+          event,
+          eventKey,
+          canonicalPayload,
+          codec.hash(canonicalPayload),
+          NotificationEffectIdentity.from(event),
+          processingCorrelation);
     } catch (NotificationValidationException exception) {
       throw exception;
     } catch (IllegalArgumentException exception) {

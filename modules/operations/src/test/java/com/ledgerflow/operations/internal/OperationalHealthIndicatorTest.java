@@ -1,7 +1,6 @@
 package com.ledgerflow.operations.internal;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -14,28 +13,26 @@ class OperationalHealthIndicatorTest {
 
   @Test
   void readinessIsDownWithoutExposingTheDependencyException() {
-    DependencyProbe probe = mock(DependencyProbe.class);
-    doThrow(new IllegalStateException("jdbc:postgresql://user:secret@host/database"))
-        .when(probe)
-        .database();
+    ReadinessProbeCache readiness = mock(ReadinessProbeCache.class);
+    when(readiness.readiness(false)).thenReturn(new ReadinessProbeCache.DependencyReadiness(false));
     DrainableWorkTracker tracker = new DrainableWorkTracker(Duration.ofSeconds(1));
 
-    var health = new OperationalHealthIndicator(probe, tracker, new MockEnvironment()).health();
+    var health = new OperationalHealthIndicator(readiness, tracker, new MockEnvironment()).health();
 
     assertThat(health.getStatus()).isEqualTo(Status.DOWN);
-    assertThat(health.getDetails()).containsEntry("failure", "dependency unavailable");
-    assertThat(health.getDetails().toString()).doesNotContain("secret");
+    assertThat(health.getDetails()).isEmpty();
   }
 
   @Test
   void readinessIsDownWhileTheApplicationIsDraining() {
-    DependencyProbe probe = mock(DependencyProbe.class);
+    ReadinessProbeCache readiness = mock(ReadinessProbeCache.class);
+    when(readiness.readiness(false)).thenReturn(new ReadinessProbeCache.DependencyReadiness(true));
     DrainableWorkTracker tracker = mock(DrainableWorkTracker.class);
     when(tracker.isAcceptingWork()).thenReturn(false);
 
-    var health = new OperationalHealthIndicator(probe, tracker, new MockEnvironment()).health();
+    var health = new OperationalHealthIndicator(readiness, tracker, new MockEnvironment()).health();
 
     assertThat(health.getStatus()).isEqualTo(Status.DOWN);
-    assertThat(health.getDetails()).containsEntry("acceptingWork", false);
+    assertThat(health.getDetails()).isEmpty();
   }
 }

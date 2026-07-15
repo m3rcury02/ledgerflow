@@ -27,6 +27,7 @@ final class StartupDependencyValidator implements ApplicationRunner {
 
   @Override
   public void run(ApplicationArguments arguments) {
+    rejectSharedManagementPort();
     rejectProductionFaultInjection();
     if (!properties.startupValidationEnabled()) {
       return;
@@ -35,6 +36,15 @@ final class StartupDependencyValidator implements ApplicationRunner {
     if (kafkaRequired()) {
       String clusterId = probe.kafka(requiredTopics());
       LOGGER.info("Startup dependency validation succeeded: kafkaClusterId={}", clusterId);
+    }
+  }
+
+  private void rejectSharedManagementPort() {
+    Integer managementPort = environment.getProperty("management.server.port", Integer.class);
+    int applicationPort = environment.getProperty("server.port", Integer.class, 8080);
+    if (managementPort != null && managementPort > 0 && managementPort == applicationPort) {
+      throw new IllegalStateException(
+          "management.server.port must differ from the application server port");
     }
   }
 

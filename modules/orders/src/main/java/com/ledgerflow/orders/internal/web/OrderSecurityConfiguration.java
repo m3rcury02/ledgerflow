@@ -43,8 +43,6 @@ public class OrderSecurityConfiguration {
         .authorizeHttpRequests(
             requests ->
                 requests
-                    .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info")
-                    .permitAll()
                     .requestMatchers(HttpMethod.POST, "/api/v1/orders")
                     .access(requires("ledgerflow.orders.write", "customer", "admin"))
                     .requestMatchers(HttpMethod.GET, "/api/v1/orders/*")

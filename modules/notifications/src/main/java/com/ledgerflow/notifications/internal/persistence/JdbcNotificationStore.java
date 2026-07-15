@@ -2,7 +2,9 @@ package com.ledgerflow.notifications.internal.persistence;
 
 import com.ledgerflow.messaging.api.PaymentCapturedDataV1;
 import com.ledgerflow.messaging.api.PaymentCapturedEventV1;
+import com.ledgerflow.notifications.internal.application.NotificationEffectIdentity;
 import com.ledgerflow.notifications.internal.application.NotificationIntegrityException;
+import com.ledgerflow.notifications.internal.application.NotificationSemanticConflictException;
 import com.ledgerflow.notifications.internal.application.ReplayNotAvailableException;
 import com.ledgerflow.notifications.internal.application.ReplayOwnershipLostException;
 import java.sql.ResultSet;
@@ -28,8 +30,9 @@ public class JdbcNotificationStore {
   }
 
   @Transactional
-  public void process(
+  public NotificationProcessOutcome process(
       PaymentCapturedEventV1 event,
+      NotificationEffectIdentity effect,
       byte[] canonicalPayloadHash,
       String topic,
       int partition,
@@ -44,10 +47,10 @@ public class JdbcNotificationStore {
                   """
                   INSERT INTO notification_inbox (
                       event_id, event_type, schema_version, topic, partition_id, offset_value,
-                      payload_hash, received_at, processed_at
+                      payload_hash, processing_outcome, received_at, processed_at
                   ) VALUES (
                       :eventId, :eventType, :schemaVersion, :topic, :partition, :offset,
-                      :payloadHash, :now, :now
+                      :payloadHash, 'APPLIED', :now, :now
                   )
                   ON CONFLICT (event_id) DO NOTHING
                   """)
@@ -76,30 +79,126 @@ public class JdbcNotificationStore {
         throw new NotificationIntegrityException(
             "Kafka event ID is already associated with different canonical content");
       }
-      return;
+      return NotificationProcessOutcome.TRANSPORT_DUPLICATE;
     }
 
     PaymentCapturedDataV1 data = event.data();
+    int notificationInserted =
+        jdbcClient
+            .sql(
+                """
+            INSERT INTO notifications (
+                event_id, order_id, payment_id, type, status, amount_minor, currency,
+                business_correlation_id, processing_correlation_id, created_at,
+                effect_type, effect_identity_version, effect_key,
+                source_causation_id, source_occurred_at
+            ) VALUES (
+                :eventId, :orderId, :paymentId, 'PAYMENT_CAPTURED', 'CREATED',
+                :amountMinor, :currency, :businessCorrelationId, :processingCorrelationId, :now,
+                :effectType, :effectVersion, :effectKey, :sourceCausationId, :sourceOccurredAt
+            )
+            ON CONFLICT ON CONSTRAINT notification_semantic_effect_unique DO NOTHING
+            """)
+            .param("eventId", event.eventId())
+            .param("orderId", data.orderId())
+            .param("paymentId", data.paymentId())
+            .param("amountMinor", data.amountMinor())
+            .param("currency", data.currency())
+            .param("businessCorrelationId", event.correlationId())
+            .param("processingCorrelationId", processingCorrelationId)
+            .param("now", databaseTimestamp(now))
+            .param("effectType", effect.effectType())
+            .param("effectVersion", effect.version())
+            .param("effectKey", effect.effectKey())
+            .param("sourceCausationId", effect.sourceCausationId())
+            .param("sourceOccurredAt", databaseTimestamp(effect.sourceOccurredAt()))
+            .update();
+    if (notificationInserted == 1) {
+      return NotificationProcessOutcome.APPLIED;
+    }
+
+    ExistingNotificationEffect existing = findEffect(effect);
+    if (!existing.matches(effect)) {
+      throw new NotificationSemanticConflictException(
+          "Notification semantic identity is associated with conflicting content");
+    }
     jdbcClient
         .sql(
             """
-            INSERT INTO notifications (
-                event_id, order_id, payment_id, type, status, amount_minor, currency,
-                business_correlation_id, processing_correlation_id, created_at
-            ) VALUES (
-                :eventId, :orderId, :paymentId, 'PAYMENT_CAPTURED', 'CREATED',
-                :amountMinor, :currency, :businessCorrelationId, :processingCorrelationId, :now
-            )
+            UPDATE notification_inbox
+            SET processing_outcome = 'SEMANTIC_DUPLICATE'
+            WHERE event_id = :eventId
             """)
         .param("eventId", event.eventId())
-        .param("orderId", data.orderId())
-        .param("paymentId", data.paymentId())
-        .param("amountMinor", data.amountMinor())
-        .param("currency", data.currency())
-        .param("businessCorrelationId", event.correlationId())
-        .param("processingCorrelationId", processingCorrelationId)
-        .param("now", databaseTimestamp(now))
         .update();
+    return NotificationProcessOutcome.SEMANTIC_DUPLICATE;
+  }
+
+  @Transactional
+  public CatalogWriteOutcome catalogTerminal(TerminalDltRecord entry) {
+    int inserted;
+    try {
+      inserted =
+          jdbcClient
+              .sql(
+                  """
+                  INSERT INTO terminal_dlt_records (
+                      consumer_name, dlt_topic, dlt_partition, dlt_offset,
+                      key_hash, key_size, payload_hash, payload_size, safe_headers,
+                      failure_code, failure_summary, observed_at
+                  ) VALUES (
+                      :consumerName, :dltTopic, :dltPartition, :dltOffset,
+                      :keyHash, :keySize, :payloadHash, :payloadSize, CAST(:safeHeaders AS jsonb),
+                      :failureCode, :failureSummary, :observedAt
+                  )
+                  ON CONFLICT (consumer_name, dlt_topic, dlt_partition, dlt_offset) DO NOTHING
+                  """)
+              .param("consumerName", entry.consumerName())
+              .param("dltTopic", entry.dltTopic())
+              .param("dltPartition", entry.dltPartition())
+              .param("dltOffset", entry.dltOffset())
+              .param("keyHash", entry.keyHash())
+              .param("keySize", entry.keySize())
+              .param("payloadHash", entry.payloadHash())
+              .param("payloadSize", entry.payloadSize())
+              .param("safeHeaders", entry.safeHeaders())
+              .param("failureCode", entry.failureCode())
+              .param("failureSummary", entry.failureSummary())
+              .param("observedAt", databaseTimestamp(entry.observedAt()))
+              .update();
+    } catch (DataIntegrityViolationException exception) {
+      throw new NotificationIntegrityException(
+          "Terminal DLT evidence insert was rejected", exception);
+    }
+    if (inserted == 1) {
+      return CatalogWriteOutcome.INSERTED;
+    }
+
+    ExistingTerminalRecord existing =
+        jdbcClient
+            .sql(
+                """
+                SELECT key_hash, key_size, payload_hash, payload_size,
+                       safe_headers = CAST(:safeHeaders AS jsonb) AS safe_headers_match,
+                       failure_code, failure_summary
+                FROM terminal_dlt_records
+                WHERE consumer_name = :consumerName
+                  AND dlt_topic = :dltTopic
+                  AND dlt_partition = :dltPartition
+                  AND dlt_offset = :dltOffset
+                """)
+            .param("consumerName", entry.consumerName())
+            .param("dltTopic", entry.dltTopic())
+            .param("dltPartition", entry.dltPartition())
+            .param("dltOffset", entry.dltOffset())
+            .param("safeHeaders", entry.safeHeaders())
+            .query(this::mapExistingTerminalRecord)
+            .single();
+    if (!existing.matches(entry)) {
+      throw new NotificationIntegrityException(
+          "Terminal DLT coordinate is associated with conflicting evidence");
+    }
+    return CatalogWriteOutcome.DUPLICATE;
   }
 
   @Transactional
@@ -313,6 +412,47 @@ public class JdbcNotificationStore {
         resultSet.getBoolean("replayable"));
   }
 
+  private ExistingNotificationEffect findEffect(NotificationEffectIdentity effect) {
+    return jdbcClient
+        .sql(
+            """
+            SELECT order_id, payment_id, source_causation_id, amount_minor, currency,
+                   source_occurred_at
+            FROM notifications
+            WHERE effect_type = :effectType
+              AND effect_identity_version = :effectVersion
+              AND effect_key = :effectKey
+            """)
+        .param("effectType", effect.effectType())
+        .param("effectVersion", effect.version())
+        .param("effectKey", effect.effectKey())
+        .query(this::mapExistingNotificationEffect)
+        .single();
+  }
+
+  private ExistingNotificationEffect mapExistingNotificationEffect(
+      ResultSet resultSet, int rowNumber) throws SQLException {
+    return new ExistingNotificationEffect(
+        resultSet.getObject("order_id", UUID.class),
+        resultSet.getObject("payment_id", UUID.class),
+        resultSet.getObject("source_causation_id", UUID.class),
+        resultSet.getLong("amount_minor"),
+        resultSet.getString("currency"),
+        resultSet.getObject("source_occurred_at", OffsetDateTime.class).toInstant());
+  }
+
+  private ExistingTerminalRecord mapExistingTerminalRecord(ResultSet resultSet, int rowNumber)
+      throws SQLException {
+    return new ExistingTerminalRecord(
+        resultSet.getBytes("key_hash"),
+        resultSet.getInt("key_size"),
+        resultSet.getBytes("payload_hash"),
+        resultSet.getInt("payload_size"),
+        resultSet.getBoolean("safe_headers_match"),
+        resultSet.getString("failure_code"),
+        resultSet.getString("failure_summary"));
+  }
+
   private OffsetDateTime databaseTimestamp(Instant instant) {
     return OffsetDateTime.ofInstant(instant, ZoneOffset.UTC);
   }
@@ -325,6 +465,44 @@ public class JdbcNotificationStore {
           && java.util.Objects.equals(eventId, entry.eventId())
           && java.util.Objects.equals(eventKey, entry.eventKey())
           && replayable == entry.replayable();
+    }
+  }
+
+  private record ExistingNotificationEffect(
+      UUID orderId,
+      UUID paymentId,
+      UUID sourceCausationId,
+      long amountMinor,
+      String currency,
+      Instant sourceOccurredAt) {
+
+    private boolean matches(NotificationEffectIdentity effect) {
+      return orderId.equals(effect.orderId())
+          && paymentId.equals(effect.paymentId())
+          && sourceCausationId.equals(effect.sourceCausationId())
+          && amountMinor == effect.amountMinor()
+          && currency.equals(effect.currency())
+          && sourceOccurredAt.equals(effect.sourceOccurredAt());
+    }
+  }
+
+  private record ExistingTerminalRecord(
+      byte[] keyHash,
+      int keySize,
+      byte[] payloadHash,
+      int payloadSize,
+      boolean safeHeadersMatch,
+      String failureCode,
+      String failureSummary) {
+
+    private boolean matches(TerminalDltRecord entry) {
+      return Arrays.equals(keyHash, entry.keyHash())
+          && keySize == entry.keySize()
+          && Arrays.equals(payloadHash, entry.payloadHash())
+          && payloadSize == entry.payloadSize()
+          && safeHeadersMatch
+          && failureCode.equals(entry.failureCode())
+          && failureSummary.equals(entry.failureSummary());
     }
   }
 }

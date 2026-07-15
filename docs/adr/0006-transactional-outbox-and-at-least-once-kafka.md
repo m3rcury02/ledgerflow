@@ -4,6 +4,7 @@
 - Date: 2026-07-11
 - Accepted: 2026-07-13
 - Decision owners: LedgerFlow maintainers
+- Amended by: ADR 0011 (semantic notification identity) and ADR 0012 (terminal malformed-DLT evidence)
 
 ## Context
 
@@ -25,18 +26,18 @@ A dedicated publisher supports multiple application instances. A short transacti
 
 One publication cycle has 10 total attempts. Failures use bounded exponential backoff starting at one second, capped at 256 seconds, with configurable jitter. Exhaustion leaves a durable `FAILED` row. A general outbox retry workflow is deferred.
 
-The notification listener processes `ledgerflow.payment-captured.v1` with record acknowledgement. It validates the exact envelope, type/version, order-ID key, identity headers, money, and ID relationships. One PostgreSQL transaction inserts the event ID and canonical SHA-256 hash into `notification_inbox` and creates one notification. The same ID and hash is a successful no-op; the same ID with changed canonical content is an integrity failure.
+The notification listener processes `ledgerflow.payment-captured.v1` with record acknowledgement. It validates the exact envelope, type/version, order-ID key, identity headers, money, and ID relationships. One PostgreSQL transaction inserts the event ID and canonical SHA-256 hash into `notification_inbox` and creates one notification. The same ID and hash is a successful no-op; the same ID with changed canonical content is an integrity failure. ADR 0011 adds an independent versioned semantic-effect identity so a new event ID cannot repeat the same capture notification.
 
 Transient failures receive one initial attempt plus three bounded pause-based retries. Polling continues during backoff and intake is bounded by concurrency, poll count, and fetch bytes. An exhausted or non-retryable poison record is published to `ledgerflow.payment-captured.v1.dlt`; broker acknowledgement is required before the source offset advances. ADR 0009 records this resilience refinement.
 
-The DLT listener catalogs bounded safe evidence by original topic/partition/offset. It stores validated canonical content/key only when replayable and never stores malformed raw bytes. The narrow `scripts/replay-dead-letter <dead-letter-uuid> <actor> <reason>` command leases one replayable row, preserves the envelope and key, removes old exception/delivery metadata, generates new transport correlation/trace context, waits for broker acknowledgement, and appends immutable replay audit records. It is not a general Kafka resend facility or an operator HTTP API.
+The DLT listener catalogs bounded safe evidence by original topic/partition/offset. It stores validated canonical content/key only when replayable and never stores malformed raw bytes. ADR 0012 separately catalogs terminal invalid DLT input by its actual consumed DLT coordinates so malformed routing headers cannot block a partition indefinitely. The narrow `scripts/replay-dead-letter <dead-letter-uuid> <actor> <reason>` command leases one replayable row, preserves the envelope and key, removes old exception/delivery metadata, generates new transport correlation/trace context, waits for broker acknowledgement, and appends immutable replay audit records. It is not a general Kafka resend facility or an operator HTTP API.
 
 ## Delivery guarantees
 
 - PostgreSQL payment `CAPTURE_ACCOUNTED`, ledger journal, and outbox append are atomic.
 - Outbox-to-Kafka publication is at least once. A crash after broker acknowledgement and before the PostgreSQL marker can publish the same event again.
 - Kafka consumption is at least once. A database commit followed by an offset-commit failure causes redelivery.
-- Event-ID/hash inbox deduplication and a unique notification event ID provide exactly one logical notification database side effect for a stable event ID and content.
+- Event-ID/hash inbox deduplication handles a stable event envelope; ADR 0011's semantic constraint handles the covered capture notification under a new event ID.
 - LedgerFlow does not claim end-to-end exactly-once delivery.
 
 ## Consequences

@@ -2,6 +2,8 @@ package com.ledgerflow.operations.internal;
 
 import com.ledgerflow.operations.api.FaultInjection;
 import com.ledgerflow.operations.api.WorkTracker;
+import java.time.Clock;
+import org.apache.kafka.clients.admin.Admin;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -27,9 +29,19 @@ class OperationsConfiguration {
   }
 
   @Bean
+  ManagedKafkaAdmin managedKafkaAdmin(KafkaAdmin kafkaAdmin) {
+    return new ManagedKafkaAdmin(() -> Admin.create(kafkaAdmin.getConfigurationProperties()));
+  }
+
+  @Bean
   DependencyProbe dependencyProbe(
-      JdbcClient jdbcClient, KafkaAdmin kafkaAdmin, OperationsProperties properties) {
-    return new DependencyProbe(jdbcClient, kafkaAdmin, properties);
+      JdbcClient jdbcClient, ManagedKafkaAdmin managedKafkaAdmin, OperationsProperties properties) {
+    return new DependencyProbe(jdbcClient, managedKafkaAdmin, properties);
+  }
+
+  @Bean
+  ReadinessProbeCache readinessProbeCache(DependencyProbe probe, OperationsProperties properties) {
+    return new ReadinessProbeCache(probe, properties.healthProbeCacheTtl(), Clock.systemUTC());
   }
 
   @Bean
@@ -40,8 +52,10 @@ class OperationsConfiguration {
 
   @Bean("ledgerflowDependencies")
   OperationalHealthIndicator operationalHealthIndicator(
-      DependencyProbe probe, DrainableWorkTracker workTracker, Environment environment) {
-    return new OperationalHealthIndicator(probe, workTracker, environment);
+      ReadinessProbeCache readinessProbeCache,
+      DrainableWorkTracker workTracker,
+      Environment environment) {
+    return new OperationalHealthIndicator(readinessProbeCache, workTracker, environment);
   }
 
   @Bean

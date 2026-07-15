@@ -42,6 +42,14 @@ final class KafkaEventHeaders {
     return new String(header.value(), StandardCharsets.UTF_8);
   }
 
+  static String optionalSingleText(Headers headers, String name) {
+    List<Header> matching = headers(headers, name);
+    if (matching.size() != 1 || matching.getFirst().value() == null) {
+      return null;
+    }
+    return new String(matching.getFirst().value(), StandardCharsets.UTF_8);
+  }
+
   static String originalTopic(Headers headers) {
     return requireOriginalText(
         headers, KafkaHeaders.DLT_ORIGINAL_TOPIC, KafkaHeaders.ORIGINAL_TOPIC);

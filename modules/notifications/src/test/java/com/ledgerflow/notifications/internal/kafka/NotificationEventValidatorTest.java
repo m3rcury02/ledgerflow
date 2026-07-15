@@ -38,6 +38,8 @@ class NotificationEventValidatorTest {
     assertThat(first.canonicalPayload()).isEqualTo(canonical);
     assertThat(second.canonicalPayload()).isEqualTo(canonical);
     assertThat(second.canonicalPayloadHash()).containsExactly(first.canonicalPayloadHash());
+    assertThat(second.effectIdentity().effectKey()).isEqualTo(LEDGER_ID);
+    assertThat(second.effectIdentity().sourceCausationId()).isEqualTo(CAUSATION_ID);
   }
 
   @Test
@@ -62,6 +64,27 @@ class NotificationEventValidatorTest {
 
     assertThatThrownBy(() -> validator.validateMain(record, TOPIC))
         .isInstanceOf(NotificationValidationException.class);
+  }
+
+  @Test
+  void normalizesSemanticOccurrenceTimeToPostgreSqlPrecision() {
+    Instant occurredAt = Instant.parse("2026-07-13T15:00:00.123456789Z");
+    PaymentCapturedEventV1 event =
+        new PaymentCapturedEventV1(
+            EVENT_ID,
+            PaymentCapturedEventV1.TYPE,
+            PaymentCapturedEventV1.SCHEMA_VERSION,
+            PAYMENT_ID,
+            "business-123",
+            CAUSATION_ID,
+            occurredAt,
+            new PaymentCapturedDataV1(ORDER_ID, PAYMENT_ID, LEDGER_ID, 2599, "INR", occurredAt));
+
+    ValidatedNotificationEvent validated =
+        validator.validateMain(record(codec.serialize(event), event), TOPIC);
+
+    assertThat(validated.effectIdentity().sourceOccurredAt())
+        .isEqualTo(Instant.parse("2026-07-13T15:00:00.123456Z"));
   }
 
   private ConsumerRecord<String, String> record(String payload, PaymentCapturedEventV1 event) {

@@ -9,6 +9,7 @@ import com.ledgerflow.notifications.internal.application.NotificationsProperties
 import com.ledgerflow.notifications.internal.persistence.JdbcNotificationStore;
 import com.ledgerflow.operations.api.FaultInjection;
 import com.ledgerflow.operations.api.WorkTracker;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.OpenTelemetry;
 import java.time.Clock;
@@ -52,6 +53,16 @@ public class NotificationsConfiguration {
   }
 
   @Bean
+  DeadLetterInputClassifier deadLetterInputClassifier() {
+    return new DeadLetterInputClassifier();
+  }
+
+  @Bean
+  NotificationMetrics notificationMetrics(MeterRegistry meterRegistry) {
+    return new NotificationMetrics(meterRegistry);
+  }
+
+  @Bean
   JdbcNotificationStore jdbcNotificationStore(JdbcClient jdbcClient) {
     return new JdbcNotificationStore(jdbcClient);
   }
@@ -63,9 +74,10 @@ public class NotificationsConfiguration {
       NotificationsProperties properties,
       @Qualifier("notificationClock") Clock clock,
       WorkTracker workTracker,
-      FaultInjection faultInjection) {
+      FaultInjection faultInjection,
+      NotificationMetrics metrics) {
     return new PaymentCapturedKafkaListener(
-        validator, store, properties, clock, workTracker, faultInjection);
+        validator, store, properties, clock, workTracker, faultInjection, metrics);
   }
 
   @Bean
@@ -176,12 +188,15 @@ public class NotificationsConfiguration {
       havingValue = "true")
   DeadLetterCatalogListener deadLetterCatalogListener(
       NotificationEventValidator validator,
+      DeadLetterInputClassifier inputClassifier,
       EventEnvelopeCodec codec,
       JdbcNotificationStore store,
       NotificationsProperties properties,
       ObjectMapper objectMapper,
+      NotificationMetrics metrics,
       @Qualifier("notificationClock") Clock clock) {
-    return new DeadLetterCatalogListener(validator, codec, store, properties, objectMapper, clock);
+    return new DeadLetterCatalogListener(
+        validator, inputClassifier, codec, store, properties, objectMapper, metrics, clock);
   }
 
   @Bean("notificationRetryTaskScheduler")

@@ -1,11 +1,11 @@
 # Payment, Ledger, and Messaging Recovery Runbook
 
-- Status: Milestone 5B development runbook
-- Last updated: 2026-07-14
+- Status: Milestone 5D development runbook
+- Last updated: 2026-07-15
 
 ## Scope and current limitation
 
-This runbook covers authorization/capture failures, crash recovery, non-public capture accounting, outbox publication, notification consumption, DLT inspection, and narrow audited replay. The current slices intentionally expose no public payment or operator endpoint. Final order/payment workflow states and the secured general operations API remain later work.
+This runbook covers authorization/capture failures, crash recovery, non-public capture accounting, outbox publication, transport and semantic notification idempotency, terminal malformed-DLT evidence, DLT inspection, management health, and narrow audited replay. The current slices intentionally expose no public payment or operator endpoint. Final order/payment workflow states and the secured general operations API remain later work.
 
 In a deployed environment, support staff may perform the read-only inspection below and escalate with the payment ID and correlation ID. They must not invoke the test fixture, update payment rows, delete attempt history, or resend a provider request with a new request ID.
 
@@ -93,11 +93,15 @@ ORDER BY created_at, event_id;
 
 `PENDING` is waiting for its next attempt. `IN_FLIGHT` is owned until `lease_until`; do not steal an unexpired lease. `PUBLISHED` means the broker acknowledged a send and the owner-guarded marker committed. `FAILED` means the 10-attempt cycle exhausted and needs investigation; no general outbox retry command exists yet.
 
-The publisher claims with `SELECT ... FOR UPDATE SKIP LOCKED`, commits the lease, publishes outside PostgreSQL, and marks `PUBLISHED` only after broker acknowledgement. A process stop after acknowledgement but before the marker leaves an expired lease that will publish the same event ID again. This is expected at-least-once behavior; the notification inbox absorbs a matching duplicate.
+The publisher claims with `SELECT ... FOR UPDATE SKIP LOCKED`, commits the lease, publishes outside PostgreSQL, and marks `PUBLISHED` only after broker acknowledgement. A process stop after acknowledgement but before the marker leaves an expired lease that will publish the same event ID again. This is expected at-least-once behavior; event-ID/hash transport idempotency absorbs a matching envelope duplicate.
 
 ## Notification and dead-letter recovery
 
-The main listener makes one initial attempt plus three bounded pause-based retries. The pause handler keeps consumer polling alive during retry delay and bounds intake with configured concurrency and `max.poll.records`. After exhaustion, or immediately for non-retryable validation/integrity failures, it publishes to `ledgerflow.payment-captured.v1.dlt`; the source offset advances only after that publication is acknowledged. The DLT listener catalogs the original coordinates, bounded hash/size, exact delivery-attempt evidence, sanitized failure, and allowlisted safe headers. It stores a validated canonical envelope/key only when safe to replay and never stores malformed raw poison bytes.
+The main listener makes one initial attempt plus three bounded pause-based retries. The pause handler keeps consumer polling alive during retry delay and bounds intake with configured concurrency and `max.poll.records`. After exhaustion, or immediately for non-retryable validation/integrity failures, it publishes to `ledgerflow.payment-captured.v1.dlt`; the source offset advances only after that publication is acknowledged.
+
+Notification idempotency has two layers. `notification_inbox.event_id` plus canonical payload hash handles transport redelivery: matching content is a no-op and changed content is an integrity failure. The notification row separately has a versioned semantic identity; version 1 uses the immutable capture ledger transaction ID. A new event ID with matching order/payment/causation/money/capture time records `SEMANTIC_DUPLICATE` in the inbox and creates no second notification. Conflicting content rolls back the new inbox row and is cataloged as non-replayable. Do not delete either inbox row to force another side effect.
+
+The DLT listener catalogs validated events by trusted original coordinates. Missing, repeated, malformed, or unsupported original-route headers and empty, oversized, or invalid event data instead create terminal evidence keyed by the actual DLT coordinates. Terminal evidence stores hashes, sizes, allowlisted headers, and a stable code only; raw key/payload bytes and invalid original-route values are excluded. The DLT offset advances only after evidence commits. A database failure intentionally holds the partition until redelivery succeeds.
 
 Inspect the catalog with a read-only role:
 
@@ -110,6 +114,18 @@ SELECT id, event_id, original_topic, original_partition, original_offset,
 FROM dead_letter_records
 WHERE id = '<dead-letter-record-id>';
 ```
+
+Inspect terminal, non-replayable intake separately by actual DLT coordinate:
+
+```sql
+SELECT id, consumer_name, dlt_topic, dlt_partition, dlt_offset,
+       key_size, payload_size, failure_code, failure_summary, observed_at
+FROM terminal_dlt_records
+WHERE observed_at >= now() - interval '1 hour'
+ORDER BY observed_at, id;
+```
+
+Never update or delete a terminal row; PostgreSQL rejects both. Use the actual DLT coordinate to correlate with restricted broker logs. Do not copy the raw poison record into tickets. If terminal evidence repeatedly fails to persist, restore PostgreSQL connectivity/capacity first. Kafka will retain the offset; do not advance it manually. After recovery, verify exactly one terminal row for that coordinate and confirm a later partition record progresses.
 
 Only a row with `replayable = true` and eligible `OPEN` state may be replayed. Configure the usual runtime database and Kafka environment, then run:
 
@@ -163,13 +179,28 @@ Timeouts must be chosen below the upstream request budget while allowing the app
 
 ## Health, startup, and shutdown diagnosis
 
-Use `/actuator/health/liveness` to decide whether the process must restart. It intentionally excludes external dependencies. Use `/actuator/health/readiness` before routing work; it includes process readiness, PostgreSQL, enabled Kafka-adapter connectivity, and drain state. The provider circuit is separately visible in the aggregate health response. Never restart solely because a confirmed business decline occurred.
+Actuator runs on `LEDGERFLOW_MANAGEMENT_PORT` (default `8081`), not the application port. The local README uses `8082` because local Keycloak binds host port `8081`. The public/application listener must return no successful Actuator response. The management listener must have no public ingress and is restricted to health-probe and monitoring sources according to [deployment security](deployment-security.md).
+
+Use `/actuator/health/liveness` on the management listener to decide whether the process must restart. It intentionally excludes external dependencies. Use `/actuator/health/readiness` before routing work; it includes process readiness, PostgreSQL, enabled Kafka-adapter connectivity, and drain state. Both responses expose aggregate status only. Aggregate health, component details, and `info` are intentionally unavailable. Never restart solely because a confirmed business decline occurred.
+
+Readiness results, including failure, are coalesced and cached for `LEDGERFLOW_HEALTH_PROBE_CACHE_TTL` (default `2s`, allowed `250ms`–`10s`). A brief delay after dependency recovery is expected. A burst must not create one database/Kafka request per caller. Startup validation is uncached and uses `LEDGERFLOW_DEPENDENCY_TIMEOUT` (default `3s`).
 
 Startup validates PostgreSQL and, when a publisher or consumer is enabled, Kafka connectivity within `LEDGERFLOW_DEPENDENCY_TIMEOUT` (default `3s`). A failed database check aborts startup. Kafka failure must be investigated without deleting outbox rows or changing offsets. Repeated provider failures open the circuit; calls then fail fast until the open duration expires and a bounded half-open probe succeeds.
 
 Graceful shutdown uses a `25s` Spring phase timeout, a `20s` application work-drain timeout, and explicit Kafka/scheduler deadlines. An error log stating that in-flight work remained is an unclean shutdown signal: preserve correlation IDs, inspect payment unknown states and expired outbox leases, and rely on lookup/inbox recovery rather than manual resends.
 
 Controlled fault injection requires an active `local`, `test`, or `integration-test` profile and is disabled by default. Local operators may set `LEDGERFLOW_FAULT_INJECTION_ENABLED=true` with one allowlisted point, `FAIL` or `DELAY`, and a delay no greater than ten seconds. Never enable this setting in production; startup rejects it outside an allowed profile.
+
+## Milestone 5D alert response
+
+Prometheus rules are provisioned in `infra/prometheus/rules/ledgerflow-abuse-controls.yaml`. Production alert routing and final thresholds require deployment approval. The rule labels are bounded; event IDs, subjects, coordinates, hashes, and error text are never labels.
+
+| Alert | Meaning | Immediate response | Clear condition |
+| --- | --- | --- | --- |
+| `LedgerFlowNotificationSemanticConflict` | One semantic identity arrived with conflicting business content | Contain the producer/replay principal, inspect the non-replayable DLT record and capture evidence, verify topic ACLs; do not replay | No new conflicts during the review window and producer cause remediated |
+| `LedgerFlowTerminalDltInput` | Terminal invalid DLT input was durably recorded | Inspect failure-code distribution and actual coordinates, validate producer/recoverer headers and ACLs; never paste raw bytes | No sustained new terminal records after source correction |
+| `LedgerFlowTerminalDltEvidencePersistenceFailure` | PostgreSQL rejected or could not persist terminal evidence, so a DLT partition may be held | Restore database connectivity/capacity, verify one evidence row commits, then confirm consumer lag falls; never advance offsets manually | Persistence-failure counter stops and the held coordinate plus later record progress |
+| `LedgerFlowNotificationDltConsumerLag` | DLT catalog consumption is persistently behind | Check evidence-store health, poison-record failures, consumer assignment, and Kafka reachability; preserve offsets | Lag remains below threshold for the configured recovery window |
 
 ## HTTP security and throttling diagnosis
 

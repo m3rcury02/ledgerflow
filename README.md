@@ -1,6 +1,6 @@
 # LedgerFlow
 
-LedgerFlow is a Java 25 and Spring Boot 4.1 modular-monolith portfolio project. Its public vertical slice exposes contract-first, JWT-secured create/read order APIs with durable PostgreSQL idempotency. Non-public payment and capture-accounting slices implement explicit provider states, safe timeout reconciliation, immutable balanced journals, a transactional outbox, at-least-once Kafka publication/consumption, idempotent notification persistence, and audited dead-letter replay. Public payment orchestration, final order completion, and an operator HTTP workflow are not implemented yet.
+LedgerFlow is a Java 25 and Spring Boot 4.1 modular-monolith portfolio project. Its public vertical slice exposes contract-first, JWT-secured create/read order APIs with durable PostgreSQL idempotency. Non-public payment and capture-accounting slices implement explicit provider states, safe timeout reconciliation, immutable balanced journals, a transactional outbox, at-least-once Kafka publication/consumption, transport and semantic notification idempotency, terminal malformed-DLT evidence, and audited dead-letter replay. Public payment orchestration, final order completion, and an operator HTTP workflow are not implemented yet.
 
 ## Prerequisites
 
@@ -91,10 +91,20 @@ export LEDGERFLOW_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 export LEDGERFLOW_OAUTH2_AUDIENCE=ledgerflow-api
 export LEDGERFLOW_OAUTH2_ISSUER=http://localhost:8081/realms/ledgerflow
 export LEDGERFLOW_OAUTH2_JWK_SET_URI=http://localhost:8081/realms/ledgerflow/protocol/openid-connect/certs
+export LEDGERFLOW_MANAGEMENT_PORT=8082
+export LEDGERFLOW_HEALTH_PROBE_CACHE_TTL=2s
 ./gradlew :application:bootRun
 ```
 
-Flyway applies `V001__create_orders_and_idempotency.sql` through `V005__create_notification_inbox_and_dead_letters.sql` at startup. The Kafka publisher and notification/DLT consumers are disabled by default; enable them explicitly with `LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED`, `LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED`, and `LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED`. No cache integration or public payment/ledger route exists.
+Flyway applies `V001__create_orders_and_idempotency.sql` through `V007__record_terminal_dlt_evidence.sql` at startup. The Kafka publisher and notification/DLT consumers are disabled by default; enable them explicitly with `LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED`, `LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED`, and `LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED`. No cache integration or public payment/ledger route exists.
+
+Actuator is not served on application port `8080`. With the local override above, status-only liveness/readiness and Prometheus are available on management port `8082`; aggregate health, details, components, and `info` are unavailable. The management listener must never be public. Production ingress, network-policy, and Kafka ACL requirements are defined in [deployment security](docs/deployment-security.md).
+
+```bash
+curl --fail http://localhost:8082/actuator/health/liveness
+curl --fail http://localhost:8082/actuator/health/readiness
+curl --fail http://localhost:8082/actuator/prometheus
+```
 
 ## Create Order API
 
@@ -134,7 +144,7 @@ Provider connect/read/overall deadlines, bounded retry, circuit breaker, and zer
 
 The internal ledger use case posts an already `CAPTURE_CONFIRMED` payment once. One `READ COMMITTED` transaction locks the payment, inserts a clearing debit and merchant-payable credit in INR minor units, transitions it to `CAPTURE_ACCOUNTED`, and appends the version-1 payment-captured outbox event through `messaging.api`. Deferred PostgreSQL constraints reject incomplete, unbalanced, or mismatched journals at commit; repeated and concurrent posting returns the original journal and event identity. Posted rows cannot be updated or deleted, and corrections append an exact compensating transaction.
 
-A dedicated publisher leases rows with `SELECT ... FOR UPDATE SKIP LOCKED`, sends outside a database transaction, and marks them published only after Kafka acknowledgement. The notification listener bounds concurrency and poll intake, uses one initial attempt plus three pause-based retries, then publishes poison records to `ledgerflow.payment-captured.v1.dlt` after broker acknowledgement. Inbox event-ID/hash checks make redelivery a no-op and preserve exactly one logical notification database effect. This is at-least-once delivery, not end-to-end exactly-once delivery.
+A dedicated publisher leases rows with `SELECT ... FOR UPDATE SKIP LOCKED`, sends outside a database transaction, and marks them published only after Kafka acknowledgement. The notification listener bounds concurrency and poll intake, uses one initial attempt plus three pause-based retries, then publishes poison records to `ledgerflow.payment-captured.v1.dlt` after broker acknowledgement. Inbox event-ID/hash checks make matching envelope redelivery a transport no-op. A separate database-unique identity based on the immutable capture ledger transaction prevents a new event ID from repeating the same notification business effect and detects conflicting content. Terminal invalid DLT input is acknowledged only after immutable sanitized evidence using actual DLT coordinates commits. This is at-least-once delivery, not end-to-end exactly-once delivery.
 
 The default topics are `ledgerflow.payment-captured.v1` and `ledgerflow.payment-captured.v1.dlt`. With the normal database/Kafka environment configured, replay one validated catalog row with:
 
@@ -156,4 +166,4 @@ The narrow command runs the application in non-web mode with listeners and the o
 
 Each feature is a Gradle library under `com.ledgerflow.<feature>`. Application code remains package-by-feature; repository-wide controller, service, repository, entity, and model packages are forbidden.
 
-See [development workflow](docs/development-workflow.md), [architecture](docs/architecture.md), and the [MVP ExecPlan](docs/plans/mvp-execplan.md) for the governing details.
+See [development workflow](docs/development-workflow.md), [architecture](docs/architecture.md), [deployment security](docs/deployment-security.md), and the [MVP ExecPlan](docs/plans/mvp-execplan.md) for the governing details.

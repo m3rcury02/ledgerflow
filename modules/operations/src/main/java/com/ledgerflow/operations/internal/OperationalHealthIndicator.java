@@ -6,38 +6,28 @@ import org.springframework.core.env.Environment;
 
 final class OperationalHealthIndicator implements HealthIndicator {
 
-  private final DependencyProbe probe;
+  private final ReadinessProbeCache readinessProbeCache;
   private final DrainableWorkTracker workTracker;
   private final Environment environment;
 
   OperationalHealthIndicator(
-      DependencyProbe probe, DrainableWorkTracker workTracker, Environment environment) {
-    this.probe = probe;
+      ReadinessProbeCache readinessProbeCache,
+      DrainableWorkTracker workTracker,
+      Environment environment) {
+    this.readinessProbeCache = readinessProbeCache;
     this.workTracker = workTracker;
     this.environment = environment;
   }
 
   @Override
   public Health health() {
-    Health.Builder health = Health.up();
-    try {
-      probe.database();
-      health.withDetail("database", "available");
-      if (kafkaRequired()) {
-        health.withDetail("kafkaClusterId", probe.kafka(java.util.Set.of()));
-      }
-      if (!workTracker.isAcceptingWork() || workTracker.drainTimedOut()) {
-        return health
-            .down()
-            .withDetail("acceptingWork", workTracker.isAcceptingWork())
-            .withDetail("drainTimedOut", workTracker.drainTimedOut())
-            .withDetail("activeWork", workTracker.activeWork())
-            .build();
-      }
-      return health.withDetail("acceptingWork", true).build();
-    } catch (RuntimeException exception) {
-      return health.down().withDetail("failure", "dependency unavailable").build();
+    if (!readinessProbeCache.readiness(kafkaRequired()).available()) {
+      return Health.down().build();
     }
+    if (!workTracker.isAcceptingWork() || workTracker.drainTimedOut()) {
+      return Health.down().build();
+    }
+    return Health.up().build();
   }
 
   private boolean kafkaRequired() {

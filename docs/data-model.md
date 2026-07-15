@@ -1,9 +1,9 @@
 # LedgerFlow MVP Data Model
 
 - Status: Partially implemented
-- Last updated: 2026-07-13
+- Last updated: 2026-07-15
 
-PostgreSQL is the source of truth. Flyway creates all structures, constraints, indexes, and trigger functions. Integration tests apply every migration to an empty PostgreSQL Testcontainer. `V001` creates orders and HTTP idempotency; `V002` creates payments and attempt history; `V003` creates the immutable ledger and `CAPTURE_ACCOUNTED`; `V004` creates the transactional outbox; and `V005` creates the notification inbox, notification records, dead-letter catalog, and replay audit. General operator workflow tables remain proposed and must not be inferred to exist.
+PostgreSQL is the source of truth. Flyway creates all structures, constraints, indexes, and trigger functions. Integration tests apply every migration to an empty PostgreSQL Testcontainer. `V001` creates orders and HTTP idempotency; `V002` creates payments and attempt history; `V003` creates the immutable ledger and `CAPTURE_ACCOUNTED`; `V004` creates the transactional outbox; `V005` creates the notification inbox, notification records, dead-letter catalog, and replay audit; `V006` adds versioned notification semantic-effect identity; and `V007` creates terminal malformed-DLT evidence. General operator workflow tables remain proposed and must not be inferred to exist.
 
 ## General conventions
 
@@ -218,6 +218,7 @@ Partial indexes support due `PENDING` rows and expired `IN_FLIGHT` leases. The p
 | `partition_id` | `integer` | Not null, `>= 0` |
 | `offset_value` | `bigint` | Not null, `>= 0` |
 | `payload_hash` | `bytea` | SHA-256, 32 bytes |
+| `processing_outcome` | `varchar(32)` | `APPLIED` or `SEMANTIC_DUPLICATE` |
 | `received_at`, `processed_at` | `timestamptz` | Not null |
 
 Unique `(topic, partition_id, offset_value)` supplements event-ID deduplication and supports diagnostics. An existing event ID is a successful no-op only when its canonical payload hash matches. The same event ID with different content is an integrity failure and follows the direct-DLT path.
@@ -236,9 +237,34 @@ Unique `(topic, partition_id, offset_value)` supplements event-ID deduplication 
 | `currency` | `char(3)` | `INR` |
 | `business_correlation_id` | `varchar(64)` | Original event-envelope correlation |
 | `processing_correlation_id` | `varchar(64)` | Current Kafka delivery/replay correlation |
+| `effect_type` | `varchar(64)` | `PAYMENT_CAPTURED_NOTIFICATION` |
+| `effect_identity_version` | `smallint` | `1` |
+| `effect_key` | `uuid` | Immutable capture ledger transaction ID |
+| `source_causation_id` | `uuid` | Stable provider capture request UUID |
+| `source_occurred_at` | `timestamptz` | Validated capture occurrence time |
 | `created_at` | `timestamptz` | Not null |
 
-The inbox and notification insert share one transaction. No delivery address or payment token is stored.
+The inbox and notification insert share one transaction. Unique `(effect_type, effect_identity_version, effect_key)` independently guards the business effect. For identity version 1, a new event ID with matching order, payment, causation, amount, currency, and capture time leaves its inbox row as `SEMANTIC_DUPLICATE` and inserts no notification. Conflicting content for an existing semantic identity fails the transaction, so the new inbox row does not commit. A future event effect must define its own versioned identity and comparison; payment ID alone is not sufficient. No delivery address or payment token is stored.
+
+Transport idempotency answers whether one event envelope was processed before, using event ID and canonical payload hash. Semantic-effect idempotency answers whether the business notification effect already exists, even under a different event ID. Both constraints are required because Kafka remains at least once and a producer or replay path can re-envelope data.
+
+### `terminal_dlt_records`
+
+| Column | Type | Rules |
+| --- | --- | --- |
+| `id` | `uuid` | Primary key, UUIDv7 |
+| `consumer_name` | `varchar(100)` | Validated, not null |
+| `dlt_topic` | `varchar(249)` | Actual consumed DLT topic |
+| `dlt_partition` | `integer` | Actual partition, `>= 0` |
+| `dlt_offset` | `bigint` | Actual offset, `>= 0` |
+| `key_hash`, `payload_hash` | `bytea` | SHA-256, exactly 32 bytes |
+| `key_size`, `payload_size` | `integer` | Non-negative byte counts |
+| `safe_headers` | `jsonb` | Allowlisted bounded correlation/trace/replay values only |
+| `failure_code` | `varchar(64)` | Stable bounded terminal classification |
+| `failure_summary` | `varchar(500)` | Sanitized fixed summary without control characters |
+| `observed_at` | `timestamptz` | Not null UTC instant |
+
+Unique `(consumer_name, dlt_topic, dlt_partition, dlt_offset)` makes evidence insertion idempotent and detects conflicting evidence at one transport coordinate. The table stores no raw key or payload, invalid original-routing values, stack trace, or exception message. Update and delete are rejected by a trigger. The DLT listener acknowledges terminal input only after this row commits; a database failure propagates so Kafka redelivers the same coordinate.
 
 ### `dead_letter_records`
 
@@ -266,11 +292,11 @@ The inbox and notification insert share one transaction. No delivery address or 
 | `dead_lettered_at`, `replayed_at`, `resolved_at` | `timestamptz` | Later timestamps nullable |
 | `version` | `bigint` | Not null |
 
-Unique `(consumer_name, original_topic, original_partition, original_offset)` makes DLT cataloging idempotent. Malformed bytes are hashed and measured but are not copied into the catalog; parsed event ID, key, and validated payload stay null and `replayable` is false. A replayable record requires all three parsed values.
+Unique `(consumer_name, original_topic, original_partition, original_offset)` makes validated DLT cataloging idempotent. A replayable record requires a validated event ID, key, and canonical payload. Terminal input whose original route or event cannot be trusted is recorded in `terminal_dlt_records` by actual DLT coordinates instead of inventing original coordinates or inserting it here.
 
 Replay preserves immutable event ID, key, canonical body, and the envelope's original business correlation. It strips prior delivery/DLT/exception metadata and injects a replay request ID, new transport correlation, and new W3C trace context. `REPLAYED` means only that Kafka acknowledged the replay; it is not a claim that a notification was newly created. Source-evidence columns are immutable and rows cannot be deleted.
 
-The DLT listener inserts or verifies this catalog row before acknowledging the DLT record. Malformed input stores only hash, size, coordinates, and sanitized metadata; raw poison bytes and an invalid parsed body are not stored.
+The DLT listener inserts or verifies this catalog row before acknowledging a validated DLT record. Raw poison bytes and invalid parsed bodies are never stored.
 
 ### `message_replay_audit`
 

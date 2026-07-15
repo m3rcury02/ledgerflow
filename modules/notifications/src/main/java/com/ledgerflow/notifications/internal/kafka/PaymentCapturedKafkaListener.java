@@ -1,7 +1,10 @@
 package com.ledgerflow.notifications.internal.kafka;
 
+import com.ledgerflow.notifications.internal.application.NotificationIntegrityException;
+import com.ledgerflow.notifications.internal.application.NotificationSemanticConflictException;
 import com.ledgerflow.notifications.internal.application.NotificationsProperties;
 import com.ledgerflow.notifications.internal.persistence.JdbcNotificationStore;
+import com.ledgerflow.notifications.internal.persistence.NotificationProcessOutcome;
 import com.ledgerflow.operations.api.FaultInjection;
 import com.ledgerflow.operations.api.FaultPoint;
 import com.ledgerflow.operations.api.WorkToken;
@@ -18,6 +21,7 @@ final class PaymentCapturedKafkaListener {
   private final Clock clock;
   private final WorkTracker workTracker;
   private final FaultInjection faultInjection;
+  private final NotificationMetrics metrics;
 
   PaymentCapturedKafkaListener(
       NotificationEventValidator validator,
@@ -25,13 +29,15 @@ final class PaymentCapturedKafkaListener {
       NotificationsProperties properties,
       Clock clock,
       WorkTracker workTracker,
-      FaultInjection faultInjection) {
+      FaultInjection faultInjection,
+      NotificationMetrics metrics) {
     this.validator = validator;
     this.store = store;
     this.properties = properties;
     this.clock = clock;
     this.workTracker = workTracker;
     this.faultInjection = faultInjection;
+    this.metrics = metrics;
   }
 
   @KafkaListener(
@@ -44,14 +50,25 @@ final class PaymentCapturedKafkaListener {
     try {
       faultInjection.before(FaultPoint.NOTIFICATION_CONSUME);
       ValidatedNotificationEvent validated = validator.validateMain(record, properties.topic());
-      store.process(
-          validated.event(),
-          validated.canonicalPayloadHash(),
-          record.topic(),
-          record.partition(),
-          record.offset(),
-          validated.processingCorrelationId(),
-          clock.instant());
+      try {
+        NotificationProcessOutcome outcome =
+            store.process(
+                validated.event(),
+                validated.effectIdentity(),
+                validated.canonicalPayloadHash(),
+                record.topic(),
+                record.partition(),
+                record.offset(),
+                validated.processingCorrelationId(),
+                clock.instant());
+        metrics.processing(NotificationMetrics.ProcessingMetric.valueOf(outcome.name()));
+      } catch (NotificationSemanticConflictException exception) {
+        metrics.processing(NotificationMetrics.ProcessingMetric.SEMANTIC_CONFLICT);
+        throw exception;
+      } catch (NotificationIntegrityException exception) {
+        metrics.processing(NotificationMetrics.ProcessingMetric.TRANSPORT_CONFLICT);
+        throw exception;
+      }
     } finally {
       work.close();
     }

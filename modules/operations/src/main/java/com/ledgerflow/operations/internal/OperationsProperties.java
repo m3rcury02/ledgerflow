@@ -8,11 +8,17 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 record OperationsProperties(
     @DefaultValue("20s") Duration drainTimeout,
     @DefaultValue("3s") Duration dependencyTimeout,
+    @DefaultValue("2s") Duration healthProbeCacheTtl,
     @DefaultValue("true") boolean startupValidationEnabled) {
 
   OperationsProperties {
     requirePositive(drainTimeout, "drainTimeout");
     requirePositive(dependencyTimeout, "dependencyTimeout");
+    requirePositive(healthProbeCacheTtl, "healthProbeCacheTtl");
+    if (healthProbeCacheTtl.compareTo(Duration.ofMillis(250)) < 0
+        || healthProbeCacheTtl.compareTo(Duration.ofSeconds(10)) > 0) {
+      throw new IllegalArgumentException("healthProbeCacheTtl must be between 250ms and 10s");
+    }
   }
 
   private static void requirePositive(Duration value, String name) {

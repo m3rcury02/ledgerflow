@@ -16,7 +16,8 @@ import org.springframework.mock.env.MockEnvironment;
 class StartupDependencyValidatorTest {
 
   private final OperationsProperties properties =
-      new OperationsProperties(Duration.ofSeconds(1), Duration.ofSeconds(1), true);
+      new OperationsProperties(
+          Duration.ofSeconds(1), Duration.ofSeconds(1), Duration.ofSeconds(2), true);
 
   @Test
   void validatesDatabaseAndRequiredKafkaTopicsWhenMessagingIsEnabled() {
@@ -50,6 +51,23 @@ class StartupDependencyValidatorTest {
     assertThatThrownBy(() -> validator.run(new DefaultApplicationArguments()))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("local and test profiles");
+    verifyNoInteractions(probe);
+  }
+
+  @Test
+  void rejectsAConfiguredManagementPortSharedWithTheApplicationListener() {
+    DependencyProbe probe = mock(DependencyProbe.class);
+    MockEnvironment environment =
+        new MockEnvironment()
+            .withProperty("server.port", "8181")
+            .withProperty("management.server.port", "8181");
+
+    StartupDependencyValidator validator =
+        new StartupDependencyValidator(probe, properties, environment);
+
+    assertThatThrownBy(() -> validator.run(new DefaultApplicationArguments()))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("must differ");
     verifyNoInteractions(probe);
   }
 }

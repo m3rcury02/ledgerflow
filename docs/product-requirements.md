@@ -1,7 +1,7 @@
 # LedgerFlow MVP Product Requirements
 
 - Status: Partially implemented
-- Last updated: 2026-07-14
+- Last updated: 2026-07-15
 - Related plan: `docs/plans/mvp-execplan.md`
 
 ## Purpose
@@ -29,10 +29,11 @@ order; strict request limits, per-instance subject throttling, and secure respon
 that boundary. No public route starts payment. Non-public module slices implement provider
 authorization/capture, immutable capture accounting, and transactional outbox/Kafka notification
 delivery. Capture accounting atomically commits payment `CAPTURE_ACCOUNTED`, the balanced journal,
-and one outbox event. A leased publisher and idempotent consumer deliver one logical notification
-database effect with at-least-once semantics, and a narrow audited CLI can replay validated DLT
-records. Order `COMPLETED`, payment `CAPTURED`, public financial orchestration, and the operator HTTP
-workflow remain planned.
+and one outbox event. A leased publisher, event-ID transport idempotency, and a versioned capture
+notification semantic identity deliver one logical notification database effect with at-least-once
+semantics. Invalid DLT input advances only after sanitized terminal evidence is durable, and a
+narrow audited CLI can replay validated DLT records. Order `COMPLETED`, payment `CAPTURED`, public
+financial orchestration, and the operator HTTP workflow remain planned.
 
 ## Actors
 
@@ -77,8 +78,8 @@ Steps 1–3 are active through the public API. Steps 4–6 and 10–12 are imple
 8. A terminal provider decline still creates the order and returns `201 Created` with `PAYMENT_DECLINED`; it creates no ledger or outbox rows.
 9. Exhausted temporary failures or unresolved timeouts return `202 Accepted` with `PAYMENT_RETRY_PENDING`. The original response remains replayable while the current resource state is available through `GET /api/v1/orders/{orderId}`.
 10. The outbox publisher claims due rows with a lease, publishes to Kafka, waits for broker acknowledgement, and marks them published. A crash can cause duplicate publication but not event loss.
-11. The notification consumer inserts an inbox record and notification in one PostgreSQL transaction. An existing inbox event ID makes a duplicate delivery a successful no-op.
-12. A transient consumer failure receives three bounded pause-based retries after the initial attempt and is then sent to a dead-letter topic. Polling continues during the delay and intake is bounded. A non-retryable schema, version, or integrity failure goes there without transient retries. A dead-letter listener catalogs safe, inspectable evidence.
+11. The notification consumer inserts an inbox record and notification in one PostgreSQL transaction. An existing event ID and matching hash is a transport no-op. A new event ID for the same versioned capture effect records a semantic-duplicate inbox outcome without another notification; conflicting content is an integrity failure.
+12. A transient consumer failure receives three bounded pause-based retries after the initial attempt and is then sent to a dead-letter topic. Polling continues during the delay and intake is bounded. A non-retryable schema, version, or integrity failure goes there without transient retries. A dead-letter listener catalogs validated safe evidence; terminal invalid DLT input advances only after sanitized evidence using actual DLT coordinates is durable.
 13. The current narrow CLI can replay a validated catalog row with an actor, reason, and new transport correlation/trace while preserving the envelope and key. A secured operator inspection/retry HTTP workflow remains future work.
 
 ## Functional requirements
@@ -117,10 +118,10 @@ Steps 1–3 are active through the public API. Steps 4–6 and 10–12 are imple
 
 - **FR-022:** The outbox publisher provides at-least-once publication and never treats a Kafka send as successful before broker acknowledgement.
 - **FR-023:** Events use a versioned envelope, globally unique event ID, order ID as Kafka key, UTC timestamp, correlation ID, and propagated W3C trace context.
-- **FR-024:** The notification consumer provides at-least-once processing and deduplicates by event ID in PostgreSQL.
+- **FR-024:** The notification consumer provides at-least-once processing. Event ID plus canonical hash supplies transport idempotency; a database-unique, versioned semantic identity based on the immutable capture ledger transaction prevents re-enveloping from repeating the notification effect and detects conflicting content.
 - **FR-025:** Inbox deduplication and notification creation commit atomically.
 - **FR-026:** A transient processing failure receives three bounded pause-based retries after the initial attempt and then moves to `ledgerflow.payment-captured.v1.dlt`; non-retryable schema, version, and integrity failures go there without transient retries. Polling continues during backoff, intake is bounded, and DLT acknowledgement precedes the source offset commit.
-- **FR-027:** A DLT record always retains original Kafka coordinates, payload hash/size, and sanitized failure metadata; it retains parsed event ID, key, and validated payload only when those values are valid. Failure to publish to the DLT does not commit the failed source offset.
+- **FR-027:** A validated DLT record retains original Kafka coordinates, payload hash/size, and sanitized failure metadata; it retains parsed event ID, key, and canonical payload only when those values are valid. Missing or malformed original routing, empty/oversized payload, or an invalid event creates immutable sanitized terminal evidence using actual DLT coordinates. Failure to publish to the DLT or persist terminal evidence does not commit the corresponding offset.
 
 ### Correlation, tracing, and recovery
 
@@ -143,7 +144,7 @@ Steps 1–3 are active through the public API. Steps 4–6 and 10–12 are imple
 
 ## Quality attributes
 
-- **Correctness:** No successful capture can produce an unbalanced ledger transaction, duplicate ledger effect, missing outbox event, or duplicate notification.
+- **Correctness:** No successful capture can produce an unbalanced ledger transaction, duplicate ledger effect, missing outbox event, or duplicate notification for the same versioned semantic effect.
 - **Durability:** PostgreSQL is the source of truth for workflow state, idempotency, ledger, outbox, inbox, notifications, and failed operations.
 - **Recoverability:** All unknown or retryable states are inspectable and have a defined automated or operator recovery path.
 - **Security:** JWT validation, object ownership, operator scopes, input bounds, topic ACL assumptions, redaction, and secret handling follow `docs/threat-model.md`.
@@ -152,7 +153,7 @@ Steps 1–3 are active through the public API. Steps 4–6 and 10–12 are imple
 
 ## Delivered milestone acceptance criteria
 
-The `AC-M3` criteria record the delivered public Create Order slice, `AC-M5B` records the delivered non-public messaging slice, and `AC-M5C` records security hardening. Statements about what Milestone 3 did not introduce are historical scope assertions, not claims that those capabilities are still absent.
+The `AC-M3` criteria record the delivered public Create Order slice, `AC-M5B` records the delivered non-public messaging slice, `AC-M5C` records security hardening, and `AC-M5D` records the pre-observability abuse-case remediation. Statements about what Milestone 3 did not introduce are historical scope assertions, not claims that those capabilities are still absent.
 
 - **AC-M3-001:** A valid scoped request returns `201`, a UUIDv7 `CREATED` order, positive INR minor units, UTC timestamps, `Location`, and a correlation ID.
 - **AC-M3-002:** The same subject, key, and canonical payload returns the byte-equivalent original body and location with `Idempotency-Replayed: true`, without another order.
@@ -180,6 +181,12 @@ The `AC-M3` criteria record the delivered public Create Order slice, `AC-M5B` re
 - **AC-M5C-007:** Sensitive marker tests show rejected request/key material absent from API responses, captured logs, and order/idempotency persistence; direct SQL audit update/delete fails.
 - **AC-M5C-008:** The pinned scan finds no committed secret or fixed HIGH/CRITICAL application-dependency vulnerability and no unapproved, stale, changed, or expired Compose-image finding; any accepted Compose tuple is exact, visible, expiring, and local-development-only.
 
+- **AC-M5D-001:** The application listener serves no Actuator path; a distinct configurable management listener serves status-only liveness/readiness and management-network-only Prometheus, with no public management ingress contract.
+- **AC-M5D-002:** One bounded readiness snapshot is shared by concurrent callers, success and failure expire, startup is uncached, and one lifecycle-managed Kafka Admin is reused rather than allocated per request.
+- **AC-M5D-003:** Same-envelope redelivery remains transport-idempotent; a new event ID with matching semantic identity/content creates one semantic-duplicate inbox row and no second notification, while a semantic content conflict fails without a second effect.
+- **AC-M5D-004:** Terminal malformed DLT input stores one immutable sanitized row by actual DLT coordinates before offset advancement. Evidence-store failure retains the offset, and recovery permits later partition records to progress without duplicate evidence.
+- **AC-M5D-005:** V006 and V007 upgrade compatible V005 evidence without deletion; unmappable or semantically duplicated legacy data fails closed for explicit reconciliation.
+
 ## Target full-flow acceptance criteria
 
 The following remain proposed for later milestones:
@@ -193,7 +200,7 @@ The following remain proposed for later milestones:
 - **AC-007:** Every invalid payment or order transition is rejected by unit tests, and stale concurrent updates are rejected by optimistic locking.
 - **AC-008:** Direct attempts to commit unbalanced, incomplete, non-positive, or mixed-currency ledger rows fail at the database boundary.
 - **AC-009:** Fault injection at every capture-accounting statement proves payment `CAPTURE_ACCOUNTED`, ledger entries, and outbox event are all committed or all rolled back. Later order/payment finalization must not recreate those effects.
-- **AC-010:** A publisher crash after Kafka acknowledgement but before marking the outbox row can produce a duplicate event, and the consumer still creates one notification.
+- **AC-010:** A publisher crash after Kafka acknowledgement but before marking the outbox row can produce a duplicate event, and event-ID plus versioned semantic-effect idempotency still creates one notification.
 - **AC-011:** A transient consumer failure receives one initial attempt plus exactly three bounded pause-based retries before DLT; polling continues with bounded intake, and non-retryable schema, version, or integrity failures go to DLT without transient retries. The catalog is inspectable now; operator HTTP visibility remains future work.
 - **AC-012:** Repeating an operator retry command does not schedule duplicate work; a successful retry resolves the failed operation and preserves the original business/event identifier.
 - **AC-013:** Trace tests show connected HTTP client/server spans, provider spans, Kafka producer spans, and Kafka consumer processing spans. Correlation IDs appear in responses, event headers, and structured logs.
