@@ -219,6 +219,8 @@ services:
     mem_limit: 512m
     pids_limit: 200
     logging: *default-logging
+    extra_hosts:
+      - host.docker.internal:host-gateway
     networks: [ledgerflow]
 
   grafana:
@@ -235,6 +237,8 @@ services:
       - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
     volumes:
       - ./infra/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./infra/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     depends_on:
       prometheus:

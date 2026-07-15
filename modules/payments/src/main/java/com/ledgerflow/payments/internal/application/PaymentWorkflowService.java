@@ -19,6 +19,7 @@ public class PaymentWorkflowService {
   private final ProviderRetryClassifier retryClassifier;
   private final Clock clock;
   private final Supplier<UUID> requestIdSupplier;
+  private final PaymentMetrics metrics;
 
   public PaymentWorkflowService(
       PaymentStore paymentStore,
@@ -26,18 +27,22 @@ public class PaymentWorkflowService {
       PaymentRetryPolicy retryPolicy,
       ProviderRetryClassifier retryClassifier,
       Clock clock,
-      Supplier<UUID> requestIdSupplier) {
+      Supplier<UUID> requestIdSupplier,
+      PaymentMetrics metrics) {
     this.paymentStore = paymentStore;
     this.paymentProvider = paymentProvider;
     this.retryPolicy = retryPolicy;
     this.retryClassifier = retryClassifier;
     this.clock = clock;
     this.requestIdSupplier = requestIdSupplier;
+    this.metrics = metrics;
   }
 
   public Payment create(CreatePaymentCommand command) {
     validatePaymentMethodReference(command.paymentMethodReference());
-    return paymentStore.create(command, clock.instant());
+    Payment created = paymentStore.create(command, clock.instant());
+    metrics.recordStateAfterCommit(created.state());
+    return created;
   }
 
   public Payment authorize(UUID paymentId, String correlationId) {
@@ -52,9 +57,11 @@ public class PaymentWorkflowService {
     }
     if (current.state() == PaymentState.AUTHORIZATION_RETRY_PENDING) {
       Payment active = paymentStore.save(current, current.resumeAuthorization(clock.instant()));
+      metrics.recordStateAfterCommit(active.state());
       return execute(active, PaymentStage.AUTHORIZATION, correlationId);
     }
     Payment active = paymentStore.save(current, current.startAuthorization(clock.instant()));
+    metrics.recordStateAfterCommit(active.state());
     return execute(active, PaymentStage.AUTHORIZATION, correlationId);
   }
 
@@ -73,10 +80,12 @@ public class PaymentWorkflowService {
     }
     if (current.state() == PaymentState.CAPTURE_RETRY_PENDING) {
       Payment active = paymentStore.save(current, current.resumeCapture(clock.instant()));
+      metrics.recordStateAfterCommit(active.state());
       return execute(active, PaymentStage.CAPTURE, correlationId);
     }
     Payment active =
         paymentStore.save(current, current.startCapture(requestIdSupplier.get(), clock.instant()));
+    metrics.recordStateAfterCommit(active.state());
     return execute(active, PaymentStage.CAPTURE, correlationId);
   }
 
@@ -179,6 +188,7 @@ public class PaymentWorkflowService {
           correlationId);
     }
     if (lookup instanceof ProviderLookupResult.NotFound) {
+      metrics.record(stage, PaymentMetrics.Outcome.NOT_FOUND);
       paymentStore.appendHistory(
           current.paymentId(),
           history(
@@ -205,25 +215,34 @@ public class PaymentWorkflowService {
               unavailable.failureCode(),
               correlationId);
       if (isActive(current.state(), stage)) {
-        return paymentStore.saveWithHistory(
-            current, unknown(current, stage, unavailable.failureCode()), history);
+        Payment persisted =
+            paymentStore.saveWithHistory(
+                current, unknown(current, stage, unavailable.failureCode()), history);
+        metrics.record(stage, PaymentMetrics.Outcome.UNKNOWN);
+        metrics.recordStateAfterCommit(persisted.state());
+        return persisted;
       }
       paymentStore.appendHistory(current.paymentId(), history);
+      metrics.record(stage, PaymentMetrics.Outcome.UNKNOWN);
       return current;
     }
     ProviderLookupResult.InvalidResponse invalid = (ProviderLookupResult.InvalidResponse) lookup;
-    return paymentStore.saveWithHistory(
-        current,
-        current.failed(invalid.failureCode(), clock.instant()),
-        history(
+    Payment persisted =
+        paymentStore.saveWithHistory(
             current,
-            stage,
-            AttemptActivity.LOOKUP,
-            attemptNumber,
-            AttemptOutcome.INVALID_RESPONSE,
-            null,
-            invalid.failureCode(),
-            correlationId));
+            current.failed(invalid.failureCode(), clock.instant()),
+            history(
+                current,
+                stage,
+                AttemptActivity.LOOKUP,
+                attemptNumber,
+                AttemptOutcome.INVALID_RESPONSE,
+                null,
+                invalid.failureCode(),
+                correlationId));
+    metrics.record(stage, PaymentMetrics.Outcome.INVALID);
+    metrics.recordStateAfterCommit(persisted.state());
+    return persisted;
   }
 
   private ProviderResult callProvider(Payment payment, PaymentStage stage, String correlationId) {
@@ -271,18 +290,22 @@ public class PaymentWorkflowService {
           case AUTHORIZATION -> current.authorizationSucceeded(providerReference, clock.instant());
           case CAPTURE -> current.captureSucceeded(providerReference, clock.instant());
         };
-    return paymentStore.saveWithHistory(
-        current,
-        updated,
-        history(
+    Payment persisted =
+        paymentStore.saveWithHistory(
             current,
-            stage,
-            activity,
-            attemptNumber,
-            AttemptOutcome.SUCCEEDED,
-            providerReference,
-            null,
-            correlationId));
+            updated,
+            history(
+                current,
+                stage,
+                activity,
+                attemptNumber,
+                AttemptOutcome.SUCCEEDED,
+                providerReference,
+                null,
+                correlationId));
+    metrics.record(stage, PaymentMetrics.Outcome.SUCCESS);
+    metrics.recordStateAfterCommit(persisted.state());
+    return persisted;
   }
 
   private Payment persistDecline(
@@ -307,18 +330,22 @@ public class PaymentWorkflowService {
           case AUTHORIZATION -> current.authorizationDeclined(failureCode, clock.instant());
           case CAPTURE -> current.captureDeclined(failureCode, clock.instant());
         };
-    return paymentStore.saveWithHistory(
-        current,
-        updated,
-        history(
+    Payment persisted =
+        paymentStore.saveWithHistory(
             current,
-            stage,
-            activity,
-            attemptNumber,
-            AttemptOutcome.DECLINED,
-            null,
-            failureCode,
-            correlationId));
+            updated,
+            history(
+                current,
+                stage,
+                activity,
+                attemptNumber,
+                AttemptOutcome.DECLINED,
+                null,
+                failureCode,
+                correlationId));
+    metrics.record(stage, PaymentMetrics.Outcome.DECLINE);
+    metrics.recordStateAfterCommit(persisted.state());
+    return persisted;
   }
 
   private Payment persistUnknown(
@@ -329,18 +356,22 @@ public class PaymentWorkflowService {
       String correlationId) {
     AttemptOutcome outcome =
         "PROVIDER_TIMEOUT".equals(failureCode) ? AttemptOutcome.TIMEOUT : AttemptOutcome.UNKNOWN;
-    return paymentStore.saveWithHistory(
-        current,
-        unknown(current, stage, failureCode),
-        history(
+    Payment persisted =
+        paymentStore.saveWithHistory(
             current,
-            stage,
-            AttemptActivity.CALL,
-            attemptNumber,
-            outcome,
-            null,
-            failureCode,
-            correlationId));
+            unknown(current, stage, failureCode),
+            history(
+                current,
+                stage,
+                AttemptActivity.CALL,
+                attemptNumber,
+                outcome,
+                null,
+                failureCode,
+                correlationId));
+    metrics.record(stage, PaymentMetrics.Outcome.UNKNOWN);
+    metrics.recordStateAfterCommit(persisted.state());
+    return persisted;
   }
 
   private Payment persistInvalid(
@@ -349,18 +380,22 @@ public class PaymentWorkflowService {
       int attemptNumber,
       String failureCode,
       String correlationId) {
-    return paymentStore.saveWithHistory(
-        current,
-        current.failed(failureCode, clock.instant()),
-        history(
+    Payment persisted =
+        paymentStore.saveWithHistory(
             current,
-            stage,
-            AttemptActivity.CALL,
-            attemptNumber,
-            AttemptOutcome.INVALID_RESPONSE,
-            null,
-            failureCode,
-            correlationId));
+            current.failed(failureCode, clock.instant()),
+            history(
+                current,
+                stage,
+                AttemptActivity.CALL,
+                attemptNumber,
+                AttemptOutcome.INVALID_RESPONSE,
+                null,
+                failureCode,
+                correlationId));
+    metrics.record(stage, PaymentMetrics.Outcome.INVALID);
+    metrics.recordStateAfterCommit(persisted.state());
+    return persisted;
   }
 
   private Payment persistRetryPending(Payment current, PaymentStage stage, String failureCode) {
@@ -369,7 +404,10 @@ public class PaymentWorkflowService {
           case AUTHORIZATION -> current.authorizationRetryPending(failureCode, clock.instant());
           case CAPTURE -> current.captureRetryPending(failureCode, clock.instant());
         };
-    return paymentStore.save(current, updated);
+    Payment persisted = paymentStore.save(current, updated);
+    metrics.record(stage, PaymentMetrics.Outcome.RETRY_PENDING);
+    metrics.recordStateAfterCommit(persisted.state());
+    return persisted;
   }
 
   private Payment unknown(Payment payment, PaymentStage stage, String failureCode) {
@@ -383,13 +421,19 @@ public class PaymentWorkflowService {
     return switch (stage) {
       case AUTHORIZATION ->
           payment.state() == PaymentState.AUTHORIZATION_UNKNOWN
-              ? paymentStore.save(payment, payment.resumeAuthorization(clock.instant()))
+              ? recordResumed(
+                  paymentStore.save(payment, payment.resumeAuthorization(clock.instant())))
               : payment;
       case CAPTURE ->
           payment.state() == PaymentState.CAPTURE_UNKNOWN
-              ? paymentStore.save(payment, payment.resumeCapture(clock.instant()))
+              ? recordResumed(paymentStore.save(payment, payment.resumeCapture(clock.instant())))
               : payment;
     };
+  }
+
+  private Payment recordResumed(Payment payment) {
+    metrics.recordStateAfterCommit(payment.state());
+    return payment;
   }
 
   private AttemptHistory history(

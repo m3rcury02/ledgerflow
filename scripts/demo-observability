@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+command -v curl >/dev/null 2>&1 || {
+  echo "curl is required" >&2
+  exit 1
+}
+command -v jq >/dev/null 2>&1 || {
+  echo "jq is required" >&2
+  exit 1
+}
+command -v openssl >/dev/null 2>&1 || {
+  echo "openssl is required" >&2
+  exit 1
+}
+
+: "${LEDGERFLOW_ACCESS_TOKEN:?Set LEDGERFLOW_ACCESS_TOKEN to a valid customer token}"
+
+api_url="${LEDGERFLOW_API_URL:-http://localhost:8080}"
+tempo_url="${TEMPO_URL:-http://localhost:3200}"
+loki_url="${LOKI_URL:-http://localhost:3100}"
+trace_id="$(openssl rand -hex 16)"
+parent_span_id="$(openssl rand -hex 8)"
+correlation_id="demo-$(openssl rand -hex 12)"
+idempotency_key="demo-order-$(openssl rand -hex 16)"
+response_body="$(mktemp)"
+response_headers="$(mktemp)"
+cleanup() {
+  rm -f "${response_body}" "${response_headers}"
+}
+trap cleanup EXIT
+
+status="$({
+  curl --silent --show-error \
+    --output "${response_body}" \
+    --dump-header "${response_headers}" \
+    --write-out '%{http_code}' \
+    --request POST "${api_url}/api/v1/orders" \
+    --header "Authorization: Bearer ${LEDGERFLOW_ACCESS_TOKEN}" \
+    --header 'Content-Type: application/json' \
+    --header "Idempotency-Key: ${idempotency_key}" \
+    --header "X-Correlation-Id: ${correlation_id}" \
+    --header "traceparent: 00-${trace_id}-${parent_span_id}-01" \
+    --data '{"clientReference":"observability-demo","amount":{"amountMinor":259900,"currency":"INR"},"paymentMethodReference":"pm_mock_success"}'
+})"
+
+if [[ "${status}" != "201" ]] || ! jq --exit-status \
+  '.status == "COMPLETED" and .payment.status == "CAPTURED"' \
+  "${response_body}" >/dev/null; then
+  echo "Order workflow did not complete; HTTP ${status}." >&2
+  exit 1
+fi
+
+returned_correlation="$(awk 'BEGIN {IGNORECASE=1} /^X-Correlation-Id:/ {gsub("\r", "", $2); print $2}' "${response_headers}")"
+test "${returned_correlation}" = "${correlation_id}"
+echo "Business transaction completed."
+echo "Trace ID: ${trace_id}"
+echo "Correlation ID: ${correlation_id}"
+
+tempo_found=false
+loki_found=false
+for _ in $(seq 1 60); do
+  if curl --fail --silent "${tempo_url}/api/traces/${trace_id}" \
+    | jq --exit-status '.. | objects | select(.name? == "notification.process")' \
+      >/dev/null 2>&1; then
+    tempo_found=true
+  fi
+  if curl --fail --silent --get "${loki_url}/loki/api/v1/query_range" \
+    --data-urlencode "query={service_name=\"ledgerflow\"} | trace_id = \"${trace_id}\"" \
+    --data-urlencode 'limit=20' \
+    | jq --exit-status '.data.result | length > 0' >/dev/null 2>&1; then
+    loki_found=true
+  fi
+  if [[ "${tempo_found}" == true && "${loki_found}" == true ]]; then
+    break
+  fi
+  sleep 1
+done
+
+if [[ "${tempo_found}" != true || "${loki_found}" != true ]]; then
+  echo "Business completion is durable, but Tempo/Loki verification did not complete." >&2
+  echo "Tempo: ${tempo_found}; Loki: ${loki_found}" >&2
+  exit 2
+fi
+
+echo "Tempo contains the notification span and Loki contains logs for the same trace ID."

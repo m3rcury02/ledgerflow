@@ -1,11 +1,16 @@
 package com.ledgerflow.operations.internal;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
 
 final class ReadinessProbeCache {
 
@@ -13,14 +18,27 @@ final class ReadinessProbeCache {
   private final Duration ttl;
   private final Clock clock;
   private final Object monitor = new Object();
+  private final Counter readyChecks;
+  private final Counter notReadyChecks;
+  private final AtomicInteger currentStatus = new AtomicInteger();
 
   private CachedReadiness cached;
   private InFlightReadiness inFlight;
 
   ReadinessProbeCache(DependencyProbe probe, Duration ttl, Clock clock) {
+    this(probe, ttl, clock, new SimpleMeterRegistry());
+  }
+
+  ReadinessProbeCache(
+      DependencyProbe probe, Duration ttl, Clock clock, MeterRegistry meterRegistry) {
     this.probe = Objects.requireNonNull(probe, "dependency probe must not be null");
     this.ttl = Objects.requireNonNull(ttl, "cache TTL must not be null");
     this.clock = Objects.requireNonNull(clock, "clock must not be null");
+    readyChecks = readinessCounter(meterRegistry, "ready");
+    notReadyChecks = readinessCounter(meterRegistry, "not_ready");
+    Gauge.builder("ledgerflow.readiness.status", currentStatus, AtomicInteger::get)
+        .description("Last dependency-readiness result, one for ready and zero for not ready")
+        .register(meterRegistry);
   }
 
   DependencyReadiness readiness(boolean kafkaRequired) {
@@ -60,10 +78,21 @@ final class ReadinessProbeCache {
       if (kafkaRequired) {
         probe.kafka(Set.of());
       }
+      readyChecks.increment();
+      currentStatus.set(1);
       return DependencyReadiness.availableResult();
     } catch (RuntimeException exception) {
+      notReadyChecks.increment();
+      currentStatus.set(0);
       return DependencyReadiness.unavailableResult();
     }
+  }
+
+  private Counter readinessCounter(MeterRegistry meterRegistry, String outcome) {
+    return Counter.builder("ledgerflow.readiness.checks")
+        .description("Uncached dependency-readiness checks by bounded outcome")
+        .tag("outcome", outcome)
+        .register(meterRegistry);
   }
 
   record DependencyReadiness(boolean available) {

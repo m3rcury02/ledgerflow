@@ -35,10 +35,12 @@ datasources:
         datasourceUid: prometheus
       tracesToLogsV2:
         datasourceUid: loki
-        filterByTraceID: true
+        customQuery: true
+        filterByTraceID: false
         filterBySpanID: false
         spanStartTimeShift: -1m
         spanEndTimeShift: 1m
+        query: '{service_name="ledgerflow"} | trace_id = "$${__trace.traceId}"'
 
   - name: Loki
     uid: loki
@@ -49,6 +51,8 @@ datasources:
     jsonData:
       derivedFields:
         - name: TraceID
-          matcherRegex: '(?:trace_id|traceID)[=:]"?([a-fA-F0-9]{32})'
+          matcherType: label
+          matcherRegex: trace_id
           datasourceUid: tempo
-          url: '${__value.raw}'
+          url: '$${__value.raw}'
+          urlDisplayLabel: View trace

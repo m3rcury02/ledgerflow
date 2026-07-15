@@ -7,6 +7,8 @@ plugins {
 description = "LedgerFlow deployable application"
 
 val springModulithVersion = rootProject.extra["springModulithVersion"] as String
+val openTelemetryInstrumentationVersion =
+    rootProject.extra["openTelemetryInstrumentationVersion"] as String
 
 val integrationTest =
     sourceSets.create("integrationTest") {
@@ -51,6 +53,13 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-webmvc")
     implementation("io.micrometer:micrometer-registry-prometheus")
+    implementation(
+        platform(
+            "io.opentelemetry.instrumentation:opentelemetry-instrumentation-bom-alpha:" +
+                openTelemetryInstrumentationVersion,
+        ),
+    )
+    implementation("io.opentelemetry.instrumentation:opentelemetry-logback-appender-1.0")
 
     runtimeOnly("org.flywaydb:flyway-database-postgresql")
     runtimeOnly("org.postgresql:postgresql")
@@ -86,6 +95,10 @@ dependencies {
         integrationTest.implementationConfigurationName,
         "com.redis:testcontainers-redis",
     )
+    add(
+        integrationTest.implementationConfigurationName,
+        "io.opentelemetry:opentelemetry-sdk-testing",
+    )
 
     add(
         architectureTest.implementationConfigurationName,
@@ -106,6 +119,7 @@ tasks.register<Test>("integrationTest") {
     group = "verification"
     testClassesDirs = integrationTest.output.classesDirs
     classpath = integrationTest.runtimeClasspath
+    systemProperty("spring.test.context.cache.maxSize", "8")
     shouldRunAfter(tasks.test)
 }
 

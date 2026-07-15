@@ -1,0 +1,39 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 0},
+      "id": 1,
+      "targets": [{"expr": "sum by (outcome) (rate(ledgerflow_ledger_postings_total[5m]))", "legendFormat": "{{outcome}}"}],
+      "title": "Capture posting outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 0},
+      "id": 2,
+      "targets": [{"expr": "sum(increase(ledgerflow_ledger_postings_total{outcome=~\"conflict|failure\"}[15m]))", "legendFormat": "integrity/system failures"}],
+      "title": "Ledger failures (15m)",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 9},
+      "id": 3,
+      "targets": [{"expr": "sum(increase(ledgerflow_ledger_postings_total{outcome=\"success\"}[1h]))", "legendFormat": "new journals"}, {"expr": "sum(increase(ledgerflow_ledger_postings_total{outcome=\"replay\"}[1h]))", "legendFormat": "safe replays"}],
+      "title": "Posting integrity evidence",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 41,
+  "tags": ["ledgerflow", "ledger"],
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "utc",
+  "title": "LedgerFlow — Ledger",
+  "uid": "ledgerflow-ledger",
+  "version": 1
+}

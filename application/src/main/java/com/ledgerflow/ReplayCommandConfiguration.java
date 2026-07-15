@@ -34,11 +34,13 @@ class ReplayCommandConfiguration {
         throw new IllegalStateException(
             "Dead-letter replay did not receive a broker acknowledgement; inspect replay audit");
       }
-      LOGGER.info(
-          "Dead-letter replay published: recordId={}, replayRequestId={}, correlationId={}",
-          recordId,
-          result.replayRequestId(),
-          result.processingCorrelationId());
+      LOGGER
+          .atInfo()
+          .addKeyValue("event_code", "DEAD_LETTER_REPLAY_PUBLISHED")
+          .addKeyValue("action", "dead-letter.replay")
+          .addKeyValue("outcome", "published")
+          .addKeyValue("correlation_id", result.processingCorrelationId())
+          .log("Dead-letter replay received broker acknowledgement");
       applicationContext.close();
     };
   }

@@ -7,7 +7,14 @@ import java.util.stream.Collectors;
 public record OutboxTraceContext(String traceparent, String tracestate) {
 
   public static OutboxTraceContext capture() {
-    SpanContext context = Span.current().getSpanContext();
+    return capture(Span.current().getSpanContext());
+  }
+
+  public static OutboxTraceContext capture(Span span) {
+    return capture(span.getSpanContext());
+  }
+
+  private static OutboxTraceContext capture(SpanContext context) {
     if (!context.isValid()) {
       return new OutboxTraceContext(null, null);
     }

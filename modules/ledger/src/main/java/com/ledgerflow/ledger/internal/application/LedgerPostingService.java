@@ -1,6 +1,5 @@
 package com.ledgerflow.ledger.internal.application;
 
-import com.ledgerflow.ledger.api.LedgerPosting;
 import com.ledgerflow.ledger.api.PostCorrectionCommand;
 import com.ledgerflow.ledger.api.PostPaymentCaptureCommand;
 import com.ledgerflow.ledger.api.PostedJournal;
@@ -22,7 +21,7 @@ import java.util.Optional;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
-public class LedgerPostingService implements LedgerPosting {
+public class LedgerPostingService {
 
   private final JdbcLedgerStore ledgerStore;
   private final PaymentAccounting paymentAccounting;
@@ -40,7 +39,6 @@ public class LedgerPostingService implements LedgerPosting {
     this.clock = clock;
   }
 
-  @Override
   @Transactional(isolation = Isolation.READ_COMMITTED)
   public PostedJournal postPaymentCapture(PostPaymentCaptureCommand command) {
     Objects.requireNonNull(command, "command must not be null");
@@ -73,7 +71,6 @@ public class LedgerPostingService implements LedgerPosting {
     return result;
   }
 
-  @Override
   @Transactional(isolation = Isolation.READ_COMMITTED)
   public PostedJournal postCorrection(PostCorrectionCommand command) {
     Objects.requireNonNull(command, "command must not be null");

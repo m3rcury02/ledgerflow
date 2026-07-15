@@ -149,7 +149,11 @@ class ResilientPaymentProviderTest {
         circuitBreaker,
         bulkhead,
         tracker,
-        point -> java.util.Objects.requireNonNull(point));
+        point -> java.util.Objects.requireNonNull(point),
+        new PaymentProviderMetrics(
+            new io.micrometer.core.instrument.simple.SimpleMeterRegistry(),
+            circuitBreaker,
+            bulkhead));
   }
 
   private PaymentProvider provider(java.util.function.Supplier<ProviderResult> result) {

@@ -6,6 +6,7 @@ import com.ledgerflow.messaging.internal.kafka.KafkaTracePropagation;
 import com.ledgerflow.messaging.internal.persistence.JdbcOutboxStore;
 import com.ledgerflow.operations.api.FaultInjection;
 import com.ledgerflow.operations.api.WorkTracker;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.OpenTelemetry;
 import java.time.Clock;
@@ -34,8 +35,16 @@ public class MessagingConfiguration {
   OutboxEventAppender outboxEventAppender(
       JdbcOutboxStore outboxStore,
       EventEnvelopeCodec codec,
-      MessagingProperties messagingProperties) {
-    return new PaymentCapturedOutboxAppender(outboxStore, codec, messagingProperties);
+      MessagingProperties messagingProperties,
+      OutboxMetrics outboxMetrics,
+      OpenTelemetry openTelemetry) {
+    return new PaymentCapturedOutboxAppender(
+        outboxStore, codec, messagingProperties, outboxMetrics, openTelemetry);
+  }
+
+  @Bean
+  OutboxMetrics outboxMetrics(JdbcOutboxStore outboxStore, MeterRegistry meterRegistry) {
+    return new OutboxMetrics(outboxStore, meterRegistry, Clock.systemUTC());
   }
 
   @Bean
@@ -48,7 +57,8 @@ public class MessagingConfiguration {
       ObjectProvider<OpenTelemetry> openTelemetryProvider,
       ObjectProvider<OutboxAcknowledgementHook> hookProvider,
       WorkTracker workTracker,
-      FaultInjection faultInjection) {
+      FaultInjection faultInjection,
+      OutboxMetrics outboxMetrics) {
     OpenTelemetry openTelemetry = openTelemetryProvider.getIfAvailable(GlobalOpenTelemetry::get);
     OutboxAcknowledgementHook hook =
         hookProvider.getIfAvailable(() -> eventId -> java.util.Objects.requireNonNull(eventId));
@@ -61,17 +71,28 @@ public class MessagingConfiguration {
         hook,
         Clock.systemUTC(),
         workTracker,
-        faultInjection);
+        faultInjection,
+        outboxMetrics);
   }
 
   @Bean
   @ConditionalOnProperty(name = "ledgerflow.messaging.publisher-enabled", havingValue = "true")
-  TaskScheduler outboxTaskScheduler(MessagingProperties properties) {
+  TaskScheduler outboxTaskScheduler(MessagingProperties properties, MeterRegistry meterRegistry) {
     ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
     scheduler.setPoolSize(1);
     scheduler.setThreadNamePrefix("outbox-publisher-");
     scheduler.setWaitForTasksToCompleteOnShutdown(true);
     scheduler.setAwaitTerminationMillis(properties.acknowledgementTimeout().toMillis());
+    io.micrometer.core.instrument.Gauge.builder(
+            "ledgerflow.executor.active", scheduler, ThreadPoolTaskScheduler::getActiveCount)
+        .description("Active tasks in bounded application executors")
+        .tag("executor", "outbox")
+        .register(meterRegistry);
+    io.micrometer.core.instrument.Gauge.builder(
+            "ledgerflow.executor.pool.size", scheduler, ThreadPoolTaskScheduler::getPoolSize)
+        .description("Current bounded application executor pool size")
+        .tag("executor", "outbox")
+        .register(meterRegistry);
     return scheduler;
   }
 }

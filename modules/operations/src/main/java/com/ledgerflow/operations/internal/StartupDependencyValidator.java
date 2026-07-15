@@ -34,8 +34,13 @@ final class StartupDependencyValidator implements ApplicationRunner {
     }
     probe.database();
     if (kafkaRequired()) {
-      String clusterId = probe.kafka(requiredTopics());
-      LOGGER.info("Startup dependency validation succeeded: kafkaClusterId={}", clusterId);
+      probe.kafka(requiredTopics());
+      LOGGER
+          .atInfo()
+          .addKeyValue("event_code", "STARTUP_DEPENDENCIES_READY")
+          .addKeyValue("action", "startup.dependencies.validate")
+          .addKeyValue("outcome", "ready")
+          .log("Startup dependency validation succeeded");
     }
   }
 

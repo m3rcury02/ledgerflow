@@ -62,6 +62,58 @@ spring:
 management:
   server:
     port: ${LEDGERFLOW_MANAGEMENT_PORT:8081}
+  tracing:
+    propagation:
+      type: W3C
+    sampling:
+      probability: ${LEDGERFLOW_TRACE_SAMPLING_PROBABILITY:0.1}
+    exemplars:
+      include: sampled-traces
+  opentelemetry:
+    resource-attributes:
+      service.name: ${LEDGERFLOW_OTEL_SERVICE_NAME:ledgerflow}
+      service.namespace: ledgerflow
+      deployment.environment: ${LEDGERFLOW_DEPLOYMENT_ENVIRONMENT:development}
+    tracing:
+      limits:
+        max-attributes: 32
+        max-attribute-value-length: 256
+        max-events: 32
+        max-links: 8
+        max-attributes-per-event: 8
+        max-attributes-per-link: 4
+      export:
+        max-queue-size: 2048
+        max-batch-size: 256
+        schedule-delay: 1s
+        timeout: 5s
+        otlp:
+          endpoint: ${LEDGERFLOW_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
+          connect-timeout: 1s
+          timeout: 3s
+    logging:
+      limits:
+        max-attributes: 32
+        max-attribute-value-length: 512
+      export:
+        max-queue-size: 2048
+        max-batch-size: 256
+        schedule-delay: 1s
+        timeout: 5s
+        otlp:
+          endpoint: ${LEDGERFLOW_OTLP_LOGS_ENDPOINT:http://localhost:4318/v1/logs}
+          connect-timeout: 1s
+          timeout: 3s
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      slo:
+        http.server.requests: 100ms,250ms,500ms,1s,2s,5s
   endpoints:
     access:
       default: none

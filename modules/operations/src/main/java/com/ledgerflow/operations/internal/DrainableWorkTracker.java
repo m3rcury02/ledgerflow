@@ -2,6 +2,10 @@ package com.ledgerflow.operations.internal;
 
 import com.ledgerflow.operations.api.WorkToken;
 import com.ledgerflow.operations.api.WorkTracker;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
@@ -18,9 +22,28 @@ final class DrainableWorkTracker implements WorkTracker, SmartLifecycle {
   private volatile boolean acceptingWork = true;
   private volatile boolean drainTimedOut;
   private int activeWork;
+  private final Counter completedDrains;
+  private final Counter timedOutDrains;
+  private final Counter interruptedDrains;
 
   DrainableWorkTracker(Duration drainTimeout) {
+    this(drainTimeout, new SimpleMeterRegistry());
+  }
+
+  DrainableWorkTracker(Duration drainTimeout, MeterRegistry meterRegistry) {
     this.drainTimeout = drainTimeout;
+    completedDrains = drainCounter(meterRegistry, "completed");
+    timedOutDrains = drainCounter(meterRegistry, "timed_out");
+    interruptedDrains = drainCounter(meterRegistry, "interrupted");
+    Gauge.builder("ledgerflow.graceful.drain.active", this, DrainableWorkTracker::activeWork)
+        .description("Currently tracked in-flight external work")
+        .register(meterRegistry);
+    Gauge.builder(
+            "ledgerflow.graceful.drain.accepting",
+            this,
+            tracker -> tracker.isAcceptingWork() ? 1.0 : 0.0)
+        .description("Whether new tracked work is admitted")
+        .register(meterRegistry);
   }
 
   @Override
@@ -94,8 +117,14 @@ final class DrainableWorkTracker implements WorkTracker, SmartLifecycle {
         long remaining = deadline - System.nanoTime();
         if (remaining <= 0) {
           drainTimedOut = true;
-          LOGGER.error(
-              "Graceful shutdown timed out with {} in-flight operations still active", activeWork);
+          timedOutDrains.increment();
+          LOGGER
+              .atError()
+              .addKeyValue("event_code", "GRACEFUL_DRAIN_TIMED_OUT")
+              .addKeyValue("action", "application.shutdown.drain")
+              .addKeyValue("error_code", "DRAIN_TIMEOUT")
+              .addKeyValue("active_work", activeWork)
+              .log("Graceful shutdown timed out with in-flight work");
           break;
         }
         try {
@@ -104,11 +133,20 @@ final class DrainableWorkTracker implements WorkTracker, SmartLifecycle {
         } catch (InterruptedException exception) {
           Thread.currentThread().interrupt();
           drainTimedOut = true;
-          LOGGER.error("Graceful shutdown drain was interrupted", exception);
+          interruptedDrains.increment();
+          LOGGER
+              .atError()
+              .addKeyValue("event_code", "GRACEFUL_DRAIN_INTERRUPTED")
+              .addKeyValue("action", "application.shutdown.drain")
+              .addKeyValue("error_code", "DRAIN_INTERRUPTED")
+              .log("Graceful shutdown drain was interrupted");
           break;
         }
       }
       running = false;
+      if (!drainTimedOut) {
+        completedDrains.increment();
+      }
     }
     callback.run();
   }
@@ -121,5 +159,12 @@ final class DrainableWorkTracker implements WorkTracker, SmartLifecycle {
   @Override
   public int getPhase() {
     return Integer.MIN_VALUE;
+  }
+
+  private Counter drainCounter(MeterRegistry meterRegistry, String outcome) {
+    return Counter.builder("ledgerflow.graceful.drain.results")
+        .description("Graceful drain completions by bounded outcome")
+        .tag("outcome", outcome)
+        .register(meterRegistry);
   }
 }

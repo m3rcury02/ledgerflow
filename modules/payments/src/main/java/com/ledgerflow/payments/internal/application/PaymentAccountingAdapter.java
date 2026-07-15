@@ -16,9 +16,11 @@ import org.springframework.transaction.annotation.Transactional;
 public class PaymentAccountingAdapter implements PaymentAccounting {
 
   private final PaymentStore paymentStore;
+  private final PaymentMetrics metrics;
 
-  public PaymentAccountingAdapter(PaymentStore paymentStore) {
+  public PaymentAccountingAdapter(PaymentStore paymentStore, PaymentMetrics metrics) {
     this.paymentStore = paymentStore;
+    this.metrics = metrics;
   }
 
   @Override
@@ -43,7 +45,8 @@ public class PaymentAccountingAdapter implements PaymentAccounting {
     if (payment.version() != expectedVersion) {
       throw new ConcurrentPaymentModificationException();
     }
-    paymentStore.save(payment, payment.captureAccounted(accountedAt));
+    Payment accounted = paymentStore.save(payment, payment.captureAccounted(accountedAt));
+    metrics.recordStateAfterCommit(accounted.state());
   }
 
   private CaptureAccountingStatus accountingStatus(PaymentState state) {

@@ -57,11 +57,13 @@ public class OrderController {
     if (result.responseStatus() == 502) {
       throw new ProviderProtocolException(result.location(), result.replayed());
     }
-    LOGGER.info(
-        "Order workflow completed: orderId={}, status={}, replayed={}",
-        result.order().orderId(),
-        result.order().status(),
-        result.replayed());
+    LOGGER
+        .atInfo()
+        .addKeyValue("event_code", "ORDER_HTTP_RESULT")
+        .addKeyValue("action", "orders.create")
+        .addKeyValue("outcome", result.order().status())
+        .addKeyValue("replayed", result.replayed())
+        .log("Order HTTP command returned a durable result");
     ResponseEntity.BodyBuilder response =
         ResponseEntity.status(result.responseStatus())
             .header(HttpHeaders.LOCATION, result.location());
@@ -76,7 +78,12 @@ public class OrderController {
       produces = org.springframework.http.MediaType.APPLICATION_JSON_VALUE)
   public OrderResponse getOrder(@PathVariable UUID orderId, JwtAuthenticationToken authentication) {
     PublicOrder order = orderWorkflow.get(orderId, ownerSubject(authentication));
-    LOGGER.info("Order read completed: orderId={}", orderId);
+    LOGGER
+        .atInfo()
+        .addKeyValue("event_code", "ORDER_READ_RESULT")
+        .addKeyValue("action", "orders.read")
+        .addKeyValue("outcome", "found")
+        .log("Order read completed");
     return OrderResponse.from(order);
   }
 

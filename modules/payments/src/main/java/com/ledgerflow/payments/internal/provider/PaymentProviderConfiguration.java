@@ -2,6 +2,7 @@ package com.ledgerflow.payments.internal.provider;
 
 import com.ledgerflow.operations.api.FaultInjection;
 import com.ledgerflow.operations.api.WorkTracker;
+import com.ledgerflow.payments.internal.application.PaymentMetrics;
 import com.ledgerflow.payments.internal.application.PaymentProvider;
 import com.ledgerflow.payments.internal.application.PaymentRetryPolicy;
 import com.ledgerflow.payments.internal.application.PaymentStore;
@@ -11,6 +12,8 @@ import io.github.resilience4j.bulkhead.Bulkhead;
 import io.github.resilience4j.bulkhead.BulkheadConfig;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.opentelemetry.api.OpenTelemetry;
 import java.net.http.HttpClient;
 import java.time.Clock;
 import java.util.UUID;
@@ -44,9 +47,11 @@ public class PaymentProviderConfiguration {
   PaymentProvider paymentProvider(
       HttpClient paymentProviderHttpClient,
       ObjectMapper objectMapper,
+      OpenTelemetry openTelemetry,
       PaymentProviderProperties properties,
       CircuitBreaker paymentProviderCircuitBreaker,
       Bulkhead paymentProviderBulkhead,
+      PaymentProviderMetrics paymentProviderMetrics,
       WorkTracker workTracker,
       FaultInjection faultInjection) {
     PaymentProvider httpProvider =
@@ -55,13 +60,15 @@ public class PaymentProviderConfiguration {
             objectMapper,
             properties.baseUrl(),
             properties.readTimeout(),
-            properties.overallTimeout());
+            properties.overallTimeout(),
+            openTelemetry);
     return new ResilientPaymentProvider(
         httpProvider,
         paymentProviderCircuitBreaker,
         paymentProviderBulkhead,
         workTracker,
-        faultInjection);
+        faultInjection,
+        paymentProviderMetrics);
   }
 
   @Bean
@@ -89,6 +96,15 @@ public class PaymentProviderConfiguration {
             .maxConcurrentCalls(properties.maxConcurrentCalls())
             .maxWaitDuration(java.time.Duration.ZERO)
             .build());
+  }
+
+  @Bean
+  PaymentProviderMetrics paymentProviderMetrics(
+      MeterRegistry meterRegistry,
+      CircuitBreaker paymentProviderCircuitBreaker,
+      Bulkhead paymentProviderBulkhead) {
+    return new PaymentProviderMetrics(
+        meterRegistry, paymentProviderCircuitBreaker, paymentProviderBulkhead);
   }
 
   @Bean("paymentProviderCircuit")
@@ -119,14 +135,16 @@ public class PaymentProviderConfiguration {
       PaymentStore paymentStore,
       PaymentProvider paymentProvider,
       PaymentRetryPolicy paymentRetryPolicy,
-      ProviderRetryClassifier retryClassifier) {
+      ProviderRetryClassifier retryClassifier,
+      PaymentMetrics paymentMetrics) {
     return new PaymentWorkflowService(
         paymentStore,
         paymentProvider,
         paymentRetryPolicy,
         retryClassifier,
         Clock.systemUTC(),
-        UUID::randomUUID);
+        UUID::randomUUID,
+        paymentMetrics);
   }
 
   static boolean providerAvailabilityFailure(Object result) {

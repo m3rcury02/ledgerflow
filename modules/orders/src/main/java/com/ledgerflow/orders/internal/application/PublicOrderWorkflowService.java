@@ -20,6 +20,8 @@ import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.locks.LockSupport;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -29,6 +31,7 @@ import tools.jackson.databind.ObjectMapper;
 @Service
 public class PublicOrderWorkflowService implements OrderWorkflow {
 
+  private static final Logger LOGGER = LoggerFactory.getLogger(PublicOrderWorkflowService.class);
   private static final String CREATE_OPERATION = "CREATE_ORDER_V1";
   private static final String LEDGER_ACTOR = "orders:workflow";
   private static final int CONCURRENT_POLL_ATTEMPTS = 80;
@@ -40,6 +43,7 @@ public class PublicOrderWorkflowService implements OrderWorkflow {
   private final TransactionTemplate transactionTemplate;
   private final ObjectMapper objectMapper;
   private final ObjectProvider<OrderWorkflowCheckpoint> checkpoints;
+  private final OrderObservability observability;
 
   public PublicOrderWorkflowService(
       OrderStore orderStore,
@@ -47,30 +51,53 @@ public class PublicOrderWorkflowService implements OrderWorkflow {
       LedgerPosting ledgerPosting,
       TransactionTemplate transactionTemplate,
       ObjectMapper objectMapper,
-      ObjectProvider<OrderWorkflowCheckpoint> checkpoints) {
+      ObjectProvider<OrderWorkflowCheckpoint> checkpoints,
+      OrderObservability observability) {
     this.orderStore = orderStore;
     this.paymentWorkflow = paymentWorkflow;
     this.ledgerPosting = ledgerPosting;
     this.transactionTemplate = transactionTemplate;
     this.objectMapper = objectMapper;
     this.checkpoints = checkpoints;
+    this.observability = observability;
   }
 
   @Override
   public OrderWorkflowResult create(CreateOrderWorkflow command) {
-    Objects.requireNonNull(command, "command must not be null");
-    Money money = new Money(command.amountMinor(), command.currency());
-    IdempotencyKey idempotencyKey = new IdempotencyKey(command.idempotencyKey());
-    byte[] keyHash = idempotencyKey.sha256();
-    byte[] requestHash =
-        RequestFingerprint.createWorkflow(
-            command.clientReference(), money, command.paymentMethodReference());
-    StartedWorkflow started =
-        transactionTemplate.execute(status -> start(command, money, keyHash, requestHash));
-    if (started.completedResult() != null) {
-      return started.completedResult();
+    try (OrderObservability.WorkflowSpan span = observability.startWorkflow()) {
+      try {
+        Objects.requireNonNull(command, "command must not be null");
+        Money money = new Money(command.amountMinor(), command.currency());
+        IdempotencyKey idempotencyKey = new IdempotencyKey(command.idempotencyKey());
+        byte[] keyHash = idempotencyKey.sha256();
+        byte[] requestHash =
+            RequestFingerprint.createWorkflow(
+                command.clientReference(), money, command.paymentMethodReference());
+        StartedWorkflow started =
+            observability.inDatabaseSpan(
+                "db.order.initialize",
+                () ->
+                    transactionTemplate.execute(
+                        status -> start(command, money, keyHash, requestHash)));
+        OrderWorkflowResult result =
+            started.completedResult() != null
+                ? started.completedResult()
+                : advance(command, keyHash, requestHash, started.order(), started.payment());
+        OrderObservability.Outcome outcome = outcome(result);
+        observability.record(outcome);
+        span.outcome(outcome);
+        logResult(outcome);
+        return result;
+      } catch (IdempotencyConflictException exception) {
+        observability.record(OrderObservability.Outcome.IDEMPOTENCY_CONFLICT);
+        span.outcome(OrderObservability.Outcome.IDEMPOTENCY_CONFLICT);
+        throw exception;
+      } catch (RuntimeException exception) {
+        observability.record(OrderObservability.Outcome.SYSTEM_FAILURE);
+        span.outcome(OrderObservability.Outcome.SYSTEM_FAILURE);
+        throw exception;
+      }
     }
-    return advance(command, keyHash, requestHash, started.order(), started.payment());
   }
 
   @Override
@@ -115,6 +142,7 @@ public class PublicOrderWorkflowService implements OrderWorkflow {
                 UUID.randomUUID()));
     orderStore.attachIdempotencyResource(
         command.ownerSubject(), CREATE_OPERATION, keyHash, order.orderId());
+    observability.recordAfterCommit(OrderObservability.Outcome.CREATED);
     return StartedWorkflow.active(order, payment);
   }
 
@@ -197,32 +225,59 @@ public class PublicOrderWorkflowService implements OrderWorkflow {
       UUID paymentId,
       OrderStatus targetStatus,
       int responseStatus) {
-    return transactionTemplate.execute(
-        status -> {
-          IdempotencyRecord record =
-              orderStore.lockIdempotencyKey(command.ownerSubject(), CREATE_OPERATION, keyHash);
-          requireSameRequest(record, requestHash);
-          if ("COMPLETED".equals(record.state())) {
-            return replay(record);
-          }
-          PaymentView payment =
-              targetStatus == OrderStatus.COMPLETED
-                  ? paymentWorkflow.finalizeCapture(paymentId, Instant.now())
-                  : paymentWorkflow.findByOrderId(orderId).orElseThrow();
-          Order updated =
-              orderStore.transitionOrder(orderId, OrderStatus.PAYMENT_PROCESSING, targetStatus);
-          PublicOrder response = view(updated, payment);
-          String location = location(orderId);
-          orderStore.completeIdempotencyKey(
-              command.ownerSubject(),
-              CREATE_OPERATION,
-              keyHash,
-              orderId,
-              responseStatus,
-              location,
-              serialize(response));
-          return new OrderWorkflowResult(response, responseStatus, location, false);
-        });
+    return observability.inDatabaseSpan(
+        "db.order.finalize",
+        () ->
+            transactionTemplate.execute(
+                status -> {
+                  IdempotencyRecord record =
+                      orderStore.lockIdempotencyKey(
+                          command.ownerSubject(), CREATE_OPERATION, keyHash);
+                  requireSameRequest(record, requestHash);
+                  if ("COMPLETED".equals(record.state())) {
+                    return replay(record);
+                  }
+                  PaymentView payment =
+                      targetStatus == OrderStatus.COMPLETED
+                          ? paymentWorkflow.finalizeCapture(paymentId, Instant.now())
+                          : paymentWorkflow.findByOrderId(orderId).orElseThrow();
+                  Order updated =
+                      orderStore.transitionOrder(
+                          orderId, OrderStatus.PAYMENT_PROCESSING, targetStatus);
+                  PublicOrder response = view(updated, payment);
+                  String location = location(orderId);
+                  orderStore.completeIdempotencyKey(
+                      command.ownerSubject(),
+                      CREATE_OPERATION,
+                      keyHash,
+                      orderId,
+                      responseStatus,
+                      location,
+                      serialize(response));
+                  return new OrderWorkflowResult(response, responseStatus, location, false);
+                }));
+  }
+
+  private OrderObservability.Outcome outcome(OrderWorkflowResult result) {
+    if (result.replayed()) {
+      return OrderObservability.Outcome.REPLAYED;
+    }
+    return switch (result.order().status()) {
+      case "COMPLETED" -> OrderObservability.Outcome.COMPLETED;
+      case "PAYMENT_DECLINED" -> OrderObservability.Outcome.DECLINED;
+      case "PAYMENT_RETRY_PENDING" -> OrderObservability.Outcome.RETRY_PENDING;
+      case "FAILED" -> OrderObservability.Outcome.FAILED;
+      default -> OrderObservability.Outcome.SYSTEM_FAILURE;
+    };
+  }
+
+  private void logResult(OrderObservability.Outcome outcome) {
+    LOGGER
+        .atInfo()
+        .addKeyValue("event_code", "ORDER_WORKFLOW_RESULT")
+        .addKeyValue("action", "order.workflow")
+        .addKeyValue("outcome", outcome.name().toLowerCase(java.util.Locale.ROOT))
+        .log("Order workflow reached a durable result");
   }
 
   private OrderWorkflowResult replay(IdempotencyRecord record) {

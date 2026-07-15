@@ -1,0 +1,64 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "bytes"}},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "id": 1,
+      "targets": [{"expr": "sum by (area) (jvm_memory_used_bytes)", "legendFormat": "{{area}}"}],
+      "title": "JVM memory",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0},
+      "id": 2,
+      "targets": [{"expr": "jvm_threads_live_threads", "legendFormat": "live"}, {"expr": "jvm_threads_peak_threads", "legendFormat": "peak"}],
+      "title": "JVM threads",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
+      "id": 3,
+      "targets": [{"expr": "hikaricp_connections_active", "legendFormat": "active"}, {"expr": "hikaricp_connections_max", "legendFormat": "maximum"}, {"expr": "hikaricp_connections_pending", "legendFormat": "pending"}],
+      "title": "Database pool",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
+      "id": 4,
+      "targets": [{"expr": "ledgerflow_executor_active", "legendFormat": "{{executor}} active"}, {"expr": "ledgerflow_executor_pool_size", "legendFormat": "{{executor}} pool"}],
+      "title": "Application executors",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},
+      "id": 5,
+      "targets": [{"expr": "ledgerflow_readiness_status", "legendFormat": "ready"}],
+      "title": "Readiness",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+      "id": 6,
+      "targets": [{"expr": "ledgerflow_graceful_drain_active", "legendFormat": "active work"}, {"expr": "ledgerflow_graceful_drain_accepting", "legendFormat": "accepting"}],
+      "title": "Graceful drain",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 41,
+  "tags": ["ledgerflow", "jvm", "dependencies"],
+  "time": {"from": "now-1h", "to": "now"},
+  "timezone": "utc",
+  "title": "LedgerFlow — JVM and Dependencies",
+  "uid": "ledgerflow-runtime",
+  "version": 1
+}

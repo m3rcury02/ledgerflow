@@ -4,6 +4,7 @@ import com.ledgerflow.messaging.internal.persistence.OutboxRecord;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.StatusCode;
 import io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
@@ -56,9 +57,11 @@ public final class KafkaTracePropagation {
     Span span =
         openTelemetry
             .getTracer("com.ledgerflow.messaging")
-            .spanBuilder("outbox publish " + record.eventType())
+            .spanBuilder("outbox.publish")
             .setSpanKind(SpanKind.PRODUCER)
             .setParent(parent)
+            .setAttribute("messaging.system", "kafka")
+            .setAttribute("ledgerflow.event.type", record.eventType())
             .startSpan();
     Context context = parent.with(span);
     W3CTraceContextPropagator.getInstance().inject(context, headers, KAFKA_SETTER);
@@ -75,8 +78,8 @@ public final class KafkaTracePropagation {
       this.scope = scope;
     }
 
-    public void failed(Throwable failure) {
-      span.recordException(failure);
+    public void failed(String errorCode) {
+      span.setStatus(StatusCode.ERROR, errorCode);
     }
 
     @Override

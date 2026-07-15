@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help run dev-up dev-down dev-reset dev-status replay-dead-letter security-scan format check-format static-analysis test integration-test architecture-test openapi-check compose-check docs-check verify clean
+.PHONY: help run dev-up dev-down dev-reset dev-status replay-dead-letter security-scan observability-check demo-observability format check-format static-analysis test integration-test architecture-test openapi-check compose-check docs-check verify clean
 
 help:
 	@echo "LedgerFlow developer commands"
@@ -11,6 +11,8 @@ help:
 	@echo "  make dev-status         Show local dependency health"
 	@echo "  make replay-dead-letter Replay one validated DLT record with audit evidence"
 	@echo "  make security-scan      Scan secrets, dependencies, and Compose images"
+	@echo "  make observability-check Validate metrics, traces, logs, rules, and dashboards"
+	@echo "  make demo-observability Create one order and verify its Tempo/Loki trace"
 	@echo "  make format             Apply formatting"
 	@echo "  make check-format       Check formatting"
 	@echo "  make static-analysis    Run compiler lint and Checkstyle"
@@ -42,6 +44,12 @@ replay-dead-letter:
 
 security-scan:
 	./scripts/security-scan
+
+observability-check:
+	./scripts/validate-observability
+
+demo-observability:
+	./scripts/demo-observability
 
 format:
 	./gradlew spotlessApply

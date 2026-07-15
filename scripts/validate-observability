@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${ROOT_DIR}"
+
+command -v docker >/dev/null 2>&1 || {
+  echo "docker is required" >&2
+  exit 1
+}
+command -v jq >/dev/null 2>&1 || {
+  echo "jq is required" >&2
+  exit 1
+}
+
+docker compose --env-file .env.example --file compose.yaml config --quiet
+
+mapfile -t compose_images < <(
+  docker compose --env-file .env.example --file compose.yaml config --images
+)
+prometheus_image="$(printf '%s\n' "${compose_images[@]}" | grep '^prom/prometheus:' | head -n 1)"
+collector_image="$(printf '%s\n' "${compose_images[@]}" | grep '^otel/opentelemetry-collector-contrib:' | head -n 1)"
+grafana_image="$(printf '%s\n' "${compose_images[@]}" | grep '^grafana/grafana:' | head -n 1)"
+test -n "${prometheus_image}" && test -n "${collector_image}" && test -n "${grafana_image}"
+
+docker run --rm \
+  --entrypoint /bin/promtool \
+  --volume "${ROOT_DIR}/infra/prometheus:/etc/prometheus:ro" \
+  "${prometheus_image}" check config /etc/prometheus/prometheus.yaml
+
+for rules in infra/prometheus/rules/*.yaml; do
+  docker run --rm \
+    --entrypoint /bin/promtool \
+    --volume "${ROOT_DIR}/${rules}:/rules.yaml:ro" \
+    "${prometheus_image}" check rules /rules.yaml
+done
+
+mapfile -t alert_names < <(
+  awk '$1 == "-" && $2 == "alert:" {print $3}' infra/prometheus/rules/*.yaml
+)
+test "${#alert_names[@]}" -eq 14
+test "$(grep -h -c '^[[:space:]]*severity:' infra/prometheus/rules/*.yaml | awk '{sum += $1} END {print sum}')" -eq 14
+test "$(grep -h -c '^[[:space:]]*service:' infra/prometheus/rules/*.yaml | awk '{sum += $1} END {print sum}')" -eq 14
+test "$(grep -h -c '^[[:space:]]*runbook_url:' infra/prometheus/rules/*.yaml | awk '{sum += $1} END {print sum}')" -eq 14
+for alert in "${alert_names[@]}"; do
+  grep -Fq "## ${alert}" docs/observability-runbook.md
+  anchor="$(printf '%s' "${alert}" | tr '[:upper:]' '[:lower:]')"
+  grep -Fq "docs/observability-runbook.md#${anchor}" infra/prometheus/rules/*.yaml
+done
+
+docker run --rm \
+  --volume "${ROOT_DIR}/infra/otel/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro" \
+  "${collector_image}" validate --config=/etc/otelcol-contrib/config.yaml
+
+dashboard_count=0
+for dashboard in infra/grafana/dashboards/*.json; do
+  jq --exit-status \
+    '.uid | type == "string" and length > 0' \
+    "${dashboard}" >/dev/null
+  jq --exit-status \
+    '.panels | type == "array" and length > 0 and all(.[]; .datasource.uid == "prometheus")' \
+    "${dashboard}" >/dev/null
+  dashboard_count=$((dashboard_count + 1))
+done
+test "${dashboard_count}" -eq 5
+
+jq --exit-status 'true' infra/grafana/dashboards/*.json >/dev/null
+grep -q 'datasourceUid: tempo' infra/grafana/provisioning/datasources/datasources.yaml
+grep -q 'datasourceUid: loki' infra/grafana/provisioning/datasources/datasources.yaml
+grep -q '/var/lib/grafana/dashboards' infra/grafana/provisioning/dashboards/dashboards.yaml
+
+validator="ledgerflow-grafana-validator-$$"
+validator_password="validator-${RANDOM}-${RANDOM}"
+cleanup() {
+  docker rm --force "${validator}" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+docker run --detach --rm \
+  --name "${validator}" \
+  --env GF_SECURITY_ADMIN_USER=validator \
+  --env GF_SECURITY_ADMIN_PASSWORD="${validator_password}" \
+  --env GF_USERS_ALLOW_SIGN_UP=false \
+  --volume "${ROOT_DIR}/infra/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro" \
+  --volume "${ROOT_DIR}/infra/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro" \
+  --volume "${ROOT_DIR}/infra/grafana/dashboards:/var/lib/grafana/dashboards:ro" \
+  "${grafana_image}" >/dev/null
+
+for _ in $(seq 1 30); do
+  if docker exec "${validator}" \
+    curl --fail --silent http://127.0.0.1:3000/api/health >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+docker exec "${validator}" \
+  curl --fail --silent http://127.0.0.1:3000/api/health >/dev/null
+provisioned="$({
+  docker exec "${validator}" \
+    curl --fail --silent \
+    --user "validator:${validator_password}" \
+    'http://127.0.0.1:3000/api/search?tag=ledgerflow'
+} | jq 'length')"
+test "${provisioned}" -eq 5
+
+docker exec "${validator}" \
+  curl --fail --silent \
+  --user "validator:${validator_password}" \
+  'http://127.0.0.1:3000/api/datasources/uid/loki' \
+  | jq --exit-status \
+    '.jsonData.derivedFields == [{
+      "datasourceUid": "tempo",
+      "matcherRegex": "trace_id",
+      "matcherType": "label",
+      "name": "TraceID",
+      "url": "${__value.raw}",
+      "urlDisplayLabel": "View trace"
+    }]' >/dev/null
+
+docker exec "${validator}" \
+  curl --fail --silent \
+  --user "validator:${validator_password}" \
+  'http://127.0.0.1:3000/api/datasources/uid/tempo' \
+  | jq --exit-status \
+    '.jsonData.tracesToLogsV2.customQuery == true
+      and .jsonData.tracesToLogsV2.filterByTraceID == false
+      and .jsonData.tracesToLogsV2.query
+        == "{service_name=\"ledgerflow\"} | trace_id = \"${__trace.traceId}\""' >/dev/null
+
+echo "Observability configuration is valid: ${dashboard_count} dashboards and ${#alert_names[@]} alerts loaded."

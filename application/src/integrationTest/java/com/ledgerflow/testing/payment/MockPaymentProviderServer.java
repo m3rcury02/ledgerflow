@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -26,6 +27,7 @@ public final class MockPaymentProviderServer {
   private final Map<OperationKey, Operation> operations = new ConcurrentHashMap<>();
   private final Map<OperationKey, Integer> calls = new ConcurrentHashMap<>();
   private final Map<String, String> authorizationScenarios = new ConcurrentHashMap<>();
+  private final ConcurrentLinkedQueue<String> traceparents = new ConcurrentLinkedQueue<>();
   private final AtomicReference<CountDownLatch> slowCallStarted =
       new AtomicReference<>(new CountDownLatch(1));
   private final HttpServer server;
@@ -53,6 +55,7 @@ public final class MockPaymentProviderServer {
     operations.clear();
     calls.clear();
     authorizationScenarios.clear();
+    traceparents.clear();
     slowCallStarted.set(new CountDownLatch(1));
   }
 
@@ -62,6 +65,10 @@ public final class MockPaymentProviderServer {
 
   public int callCount(String stage, UUID requestId) {
     return calls.getOrDefault(new OperationKey(stage, requestId), 0);
+  }
+
+  public java.util.List<String> traceparents() {
+    return java.util.List.copyOf(traceparents);
   }
 
   public boolean awaitSlowCall(Duration timeout) {
@@ -106,6 +113,7 @@ public final class MockPaymentProviderServer {
             return new Response(405, "", null);
           }
           requireCorrelationId(exchange);
+          captureTraceparent(exchange);
           String[] path = exchange.getRequestURI().getPath().split("/");
           if (path.length != 6) {
             return new Response(404, "", null);
@@ -192,9 +200,20 @@ public final class MockPaymentProviderServer {
     }
     UUID requestId = UUID.fromString(requestIdHeader);
     requireCorrelationId(exchange);
+    captureTraceparent(exchange);
     String rawBody = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
     JsonNode body = objectMapper.readTree(rawBody);
     return new Request(stage, requestId, rawBody, body);
+  }
+
+  private void captureTraceparent(HttpExchange exchange) {
+    String traceparent = exchange.getRequestHeaders().getFirst("traceparent");
+    if (traceparent != null) {
+      if (!traceparent.matches("00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}")) {
+        throw new BadRequestException(400);
+      }
+      traceparents.add(traceparent);
+    }
   }
 
   private void requireCorrelationId(HttpExchange exchange) {

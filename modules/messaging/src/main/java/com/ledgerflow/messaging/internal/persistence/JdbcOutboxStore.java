@@ -222,6 +222,38 @@ public class JdbcOutboxStore {
         .optional();
   }
 
+  public BacklogSnapshot backlog(Instant now) {
+    return jdbcClient
+        .sql(
+            """
+            SELECT
+                count(*) FILTER (
+                    WHERE (status = 'PENDING' AND available_at <= :now)
+                       OR (status = 'IN_FLIGHT' AND lease_until <= :now)
+                ) AS due,
+                count(*) FILTER (
+                    WHERE status = 'IN_FLIGHT' AND lease_until > :now
+                ) AS leased,
+                count(*) FILTER (WHERE status = 'FAILED') AS failed,
+                COALESCE(
+                    EXTRACT(EPOCH FROM (
+                        :now - min(created_at) FILTER (WHERE status <> 'PUBLISHED')
+                    )),
+                    0
+                )::bigint AS oldest_age_seconds
+            FROM outbox_events
+            """)
+        .param("now", databaseTimestamp(now))
+        .query(
+            (resultSet, rowNumber) ->
+                new BacklogSnapshot(
+                    resultSet.getLong("due"),
+                    resultSet.getLong("leased"),
+                    resultSet.getLong("failed"),
+                    Math.max(0L, resultSet.getLong("oldest_age_seconds"))))
+        .single();
+  }
+
   private ExistingEvent mapExisting(ResultSet resultSet, int rowNumber) throws SQLException {
     return new ExistingEvent(
         resultSet.getObject("event_id", UUID.class),
@@ -288,4 +320,6 @@ public class JdbcOutboxStore {
           && Arrays.equals(payloadHash, expectedHash);
     }
   }
+
+  public record BacklogSnapshot(long due, long leased, long failed, long oldestAgeSeconds) {}
 }

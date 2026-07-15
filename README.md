@@ -94,6 +94,10 @@ export LEDGERFLOW_OAUTH2_JWK_SET_URI=http://localhost:8081/realms/ledgerflow/pro
 export LEDGERFLOW_PAYMENT_PROVIDER_BASE_URL=http://127.0.0.1:8090
 export LEDGERFLOW_MANAGEMENT_PORT=8082
 export LEDGERFLOW_HEALTH_PROBE_CACHE_TTL=2s
+export LEDGERFLOW_DEPLOYMENT_ENVIRONMENT=local
+export LEDGERFLOW_TRACE_SAMPLING_PROBABILITY=1.0
+export LEDGERFLOW_OTLP_TRACES_ENDPOINT=http://localhost:4318/v1/traces
+export LEDGERFLOW_OTLP_LOGS_ENDPOINT=http://localhost:4318/v1/logs
 ./gradlew :application:bootRun
 ```
 
@@ -154,6 +158,28 @@ scripts/replay-dead-letter '<dead-letter-uuid>' '<actor>' '<specific reason of a
 ```
 
 The narrow command runs the application in non-web mode with listeners and the outbox publisher disabled. It preserves the original envelope and Kafka key while creating new transport correlation and trace context; see [the runbook](docs/runbook.md). It remains development-only pending replay hardening and adds no operator HTTP API. Use [the read-only ledger SQL](docs/sql/ledger-queries.sql) for balances and payment history.
+
+## Observability demonstration
+
+Prometheus scrapes only `http://host.docker.internal:8082/actuator/prometheus`; port 8080 is never a metrics target. The Collector exports bounded traces to Tempo and structured logs to Loki. Grafana provisions five version-controlled dashboards plus Prometheus-to-Tempo exemplars, Tempo-to-Loki trace links, and Loki-to-Tempo trace-ID links without UI edits.
+
+Validate the complete observability configuration with the exact pinned service images:
+
+```bash
+make observability-check
+```
+
+For a complete asynchronous trace, enable the publisher and both consumers before starting the application, run a local implementation of the test provider contract, and supply a valid customer token without writing it to disk:
+
+```bash
+export LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED=true
+export LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED=true
+export LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED=true
+export LEDGERFLOW_ACCESS_TOKEN='<customer-token-from-local-keycloak>'
+make demo-observability
+```
+
+The demonstration reports the durable business result first, prints its trace and correlation IDs, then verifies the same trace in Tempo and correlated logs in Loki. It returns a distinct failure if telemetry is unavailable; telemetry failure never changes or rolls back the order. See [observability design and SLOs](docs/observability.md) and the [alert runbook](docs/observability-runbook.md).
 
 ## Project structure
 

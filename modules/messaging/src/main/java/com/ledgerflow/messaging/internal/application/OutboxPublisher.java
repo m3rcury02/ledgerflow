@@ -39,6 +39,7 @@ public class OutboxPublisher {
   private final String workerId;
   private final WorkTracker workTracker;
   private final FaultInjection faultInjection;
+  private final OutboxMetrics metrics;
 
   public OutboxPublisher(
       JdbcOutboxStore outboxStore,
@@ -49,7 +50,8 @@ public class OutboxPublisher {
       OutboxAcknowledgementHook acknowledgementHook,
       Clock clock,
       WorkTracker workTracker,
-      FaultInjection faultInjection) {
+      FaultInjection faultInjection,
+      OutboxMetrics metrics) {
     this.outboxStore = outboxStore;
     this.kafkaTemplate = kafkaTemplate;
     this.properties = properties;
@@ -61,6 +63,7 @@ public class OutboxPublisher {
     this.workerId = UUID.randomUUID().toString();
     this.workTracker = workTracker;
     this.faultInjection = faultInjection;
+    this.metrics = metrics;
   }
 
   @Scheduled(
@@ -78,6 +81,7 @@ public class OutboxPublisher {
         publish(record);
       }
     } finally {
+      metrics.refresh();
       work.close();
     }
   }
@@ -106,15 +110,15 @@ public class OutboxPublisher {
             .get(properties.acknowledgementTimeout().toMillis(), TimeUnit.MILLISECONDS);
       } catch (InterruptedException exception) {
         Thread.currentThread().interrupt();
-        span.failed(exception);
+        span.failed("kafka_send_interrupted");
         recordPublishFailure(record, "KAFKA_SEND_INTERRUPTED");
         return;
       } catch (ExecutionException | TimeoutException exception) {
-        span.failed(exception);
+        span.failed("kafka_send_failed");
         recordPublishFailure(record, "KAFKA_SEND_FAILED");
         return;
       } catch (InjectedFaultException exception) {
-        span.failed(exception);
+        span.failed("fault_injected");
         recordPublishFailure(record, "OUTBOX_FAULT_INJECTED");
         return;
       }
@@ -123,10 +127,17 @@ public class OutboxPublisher {
       boolean marked =
           outboxStore.markPublished(record.eventId(), record.leaseOwner(), clock.instant());
       if (!marked) {
-        LOGGER.warn(
-            "Outbox acknowledgement was not marked by stale owner: eventId={}, correlationId={}",
-            record.eventId(),
-            record.correlationId());
+        metrics.publish(OutboxMetrics.PublishOutcome.STALE_OWNER);
+        LOGGER
+            .atWarn()
+            .addKeyValue("event_code", "OUTBOX_ACKNOWLEDGEMENT_STALE_OWNER")
+            .addKeyValue("action", "outbox.publish")
+            .addKeyValue("error_code", "STALE_OWNER")
+            .addKeyValue("correlation_id", record.correlationId())
+            .log("Outbox acknowledgement was not marked by its lease owner");
+      } else {
+        metrics.publish(OutboxMetrics.PublishOutcome.PUBLISHED);
+        metrics.publishedAfter(Duration.between(record.occurredAt(), clock.instant()));
       }
     }
   }
@@ -138,16 +149,26 @@ public class OutboxPublisher {
         outboxStore.markFailed(
             record.eventId(), record.leaseOwner(), clock.instant(), exhausted, delay, code);
     if (!recorded) {
-      LOGGER.warn(
-          "Outbox failure was not recorded by stale owner: eventId={}, correlationId={}",
-          record.eventId(),
-          record.correlationId());
+      metrics.publish(OutboxMetrics.PublishOutcome.STALE_OWNER);
+      LOGGER
+          .atWarn()
+          .addKeyValue("event_code", "OUTBOX_FAILURE_STALE_OWNER")
+          .addKeyValue("action", "outbox.publish")
+          .addKeyValue("error_code", "STALE_OWNER")
+          .addKeyValue("correlation_id", record.correlationId())
+          .log("Outbox failure was not recorded by its lease owner");
+    } else {
+      metrics.publish(
+          exhausted ? OutboxMetrics.PublishOutcome.FAILED : OutboxMetrics.PublishOutcome.RETRY);
     }
   }
 
   private void recordPermanentFailure(OutboxRecord record, String code) {
-    outboxStore.markFailed(
-        record.eventId(), record.leaseOwner(), clock.instant(), true, Duration.ZERO, code);
+    boolean recorded =
+        outboxStore.markFailed(
+            record.eventId(), record.leaseOwner(), clock.instant(), true, Duration.ZERO, code);
+    metrics.publish(
+        recorded ? OutboxMetrics.PublishOutcome.INVALID : OutboxMetrics.PublishOutcome.STALE_OWNER);
   }
 
   private void addIdentityHeaders(

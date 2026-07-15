@@ -6,6 +6,8 @@ dependencies {
     implementation(project(":modules:messaging"))
     implementation(project(":modules:payments"))
     implementation("org.springframework.boot:spring-boot-starter-data-jdbc")
+    implementation("io.micrometer:micrometer-core")
+    implementation("io.opentelemetry:opentelemetry-api")
     compileOnly(platform("org.springframework.modulith:spring-modulith-bom:$springModulithVersion"))
     compileOnly("org.springframework.modulith:spring-modulith-api")
 

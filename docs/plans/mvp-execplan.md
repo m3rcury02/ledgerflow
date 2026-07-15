@@ -8,11 +8,13 @@
 - Last updated: 2026-07-15
 - Approved by: LedgerFlow maintainer
 - Approval date: 2026-07-13
-- Current milestone: Milestone 6 (`Complete`)
+- Current milestone: None; Milestone 7A is `Complete` and Milestone 7B remains `Proposed`
 - Milestone 5D approved by: LedgerFlow maintainer
 - Milestone 5D approval date: 2026-07-15
 - Milestone 6 approved by: LedgerFlow maintainer
 - Milestone 6 approval date: 2026-07-15
+- Milestone 7A approved by: LedgerFlow maintainer
+- Milestone 7A approval date: 2026-07-15
 - Canonical plan path: `docs/plans/mvp-execplan.md` by explicit maintainer request
 
 ## Purpose and outcome
@@ -42,7 +44,7 @@ The normative requirements and designs are:
 
 ## Current state
 
-The repository contains the verified foundation and completed Create Order, payment/provider, ledger, outbox/Kafka, notification, resilience, security, and abuse-remediation slices from Milestones 1 through 5D, plus the in-progress Milestone 6 public workflow:
+The repository contains the verified foundation and completed Create Order, payment/provider, ledger, outbox/Kafka, notification, resilience, security, abuse-remediation, public-workflow, and end-to-end observability slices from Milestones 1 through 7A:
 
 - `AGENTS.md` establishes Java 25, Spring Boot 4.1, Gradle Kotlin DSL, modular-monolith, PostgreSQL, Flyway, OpenAPI, money/time, idempotency, observability, scope, and quality rules.
 - `.agent/PLANS.md` defines ExecPlan structure and one-approved-milestone discipline.
@@ -176,7 +178,7 @@ Secrets come only from environment/secret injection. Local/test defaults contain
 
 Only the current milestone is approved or in progress. Later milestones remain `Proposed`; completing a milestone does not approve the next.
 
-The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, and 6 (`Complete`); Milestone 7A (`Proposed`); Milestone 7B (`Proposed`); and Milestone 8 (`Proposed`). R3 and R4 are separately proposed follow-ups, not inserted or implied as approved milestones in that sequence.
+The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, and 7A (`Complete`); Milestone 7B (`Proposed`); and Milestone 8 (`Proposed`). R3 and R4 are separately proposed follow-ups, not inserted or implied as approved milestones in that sequence.
 
 ### Milestone 1 — Scaffold the verified repository and application
 
@@ -465,31 +467,37 @@ The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, and 6 (`Complete`)
 
 ### Milestone 7A — Add end-to-end observability
 
-- Status: Proposed
-- Approval gate: Prerequisites satisfied because Milestones 5D and 6 are Complete. Milestone 7A remains Proposed until the maintainer explicitly approves it.
+- Status: Complete
+- Approval gate: Satisfied. Milestones 5D and 6 are Complete, and the maintainer explicitly approved Milestone 7A on 2026-07-15. Milestone 7B remains Proposed.
 - Intended outcome: Operators can follow one complete order journey from inbound HTTP through the provider, PostgreSQL business transaction, ledger, outbox, Kafka, and notification worker using correlated traces, metrics, and structured logs without exposing tokens or personal data.
 - Implementation work:
-  - Configure OpenTelemetry instrumentation and Micrometer metrics with OTLP export, W3C `traceparent`/`tracestate` propagation, HTTP server/client and Kafka producer/consumer instrumentation, PostgreSQL spans, and response `X-Correlation-Id` continuity.
-  - Retain structured JSON production logs. Correlate logs with trace and correlation IDs while redacting bearer/security tokens, idempotency keys, payment references, personal data, request/response bodies, Kafka payloads, and SQL parameters.
-  - Expose Prometheus only on Milestone 5D's protected management interface. Add bounded-cardinality business metrics for orders, payments, ledger posting, outbox backlog, dead-letter intake, and consumer lag; identifiers, subjects, coordinates, hashes, and error text must not be labels.
-  - Provision Grafana dashboards and data-source links as code so metrics link to Tempo traces and trace context links to Loki logs. Do not rely on manual dashboard edits.
-  - Define measurable SLIs and provisional SLOs. Add version-controlled alert rules for sustained failure rate, latency, outbox backlog, dead-letter growth, and consumer lag, with one actionable runbook entry per alert.
-  - Add deterministic tests and a documented local demonstration that produce one distributed trace spanning inbound order HTTP, mock-provider HTTP, PostgreSQL/order/payment work, capture accounting and ledger, outbox append/publish, Kafka consume, and notification persistence.
+  - Configure bounded OpenTelemetry trace/log export and W3C-only `traceparent`/`tracestate` propagation. Instrument HTTP server, provider HTTP client, appropriately scoped PostgreSQL work, outbox append/publish, Kafka producer/consumer, and notification persistence. Persist only valid outbox context; use trustworthy causal parentage and reserve span links for independent work that cannot claim direct continuity.
+  - Validate or replace malformed correlation/trace headers. Return `X-Correlation-Id` on every response and put only its safe value plus trace/span context and stable event/action/outcome/error codes in ECS JSON logs. Exclude tokens, authorization/cookie headers, idempotency keys, payment references, provider credentials, bodies, poison data, SQL parameters, exception text, and unnecessary personal data.
+  - Expose Prometheus only on Milestone 5D's isolated management listener. Export bounded HTTP rate/error/latency, provider attempt/outcome/timeout/circuit/bulkhead, order result/replay, committed payment state/outcome, ledger result, outbox due/leased/failed/published/oldest-age, Kafka processing/retry/DLT/lag, notification effect/integrity/delay, readiness/drain, JVM/thread/executor, and HikariCP metrics.
+  - Enforce a closed label-key/value allowlist for every `ledgerflow.*` metric. IDs, subjects, idempotency keys, Kafka coordinates, hashes, raw or identifier-bearing URLs, exception text, and any client/personal/security value are prohibited dimensions.
+  - Provision five Grafana dashboards as code for API, provider/payment, ledger, outbox/Kafka/notification, and JVM/dependencies. Provision Prometheus, Tempo, and Loki data sources with exemplar/trace/log links and validate that all dashboards load without UI changes.
+  - Define API availability, order latency, successful workflow, provider reconciliation, outbox delay, notification delay, ledger uniqueness, and semantic-notification uniqueness SLIs with provisional objectives. Separate confirmed business declines from system failures and state that local evidence is not a production guarantee.
+  - Add bounded version-controlled alerts for sustained API failure/latency, provider circuit/unknown outcomes, outbox count/age, Kafka lag, DLT growth, semantic conflicts, terminal malformed-DLT intake/evidence failure, database-pool exhaustion, failed drain, and sustained telemetry-export failure. Every alert must use a real exported metric, carry severity/service annotations, and link to a runbook containing diagnosis, impact, dashboards, safe actions, escalation, and recovery verification.
+  - Add in-memory tracing, HTTP/Kafka propagation, malformed-header, seeded-secret, cardinality, exporter-failure, management-scrape, and configuration tests. Add a local script that creates a completed order, prints trace/correlation IDs, and independently verifies the notification span in Tempo and matching logs in Loki.
   - Keep operator inspection/retry APIs and manual-retry span links out of 7A; those belong to 7B.
 - Validation commands:
-  - `./gradlew :application:integrationTest --tests '*TracePropagationIntegrationTest'`
-  - `./gradlew :application:integrationTest --tests '*SensitiveTelemetryIntegrationTest'`
-  - `./gradlew :application:integrationTest --tests '*ObservabilityIntegrationTest'`
-  - `./gradlew composeValidate documentationCheck`
-  - `./gradlew clean verify`
+  - `./gradlew --no-daemon :modules:operations:test --tests '*LedgerFlowMeterFilterTest' --console=plain`
+  - `./gradlew --no-daemon :application:integrationTest --tests 'com.ledgerflow.observability.*' --tests '*ManagementPortIntegrationTest' --console=plain`
+  - `scripts/validate-observability`
+  - `docker compose --env-file .env.example --file compose.yaml config --quiet`
+  - `scripts/security-scan`
+  - `git diff --check`
+  - `./gradlew --no-daemon clean verify --console=plain`
+  - Against a running local application and stack: `scripts/demo-observability`
 - Observable acceptance:
-  - One demonstrated successful order has a connected or correctly parented trace across HTTP server/client, provider, PostgreSQL, ledger, outbox publisher, Kafka producer/consumer, and notification worker; asynchronous boundaries use W3C context and accurate span relationships.
-  - Every HTTP response returns a valid correlation ID, and the same safe value is available in relevant structured logs and trace context without becoming a metric label.
-  - Prometheus scrapes only the protected management interface. Provisioned Grafana dashboards query Prometheus and link the demonstrated trace and logs through Tempo and Loki.
-  - Business metrics and alert expressions have bounded label sets; tests reject identifiers or personal/security data as dimensions.
-  - Published SLI/SLO definitions state measurement windows and provisional targets. Each required alert has a runbook with impact, confirmation, mitigation, recovery, and escalation steps.
-  - Seeded token and personal-data markers never appear in logs, traces, metrics, event headers, DLT metadata, or error responses.
-  - Telemetry backend unavailability is bounded and does not change the business outcome.
+  - One demonstrated successful order uses a connected, correctly parented W3C trace across HTTP server, provider client, PostgreSQL order/payment work, ledger, outbox append/publish, Kafka producer/consumer, and notification worker. Stored asynchronous context is validated; false parentage is not introduced.
+  - Every HTTP response returns a valid correlation ID. Relevant ECS JSON logs contain the same safe correlation and trace IDs plus stable codes without raw identifiers or sensitive values.
+  - Prometheus scrapes only the protected management interface. Five provisioned dashboards query real exported series and link exemplars/traces/logs through Tempo and Loki without manual edits.
+  - All required business, dependency, readiness, and graceful-drain signals exist. Custom metric label keys/values are code-allowlisted, and tests reject identifiers, uncontrolled values, and personal/security data.
+  - Published SLI/SLO definitions state windows, targets, decline exclusions, and their provisional nature. All required bounded alerts validate with Promtool and have complete matching runbooks.
+  - Seeded token, cookie, key, personal, and payload markers never appear in responses, structured logs, spans, meter IDs, or event headers.
+  - Collector/Tempo/Loki failure is bounded, is alerted only when sustained, may lose telemetry, and cannot change the completed business transaction, balanced journal, or durable outbox.
+  - Focused tests, configuration/Promtool/Grafana validation, Compose validation, security scan, diff check, and full clean verification all pass. The local demonstration records the trace ID and verifies it independently in Tempo and Loki before completion is claimed.
 
 ### Milestone 7B — Add secured operator recovery
 
@@ -556,6 +564,7 @@ Production dependencies and necessity:
 | Authentication | Spring Security OAuth2 resource server/Jose | JWT validation, ownership identity, operator scopes |
 | Operations | Spring Boot Actuator | Health, readiness, metrics integration |
 | Tracing | Micrometer tracing OpenTelemetry bridge and OTLP exporter | Required OpenTelemetry propagation/export through Spring facilities |
+| Structured log export | OpenTelemetry Logback appender 2.28.1-alpha, versioned by its instrumentation BOM | Spring Boot provides the OpenTelemetry log SDK/exporter but no Logback-to-SDK bridge; this adapter sends existing SLF4J records to the vendor-neutral bounded OTLP pipeline |
 | Metrics export | Micrometer Prometheus registry | Expose production-standard metrics through Actuator without a custom metrics backend adapter |
 | Provider circuit and concurrency isolation | Resilience4j circuit breaker and semaphore bulkhead 2.4.0 | A mature thread-safe state machine and bounded admission control are safer than a repository-local implementation; direct core APIs avoid Spring AOP/annotation coupling |
 
@@ -566,7 +575,7 @@ The JDK does not provide Spring MVC integration, bean validation, JDBC pooling a
 - Kafka introduces background network clients and broker credentials. The scaffolding milestone added dependencies without startup behavior; Milestone 5B activates the publisher and consumers only through explicit configuration, keeps topic auto-creation disabled, and externalizes connection/security settings;
 - the resource-server starter changes the security surface and will require an explicitly approved issuer, audience, algorithms, scopes, and failure behavior before business routes exist;
 - Actuator exposes status-only liveness/readiness and Prometheus on the separate management listener selected by Milestone 5D. Aggregate health, components, details, and `info` remain unavailable, while `docs/deployment-security.md` requires network isolation; and
-- Micrometer/OpenTelemetry can create outbound traffic and high-cardinality or sensitive telemetry, so exporters are disabled in the context test and later milestones must configure bounded export, redaction, safe dimensions, and collector trust.
+- Micrometer/OpenTelemetry create outbound traffic and can expose high-cardinality or sensitive data. Milestone 7A therefore bounds export queues and timeouts, rejects uncontrolled metric dimensions, restricts the Logback bridge to INFO-and-above, captures only the validated correlation MDC entry plus code-controlled key/value fields, and requires a trusted Collector endpoint. Telemetry export failure is lossy by design and never changes business state. The Logback adapter is an alpha-versioned instrumentation artifact aligned with OpenTelemetry SDK 1.62.0 through its BOM; dependency scanning and compatible upgrades remain required.
 - Resilience4j adds in-memory per-instance state and fast rejection. It cannot coordinate breaker state between instances and must never decide financial outcome; stable provider operation IDs and lookup-first recovery remain authoritative. Version 2.4.0 is pinned through its BOM because Spring Boot does not manage this family.
 
 Test/build-only dependencies:
@@ -692,6 +701,12 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 
 ## Progress
 
+- [x] `2026-07-15 18:08Z` — Recorded explicit maintainer approval for Milestone 7A, confirmed Milestones 5D and 6 are Complete, retained the existing 7A/7B split, marked only 7A In Progress, and kept operator HTTP inspection/recovery and replay hardening outside the approved scope.
+- [x] `2026-07-15 18:08Z` — Inspected repository governance, the canonical plan, normative product/domain/API/data/threat/architecture documents, ADRs 0003 through 0013, the existing management-port and local telemetry stack, observability dependencies/configuration, module APIs, and the complete integration-test inventory before implementation.
+- [x] `2026-07-15 18:56Z` — Implemented W3C HTTP/provider/outbox/Kafka propagation, commit-aware order/payment/ledger/outbox metrics, bounded OTLP trace/log export, ECS code-based logging, correlation replacement, exact metric-label filtering, cached outbox growth signals, readiness/drain/executor metrics, and provider circuit/bulkhead instrumentation without changing business transactions or adding operator HTTP recovery.
+- [x] `2026-07-15 18:56Z` — Provisioned five Grafana dashboards, Tempo/Loki links, two validated Prometheus rule groups with fourteen complete runbooks, provisional SLIs/SLOs, and an end-to-end demonstration script. The four new in-memory/full-flow/redaction/exporter-failure integration tests passed, and the pinned Prometheus, Collector, and Grafana validators loaded all configuration successfully; final review, security scan, live demonstration, and clean verification remain pending.
+- [x] `2026-07-15 19:45Z` — Performed the separate read-only telemetry/security review. Fixed the absent Logback-to-OTLP bridge, excluded DEBUG SQL/response representations from OTLP logs, made order-created counting commit-aware, preserved the accepted six-module model by keeping the bridge in application wiring, corrected Grafana's provisioned Loki-to-Tempo and Tempo-to-Loki queries after environment interpolation removed the trace value, and bounded integration-test pools/context caching after the expanded suite exposed PostgreSQL connection saturation. No material correctness, security, cardinality, sensitive-data, false-parentage, or telemetry-coupling finding remains.
+- [x] `2026-07-15 19:45Z` — Passed the focused operations and observability tests, all 86 PostgreSQL/Kafka/Toxiproxy integration tests from task execution, `scripts/validate-observability` with five dashboards and fourteen alerts, Compose validation, `scripts/security-scan`, and `git diff --check`. Exported the fixed full-flow test trace `11111111111111111111111111111111` to the running local stack and independently found its HTTP, provider, database, ledger, outbox, Kafka, and notification spans in Tempo plus correlated structured records in Loki. The final Java 25/Gradle 9.6.1 `./gradlew --no-daemon clean verify --console=plain` passed all 67 formatting, static-analysis, unit, integration, architecture, Compose, OpenAPI, observability, and documentation actions in 1m 11s (26 executed, 38 restored from the immediately preceding verified task outputs, 3 up-to-date). Milestone 7A is Complete; no required task was skipped.
 - [x] `2026-07-11 19:46Z` — Inspected the clean documentation-only repository and all governance/architecture instructions.
 - [x] `2026-07-11 19:46Z` — Drafted product, domain, API, data, threat, proposed ADR, and ExecPlan documents; no application code or build files created.
 - [x] `2026-07-13 08:21Z` — Recorded the maintainer's explicit approval of Milestone 1 as repository and application scaffolding, requiring a multi-project Gradle build and no business behavior; ADRs 0002–0008 remain proposed.
@@ -778,6 +793,9 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - A separate Spring Boot management child context needs its own path-scoped highest-precedence security chain; otherwise the application catch-all chain also matches management requests. The integration test proves only the approved management paths remain reachable and the application listener serves none.
 - PostgreSQL `jsonb` canonicalizes object key order, so terminal-evidence redelivery compares safe headers as `jsonb` rather than raw serialized text. This preserves idempotency for semantically identical allowlisted headers with different property order.
 - A semantic-conflict exception subtype is necessary to keep the `semantic_conflict` metric exact; generic transport-coordinate or event-ID integrity conflicts use the separate bounded `transport_conflict` outcome.
+- Spring Boot's OpenTelemetry SDK/exporter does not automatically receive Logback events. The explicitly installed OpenTelemetry Logback bridge is required for Loki correlation, and its OTLP appender must retain an INFO threshold even when local console diagnostics use DEBUG.
+- Grafana expands dollar-prefixed values while provisioning data sources. Trace-ID variables in Loki derived fields and Tempo trace-to-log queries require escaped dollar signs; the validator now loads pinned Grafana and asserts the effective API representation rather than checking YAML text alone.
+- The expanded observability integration suite created enough cached Spring contexts to exhaust the singleton PostgreSQL Testcontainer's default connection ceiling. The integration profile now uses zero minimum idle and a four-connection maximum, while the test task retains no more than eight contexts; production pool sizing is unchanged.
 
 ## Decision log
 
@@ -831,15 +849,20 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - **2026-07-15 — Supersede the Milestone 3 immutable `CREATED` snapshot only for new complete-workflow requests.** The same scoped `CREATE_ORDER_V1` key remains bound to its original request hash, while the version-2 canonical fingerprint adds the opaque payment reference and new claims persist an in-progress resource before provider I/O. Historical rows/snapshots remain readable and replayable. Earlier ADR/milestone statements that exclude public orchestration describe their approved historical scope; ADR 0013 and the current normative documents govern Milestone 6 behavior, so those records are not retroactively rewritten.
 - **2026-07-15 — Persist each provider operation identity before its external call and recover by lookup.** Authorization identity commits with payment initialization; capture identity commits with the guarded `CAPTURING` transition. Recent active calls suppress competing execution until a configured deadline; stale active or explicit unknown states look up the same ID, and only `NOT_FOUND` permits an equivalent same-ID resend. This extends ADR 0004 without changing its provider port or retry classification.
 - **2026-07-15 — Keep the deterministic provider implementation outside the production artifact.** The existing validated integration fixture supplies success, decline, latency, temporary, timeout, lookup, and malformed-response behavior over real HTTP. Production code contains only the provider client/port, fails closed when no trusted base URL is configured, and adds no simulator endpoint, card field, credential, or production dependency.
+- **2026-07-15 — Reuse the existing Spring Boot OpenTelemetry and Micrometer platform.** Feature modules declare only the Boot-managed OpenTelemetry API and Micrometer core APIs they compile against; the deployable application retains the existing starter/exporter/Prometheus capabilities. Manual spans are limited to provider, durable workflow, ledger, outbox, and notification boundaries where current auto-instrumentation cannot express the persisted causal context. No agent, vendor SDK, or new telemetry backend is added; the one necessary Logback bridge and its BOM are recorded separately below.
+- **2026-07-15 — Add the OpenTelemetry Logback bridge through its instrumentation BOM.** Live validation found that Spring Boot's OpenTelemetry log SDK/exporter does not by itself receive SLF4J/Logback events. Add only `opentelemetry-logback-appender-1.0` at BOM-managed 2.28.1-alpha, install it against the Boot-managed SDK, retain ECS JSON on stdout, export INFO-and-above, capture only the validated `correlation_id` MDC field and code-controlled key/value attributes, and cap pre-install buffering at 100 records. This dependency is necessary for the required Loki/Tempo correlation; its alpha compatibility and security posture are covered by the normal application-artifact scan and upgrade review.
+- **2026-07-15 — Preserve trustworthy outbox parentage and enforce telemetry bounds in code.** The committed outbox stores the append span's valid W3C context, the asynchronous publisher restores it, and Kafka observation continues the trace; independent future operator recovery must link instead of posing as a direct child. A closed custom-metric label allowlist and fixed cached outbox aggregate prevent identifier/cardinality growth, while bounded export queues and timeouts keep telemetry failure outside business outcomes. This implements existing observability requirements and does not require a new architecture decision.
+- **2026-07-15 — Keep observability provisioning local and version controlled.** Prometheus scrapes the already isolated management port, Collector self-metrics expose sustained export failure, and five Grafana dashboards plus Prometheus/Tempo/Loki links and fourteen alerts/runbooks load from repository files. The host-gateway scrape is explicitly a local demonstration topology, not production ingress or network policy.
+- **2026-07-15 — Keep the Logback bridge in deployable application wiring.** The bridge connects the Boot-managed telemetry SDK to the application logging backend and is not a domain feature. Placing it in a new direct subpackage would make Spring Modulith treat observability as an accidental seventh business module; root application configuration preserves the accepted six feature boundaries while architecture verification remains exact.
 - **2026-07-11 — Validate OpenAPI without server code generation.** Contract tests enforce conformance without generated framework coupling.
 - **2026-07-11 — Contract the mock provider separately and exclude it from the main artifact.** Its external HTTP behavior is validated without exposing simulator controls in production.
 - **2026-07-11 — Separate Flyway owner and runtime database roles.** Migration authority does not grant the application DDL or mutation rights over immutable financial/audit data.
 
 ## Outcome and follow-up
 
-Current outcome: Milestones 1 through 6 are complete. The authenticated public create command now durably initializes one order/payment identity, authorizes and captures through stable provider operation IDs with lookup-first ambiguity recovery, atomically posts one balanced immutable journal plus one logical outbox event, and finalizes payment/order/idempotency in a separate guarded local transaction. It returns truthful completed, declined, pending, or provider-protocol outcomes without waiting for Kafka. At-least-once publication/consumption, event-ID transport idempotency, and versioned semantic-effect idempotency still create one notification effect under duplicate publication, delivery, or re-enveloping. V008 enforces terminal financial evidence while preserving historical Create Order rows and snapshots.
+Current outcome: Milestones 1 through 7A are complete. The authenticated public create command now durably initializes one order/payment identity, authorizes and captures through stable provider operation IDs with lookup-first ambiguity recovery, atomically posts one balanced immutable journal plus one logical outbox event, and finalizes payment/order/idempotency in a separate guarded local transaction. It returns truthful completed, declined, pending, or provider-protocol outcomes without waiting for Kafka. At-least-once publication/consumption, event-ID transport idempotency, and versioned semantic-effect idempotency still create one notification effect under duplicate publication, delivery, or re-enveloping. W3C context, bounded metrics, structured redacted logs, provisioned Prometheus/Tempo/Loki/Grafana configuration, provisional SLIs/SLOs, and fourteen runbook-backed alerts now make that journey observable without entering the business transaction. V008 enforces terminal financial evidence while preserving historical Create Order rows and snapshots.
 
-The repository secret scan and packaged application dependency scan remain clean with no exception mechanism; Kafka 4.3.1 and Prometheus 3.13.1 image scans remain clean. Other official local Compose findings remain visible under exact local-development-only records through 2026-08-13 or compatible fixed-image availability, whichever is earlier; this is not production acceptance. Milestone 7A's prerequisites are now satisfied, but it remains Proposed pending explicit approval; Milestones 7B and 8 also remain Proposed. Quota/retention R3 and authenticated/bounded replay R4 remain separately Proposed production gates. The mock provider is a validated integration fixture rather than a packaged local service or production provider. General payment/outbox/operator recovery is not exposed, so a durable `202`, failed outbox cycle, or replay request still follows the documented inspection/escalation limits. LedgerFlow does not claim a distributed transaction or end-to-end exactly-once delivery.
+The repository secret scan and packaged application dependency scan remain clean with no exception mechanism; Kafka 4.3.1 and Prometheus 3.13.1 image scans remain clean. Other official local Compose findings remain visible under exact local-development-only records through 2026-08-13 or compatible fixed-image availability, whichever is earlier; this is not production acceptance. Milestone 7A is Complete; Milestones 7B and 8 remain Proposed. Local trace/dashboard/alert evidence is demonstration evidence rather than a production SLO guarantee; telemetry export is intentionally lossy and the alpha-versioned Logback bridge requires compatible upgrade and vulnerability review, but telemetry failure cannot change business outcomes. Quota/retention R3 and authenticated/bounded replay R4 remain separately Proposed production gates. The mock provider is a validated integration fixture rather than a packaged local service or production provider. General payment/outbox/operator recovery is not exposed, so a durable `202`, failed outbox cycle, or replay request still follows the documented inspection/escalation limits. LedgerFlow does not claim a distributed transaction or end-to-end exactly-once delivery.
 
 When all milestones are complete, update this section with:
 

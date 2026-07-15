@@ -38,7 +38,15 @@ class ManagementPortIntegrationTest extends PostgreSqlIntegrationTest {
     assertStatusOnly(liveness);
     assertStatusOnly(readiness);
 
-    assertThat(get(managementPort, "/actuator/prometheus").statusCode()).isEqualTo(200);
+    HttpResponse<String> prometheus = get(managementPort, "/actuator/prometheus");
+    assertThat(prometheus.statusCode()).isEqualTo(200);
+    assertThat(prometheus.body())
+        .contains(
+            "ledgerflow_readiness_status",
+            "ledgerflow_graceful_drain_active",
+            "jvm_threads_live_threads",
+            "hikaricp_connections_active")
+        .doesNotContain("owner_subject", "idempotency_key", "payment_method_reference");
     assertThat(get(managementPort, "/actuator/health").statusCode()).isNotEqualTo(200);
     assertThat(get(managementPort, "/actuator/info").statusCode()).isNotEqualTo(200);
   }

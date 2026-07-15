@@ -206,8 +206,12 @@ public class OrderProblemHandler {
 
   @ExceptionHandler(Exception.class)
   ResponseEntity<ProblemDetail> unexpected(Exception exception, HttpServletRequest request) {
-    LOGGER.error(
-        "Unhandled order HTTP failure: errorType={}", exception.getClass().getSimpleName());
+    LOGGER
+        .atError()
+        .addKeyValue("event_code", "ORDER_HTTP_UNEXPECTED_FAILURE")
+        .addKeyValue("action", "orders.http")
+        .addKeyValue("error_code", "INTERNAL_ERROR")
+        .log("Unhandled order HTTP failure");
     return problem(
         HttpStatus.INTERNAL_SERVER_ERROR,
         "internal-error",

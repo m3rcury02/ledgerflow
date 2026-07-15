@@ -10,7 +10,7 @@ groups:
           service: ledgerflow
         annotations:
           summary: Conflicting content reused a notification semantic identity
-          runbook: docs/runbook.md#milestone-5d-alert-response
+          runbook_url: https://github.com/m3rcury02/ledgerflow/blob/main/docs/observability-runbook.md#ledgerflownotificationsemanticconflict
 
       - alert: LedgerFlowTerminalDltInput
         expr: >-
@@ -21,7 +21,7 @@ groups:
           service: ledgerflow
         annotations:
           summary: Terminal malformed DLT input is sustained
-          runbook: docs/runbook.md#milestone-5d-alert-response
+          runbook_url: https://github.com/m3rcury02/ledgerflow/blob/main/docs/observability-runbook.md#ledgerflowterminaldltinput
 
       - alert: LedgerFlowTerminalDltEvidencePersistenceFailure
         expr: >-
@@ -32,15 +32,15 @@ groups:
           service: ledgerflow
         annotations:
           summary: Terminal DLT evidence cannot be persisted
-          runbook: docs/runbook.md#milestone-5d-alert-response
+          runbook_url: https://github.com/m3rcury02/ledgerflow/blob/main/docs/observability-runbook.md#ledgerflowterminaldltevidencepersistencefailure
 
       - alert: LedgerFlowNotificationDltConsumerLag
         expr: >-
-          max(kafka_consumer_fetch_manager_records_lag_max{group_id="ledgerflow-notifications-dlt-v1"}) > 100
+          max(kafka_consumer_fetch_manager_records_lag_max) > 100
         for: 5m
         labels:
           severity: warning
           service: ledgerflow
         annotations:
           summary: Notification DLT catalog consumer lag is sustained
-          runbook: docs/runbook.md#milestone-5d-alert-response
+          runbook_url: https://github.com/m3rcury02/ledgerflow/blob/main/docs/observability-runbook.md#ledgerflownotificationdltconsumerlag

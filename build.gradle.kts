@@ -17,10 +17,12 @@ version = "0.1.0-SNAPSHOT"
 val springBootVersion = "4.1.0"
 val springModulithVersion = "2.1.0"
 val resilience4jVersion = "2.4.0"
+val openTelemetryInstrumentationVersion = "2.28.1-alpha"
 
 extra["springBootVersion"] = springBootVersion
 extra["springModulithVersion"] = springModulithVersion
 extra["resilience4jVersion"] = resilience4jVersion
+extra["openTelemetryInstrumentationVersion"] = openTelemetryInstrumentationVersion
 
 configure(subprojects.filter { it.path != ":modules" }) {
     group = rootProject.group
@@ -106,6 +108,7 @@ extensions.configure<SpotlessExtension> {
             "scripts/dev-*",
             "scripts/replay-*",
             "scripts/security-*",
+            "scripts/*observability*",
         )
         targetExclude("**/build/**", ".gradle/**")
         trimTrailingWhitespace()
@@ -241,6 +244,8 @@ val documentationCheck =
                 "docs/data-model.md",
                 "docs/threat-model.md",
                 "docs/runbook.md",
+                "docs/observability.md",
+                "docs/observability-runbook.md",
                 "docs/security/local-development-container-risk-register.md",
                 "docs/sql/ledger-queries.sql",
                 "docs/plans/mvp-execplan.md",
@@ -253,6 +258,8 @@ val documentationCheck =
                 "scripts/dev-status",
                 "scripts/replay-dead-letter",
                 "scripts/security-scan",
+                "scripts/validate-observability",
+                "scripts/demo-observability",
                 "config/security/local-compose-vulnerability-exceptions.json",
             )
         val markdownFiles =
@@ -291,6 +298,24 @@ val documentationCheck =
         }
     }
 
+val observabilityValidate =
+    tasks.register<Exec>("observabilityValidate") {
+        group = "verification"
+        description = "Validates Prometheus, OpenTelemetry Collector, and Grafana provisioning."
+        inputs.files(
+            layout.projectDirectory.file("compose.yaml"),
+            layout.projectDirectory.dir("infra/otel"),
+            layout.projectDirectory.dir("infra/prometheus"),
+            layout.projectDirectory.dir("infra/grafana"),
+            layout.projectDirectory.file("scripts/validate-observability"),
+        )
+        commandLine(
+            layout.projectDirectory
+                .file("scripts/validate-observability")
+                .asFile.absolutePath,
+        )
+    }
+
 tasks.register("verify") {
     group = "verification"
     description = "Runs every LedgerFlow completion check."
@@ -303,6 +328,7 @@ tasks.register("verify") {
         openApiValidate,
         mockProviderOpenApiValidate,
         composeValidate,
+        observabilityValidate,
         documentationCheck,
     )
 }

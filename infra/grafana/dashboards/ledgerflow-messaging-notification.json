@@ -1,0 +1,64 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "id": 1,
+      "targets": [{"expr": "ledgerflow_outbox_records", "legendFormat": "{{state}}"}],
+      "title": "Outbox records",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0},
+      "id": 2,
+      "targets": [{"expr": "ledgerflow_outbox_oldest_age_seconds", "legendFormat": "oldest"}],
+      "title": "Oldest unpublished outbox age",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
+      "id": 3,
+      "targets": [{"expr": "sum by (outcome) (rate(ledgerflow_outbox_publications_total[5m]))", "legendFormat": "{{outcome}}"}],
+      "title": "Outbox publication outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
+      "id": 4,
+      "targets": [{"expr": "sum by (outcome) (rate(ledgerflow_kafka_consumer_records_total[5m]))", "legendFormat": "{{outcome}}"}],
+      "title": "Kafka notification processing",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},
+      "id": 5,
+      "targets": [{"expr": "max(kafka_consumer_fetch_manager_records_lag_max)", "legendFormat": "max lag"}],
+      "title": "Kafka consumer lag",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+      "id": 6,
+      "targets": [{"expr": "sum by (outcome) (rate(ledgerflow_notifications_effects_total[5m]))", "legendFormat": "{{outcome}}"}],
+      "title": "Notification effects",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 41,
+  "tags": ["ledgerflow", "outbox", "kafka", "notification"],
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "utc",
+  "title": "LedgerFlow — Outbox, Kafka and Notification",
+  "uid": "ledgerflow-messaging-notification",
+  "version": 1
+}

@@ -32,7 +32,9 @@ outside PostgreSQL transactions. Capture accounting atomically commits payment
 payment `CAPTURED`, order `COMPLETED`, and the idempotency snapshot. Kafka publication and
 notification remain asynchronous and at least once. Transport and semantic idempotency still
 produce one logical notification effect. Invalid DLT evidence and the narrow audited replay CLI are
-implemented; the secured operator HTTP workflow remains planned.
+implemented. End-to-end tracing, bounded business/runtime metrics, structured correlated logs,
+provisioned dashboards, provisional SLOs, and alert runbooks are implemented; the secured operator
+HTTP workflow remains planned.
 
 ## Actors
 
@@ -125,8 +127,8 @@ Steps 1–12 are implemented. Steps 1–9 form the synchronous public command an
 ### Correlation, tracing, and recovery
 
 - **FR-028:** Every HTTP request, provider attempt, outbox attempt, Kafka record, consumer attempt, and operator retry has a valid correlation ID.
-- **FR-029:** OpenTelemetry context propagates over inbound and outbound HTTP and through Kafka headers. Background work without a parent starts a new trace and links to the originating context when available.
-- **FR-030:** Structured logs include correlation ID, trace ID, operation type, and non-sensitive resource identifiers.
+- **FR-029:** OpenTelemetry context propagates over inbound and outbound HTTP and through Kafka headers. Durable asynchronous work restores a trustworthy stored causal parent; independent future recovery starts a new trace and links to the stored origin rather than asserting false parentage.
+- **FR-030:** Structured logs include safe correlation and trace identifiers plus stable event, action, outcome, and error codes. They omit customer/resource identifiers unless an approved diagnostic need and bounded retention justify them.
 - **FR-031:** Operators can list and inspect payment, outbox, and notification-consumption failures with an explicit retryable flag, without receiving stack traces, tokens, raw provider bodies, or secrets.
 - **FR-032:** `POST /api/v1/operator/operations/{operationId}/retries` requires operator retry scope, an idempotency key, and an audit reason.
 - **FR-033:** An operator retry is itself idempotent, audited, and safe under concurrent requests.
@@ -152,7 +154,7 @@ Steps 1–12 are implemented. Steps 1–9 form the synchronous public command an
 
 ## Delivered milestone acceptance criteria
 
-The `AC-M3` criteria record the historical Create Order slice, `AC-M5B` records messaging, `AC-M5C` records security hardening, `AC-M5D` records abuse-case remediation, and `AC-M6` records the complete public workflow. Historical scope exclusions are not claims that those capabilities are still absent.
+The `AC-M3` criteria record the historical Create Order slice, `AC-M5B` records messaging, `AC-M5C` records security hardening, `AC-M5D` records abuse-case remediation, `AC-M6` records the complete public workflow, and `AC-M7A` records end-to-end observability. Historical scope exclusions are not claims that those capabilities are still absent.
 
 - **AC-M3-001:** A valid scoped request returns `201`, a UUIDv7 `CREATED` order, positive INR minor units, UTC timestamps, `Location`, and a correlation ID.
 - **AC-M3-002:** The same subject, key, and canonical payload returns the byte-equivalent original body and location with `Idempotency-Replayed: true`, without another order.
@@ -194,9 +196,16 @@ The `AC-M3` criteria record the historical Create Order slice, `AC-M5B` records 
 - **AC-M6-006:** Owner-filtered reads, strict JWT authorization, bounded input, safe failure codes, and payment-reference redaction remain enforced.
 - **AC-M6-007:** V008 adds final states and deferred cross-table finalization constraints without modifying merged migrations; PostgreSQL rejects a completed order lacking the captured payment, journal, or outbox evidence.
 
+- **AC-M7A-001:** One fixed-ID integration trace proves connected HTTP server, provider client, PostgreSQL workflow, ledger, outbox append/publish, Kafka producer/consumer, and notification spans with persisted W3C context and accurate parentage.
+- **AC-M7A-002:** Every response returns a validated correlation ID; ECS JSON logs carry safe trace/span/correlation context and stable codes, while seeded tokens, cookies, keys, customer markers, bodies, and payment references are absent from responses, logs, spans, metrics, and event headers.
+- **AC-M7A-003:** Prometheus scrapes only the isolated management listener. Five provisioned Grafana dashboards load without UI edits and link Prometheus exemplars to Tempo and Tempo traces to Loki logs.
+- **AC-M7A-004:** Orders, payment states/outcomes and resilience, ledger, outbox, Kafka/DLT/lag, notification integrity, readiness/drain, JVM, executor, and HikariCP signals use a documented and code-enforced bounded label policy.
+- **AC-M7A-005:** Every version-controlled alert uses a real exported metric, bounded time window/threshold, severity/service labels, and a matching runbook. Provisional SLOs explicitly separate declines from failures and local evidence from production guarantees.
+- **AC-M7A-006:** In-memory, HTTP/Kafka propagation, redaction, cardinality, configuration, and failing-exporter tests pass; telemetry backend failure leaves the completed order, balanced journal, and durable outbox unchanged.
+
 ## Full-flow acceptance criteria
 
-Milestone 6 delivers AC-001 through AC-011, AC-014, and AC-016. Observability AC-013 remains Milestone 7A, operator AC-012 remains Milestone 7B, and AC-015 is rerun for every milestone.
+Milestones 6 and 7A deliver AC-001 through AC-011, AC-013, AC-014, and AC-016. Operator AC-012 remains Milestone 7B, and AC-015 is rerun for every milestone.
 
 - **AC-001:** A valid success request returns `201`, a `COMPLETED` order, a `CAPTURED` payment, two balanced ledger entries, and one pending or published outbox event.
 - **AC-002:** Replaying AC-001 with the same key and semantically identical payload returns the original status and body with `Idempotency-Replayed: true`; row counts and provider-call counts do not increase.

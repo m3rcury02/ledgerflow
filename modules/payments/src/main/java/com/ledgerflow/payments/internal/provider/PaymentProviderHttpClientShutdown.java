@@ -23,12 +23,22 @@ final class PaymentProviderHttpClientShutdown implements AutoCloseable {
     httpClient.shutdown();
     try {
       if (!httpClient.awaitTermination(timeout)) {
-        LOGGER.error("Payment provider HTTP client did not terminate within {}", timeout);
+        LOGGER
+            .atError()
+            .addKeyValue("event_code", "PAYMENT_PROVIDER_CLIENT_DRAIN_FAILED")
+            .addKeyValue("action", "payment.provider.shutdown")
+            .addKeyValue("error_code", "DRAIN_TIMEOUT")
+            .log("Payment provider HTTP client did not terminate within its deadline");
         httpClient.shutdownNow();
       }
     } catch (InterruptedException exception) {
       Thread.currentThread().interrupt();
-      LOGGER.error("Payment provider HTTP client shutdown was interrupted", exception);
+      LOGGER
+          .atError()
+          .addKeyValue("event_code", "PAYMENT_PROVIDER_CLIENT_DRAIN_INTERRUPTED")
+          .addKeyValue("action", "payment.provider.shutdown")
+          .addKeyValue("error_code", "DRAIN_INTERRUPTED")
+          .log("Payment provider HTTP client shutdown was interrupted");
       httpClient.shutdownNow();
     }
   }

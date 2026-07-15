@@ -77,6 +77,7 @@ During development, run the smallest relevant checks:
 ./gradlew architectureTest
 ./gradlew openApiValidate
 ./gradlew composeValidate
+./gradlew observabilityValidate
 ./gradlew documentationCheck
 ./scripts/security-scan
 ```
@@ -90,11 +91,12 @@ Expected task responsibilities:
 - `architectureTest`: enforce module and architectural constraints.
 - `openApiValidate`: validate every OpenAPI document.
 - `composeValidate`: resolve and validate `compose.yaml` using the non-secret `.env.example` defaults.
+- `observabilityValidate`: validate Collector configuration, Prometheus configuration and rules, all alert/runbook links, Grafana data sources, and all provisioned dashboards with the pinned Compose images.
 - `documentationCheck`: check Markdown formatting, internal links, and required document structure.
 - `scripts/security-scan`: build the executable artifact and use the pinned container scanner for repository secrets/misconfiguration, packaged Java dependencies, and every Compose image.
 - `verify`: depend on every task above.
 
-`integrationTest`, `composeValidate`, `verify`, and `scripts/security-scan` require a working Docker-compatible container runtime with Docker Compose. The security scan is intentionally separate from `verify` because it downloads vulnerability intelligence, scans large images, and needs read-only access to the privileged Docker socket. Run it for security, dependency, build-image, or Compose-image changes and in the scheduled CI security workflow.
+`integrationTest`, `composeValidate`, `observabilityValidate`, `verify`, and `scripts/security-scan` require a working Docker-compatible container runtime with Docker Compose. The security scan is intentionally separate from `verify` because it downloads vulnerability intelligence, scans large images, and needs read-only access to the privileged Docker socket. Run it for security, dependency, build-image, or Compose-image changes and in the scheduled CI security workflow.
 
 The security scan fails on fixed HIGH or CRITICAL findings and committed-secret detections. Repository-secret and packaged-application gates have no exception path. The only current Compose exception mechanism is the exact, digest-bound, expiring local-development policy linked to the [container risk register](security/local-development-container-risk-register.md). It prints all Trivy findings and rejects new, changed, stale, undocumented, or expired tuples; it is prohibited for production. Do not add a broad ignore or copy a local acceptance into another scanner. Refresh scanner intelligence on every execution and protect the CI runner because Docker-socket readers can inspect host containers and images.
 

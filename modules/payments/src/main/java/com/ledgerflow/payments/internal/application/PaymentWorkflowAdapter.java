@@ -27,15 +27,18 @@ public class PaymentWorkflowAdapter implements PaymentWorkflow {
   private final ObjectProvider<PaymentWorkflowService> workflowProvider;
   private final ObjectProvider<PaymentProviderProperties> propertiesProvider;
   private final Clock clock;
+  private final PaymentMetrics metrics;
 
   public PaymentWorkflowAdapter(
       PaymentStore paymentStore,
       ObjectProvider<PaymentWorkflowService> workflowProvider,
-      ObjectProvider<PaymentProviderProperties> propertiesProvider) {
+      ObjectProvider<PaymentProviderProperties> propertiesProvider,
+      PaymentMetrics metrics) {
     this.paymentStore = paymentStore;
     this.workflowProvider = workflowProvider;
     this.propertiesProvider = propertiesProvider;
     this.clock = Clock.systemUTC();
+    this.metrics = metrics;
   }
 
   @Override
@@ -86,6 +89,7 @@ public class PaymentWorkflowAdapter implements PaymentWorkflow {
       return view(current);
     }
     Payment finalized = paymentStore.save(current, current.captureFinalized(finalizedAt));
+    metrics.recordStateAfterCommit(finalized.state());
     return view(finalized);
   }
 

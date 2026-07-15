@@ -1,0 +1,118 @@
+groups:
+  - name: ledgerflow-observability
+    rules:
+      - alert: LedgerFlowApiFailureRate
+        expr: >-
+          sum(rate(http_server_requests_seconds_count{uri=~"/api/v1/orders.*",status=~"5.."}[10m]))
+          / clamp_min(sum(rate(http_server_requests_seconds_count{uri=~"/api/v1/orders.*"}[10m])), 0.001) > 0.05
+          and sum(rate(http_server_requests_seconds_count{uri=~"/api/v1/orders.*"}[10m])) > 0.1
+        for: 10m
+        labels:
+          severity: critical
+          service: ledgerflow
+        annotations:
+          summary: LedgerFlow API system failures exceed five percent
+          runbook_url: https://github.com/m3rcury02/ledgerflow/blob/main/docs/observability-runbook.md#ledgerflowapifailurerate
+
+      - alert: LedgerFlowApiLatency
+        expr: >-
+          histogram_quantile(0.95,
+          sum by (le) (rate(http_server_requests_seconds_bucket{uri="/api/v1/orders",method="POST"}[10m]))) > 2
+          and sum(rate(http_server_requests_seconds_count{uri="/api/v1/orders",method="POST"}[10m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          service: ledgerflow
+        annotations:
+          summary: Create-order p95 latency exceeds two seconds
+          runbook_url: https://github.com/m3rcury02/ledgerflow/blob/main/docs/observability-runbook.md#ledgerflowapilatency
+
+      - alert: LedgerFlowProviderCircuitOpen
+        expr: max(ledgerflow_payment_provider_circuit_state{state="open"}) > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: ledgerflow
+        annotations:
+          summary: Payment-provider circuit remains open
+          runbook_url: https://github.com/m3rcury02/ledgerflow/blob/main/docs/observability-runbook.md#ledgerflowprovidercircuitopen
+
+      - alert: LedgerFlowProviderUnknownOutcomes
+        expr: >-
+          sum(increase(ledgerflow_payment_provider_attempts_total{outcome="unknown"}[10m])) > 5
+          and sum(rate(ledgerflow_payment_provider_attempts_total[10m])) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          service: ledgerflow
+        annotations:
+          summary: Provider calls are producing excessive unknown outcomes
+          runbook_url: https://github.com/m3rcury02/ledgerflow/blob/main/docs/observability-runbook.md#ledgerflowproviderunknownoutcomes
+
+      - alert: LedgerFlowOutboxBacklog
+        expr: >-
+          max(ledgerflow_outbox_records{state="due"}) > 100
+          or max(ledgerflow_outbox_oldest_age_seconds) > 60
+        for: 5m
+        labels:
+          severity: critical
+          service: ledgerflow
+        annotations:
+          summary: Durable outbox publication is delayed
+          runbook_url: https://github.com/m3rcury02/ledgerflow/blob/main/docs/observability-runbook.md#ledgerflowoutboxbacklog
+
+      - alert: LedgerFlowKafkaConsumerLag
+        expr: max(kafka_consumer_fetch_manager_records_lag_max) > 100
+        for: 5m
+        labels:
+          severity: warning
+          service: ledgerflow
+        annotations:
+          summary: Kafka notification consumer lag is sustained
+          runbook_url: https://github.com/m3rcury02/ledgerflow/blob/main/docs/observability-runbook.md#ledgerflowkafkaconsumerlag
+
+      - alert: LedgerFlowDeadLetterGrowth
+        expr: >-
+          sum(increase(ledgerflow_kafka_consumer_records_total{outcome="dlt"}[10m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: ledgerflow
+        annotations:
+          summary: Notification records are entering the dead-letter topic
+          runbook_url: https://github.com/m3rcury02/ledgerflow/blob/main/docs/observability-runbook.md#ledgerflowdeadlettergrowth
+
+      - alert: LedgerFlowDatabasePoolExhaustion
+        expr: >-
+          max(hikaricp_connections_active) / clamp_min(max(hikaricp_connections_max), 1) > 0.9
+          and max(hikaricp_connections_pending) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: ledgerflow
+        annotations:
+          summary: PostgreSQL connection pool is exhausted
+          runbook_url: https://github.com/m3rcury02/ledgerflow/blob/main/docs/observability-runbook.md#ledgerflowdatabasepoolexhaustion
+
+      - alert: LedgerFlowGracefulDrainFailed
+        expr: >-
+          sum(increase(ledgerflow_graceful_drain_results_total{outcome=~"timed_out|interrupted"}[10m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: ledgerflow
+        annotations:
+          summary: An application instance failed to drain in-flight work
+          runbook_url: https://github.com/m3rcury02/ledgerflow/blob/main/docs/observability-runbook.md#ledgerflowgracefuldrainfailed
+
+      - alert: LedgerFlowTelemetryExportFailure
+        expr: >-
+          sum(rate(otelcol_exporter_send_failed_spans_total[10m])) > 0
+          or sum(rate(otelcol_exporter_send_failed_log_records_total[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: ledgerflow
+        annotations:
+          summary: OpenTelemetry export has failed continuously
+          runbook_url: https://github.com/m3rcury02/ledgerflow/blob/main/docs/observability-runbook.md#ledgerflowtelemetryexportfailure

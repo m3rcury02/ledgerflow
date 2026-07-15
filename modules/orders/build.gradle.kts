@@ -10,6 +10,8 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-security-oauth2-resource-server")
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-webmvc")
+    implementation("io.micrometer:micrometer-core")
+    implementation("io.opentelemetry:opentelemetry-api")
     compileOnly(platform("org.springframework.modulith:spring-modulith-bom:$springModulithVersion"))
     compileOnly("org.springframework.modulith:spring-modulith-api")
 

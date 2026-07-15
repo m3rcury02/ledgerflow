@@ -32,6 +32,7 @@ import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.listener.ListenerContainerPauseService;
+import org.springframework.kafka.listener.RetryListener;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import tools.jackson.databind.ObjectMapper;
@@ -75,9 +76,10 @@ public class NotificationsConfiguration {
       @Qualifier("notificationClock") Clock clock,
       WorkTracker workTracker,
       FaultInjection faultInjection,
-      NotificationMetrics metrics) {
+      NotificationMetrics metrics,
+      OpenTelemetry openTelemetry) {
     return new PaymentCapturedKafkaListener(
-        validator, store, properties, clock, workTracker, faultInjection, metrics);
+        validator, store, properties, clock, workTracker, faultInjection, metrics, openTelemetry);
   }
 
   @Bean
@@ -99,7 +101,8 @@ public class NotificationsConfiguration {
       KafkaTemplate<String, String> kafkaTemplate,
       NotificationsProperties properties,
       KafkaListenerEndpointRegistry registry,
-      @Qualifier("notificationRetryTaskScheduler") TaskScheduler retryScheduler) {
+      @Qualifier("notificationRetryTaskScheduler") TaskScheduler retryScheduler,
+      NotificationMetrics metrics) {
     requireManualCommit(consumerFactory);
     ConcurrentKafkaListenerContainerFactory<String, String> factory =
         baseFactory(consumerFactory, properties);
@@ -137,16 +140,7 @@ public class NotificationsConfiguration {
                 new ListenerContainerPauseService(registry, retryScheduler)));
     errorHandler.addNotRetryableExceptions(
         NotificationValidationException.class, NotificationIntegrityException.class);
-    errorHandler.setRetryListeners(
-        (record, exception, deliveryAttempt) -> {
-          record.headers().remove(KafkaEventHeaders.LEDGERFLOW_DELIVERY_ATTEMPT);
-          record
-              .headers()
-              .add(
-                  KafkaEventHeaders.LEDGERFLOW_DELIVERY_ATTEMPT,
-                  Integer.toString(deliveryAttempt)
-                      .getBytes(java.nio.charset.StandardCharsets.US_ASCII));
-        });
+    errorHandler.setRetryListeners(notificationRetryListener(metrics));
     factory.setCommonErrorHandler(errorHandler);
     return factory;
   }
@@ -200,13 +194,59 @@ public class NotificationsConfiguration {
   }
 
   @Bean("notificationRetryTaskScheduler")
-  TaskScheduler notificationRetryTaskScheduler(NotificationsProperties properties) {
+  TaskScheduler notificationRetryTaskScheduler(
+      NotificationsProperties properties, MeterRegistry meterRegistry) {
     ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
     scheduler.setPoolSize(properties.concurrency());
     scheduler.setThreadNamePrefix("notification-retry-");
     scheduler.setWaitForTasksToCompleteOnShutdown(true);
     scheduler.setAwaitTerminationMillis(properties.shutdownTimeout().toMillis());
+    io.micrometer.core.instrument.Gauge.builder(
+            "ledgerflow.executor.active", scheduler, ThreadPoolTaskScheduler::getActiveCount)
+        .description("Active tasks in bounded application executors")
+        .tag("executor", "notification_retry")
+        .register(meterRegistry);
+    io.micrometer.core.instrument.Gauge.builder(
+            "ledgerflow.executor.pool.size", scheduler, ThreadPoolTaskScheduler::getPoolSize)
+        .description("Current bounded application executor pool size")
+        .tag("executor", "notification_retry")
+        .register(meterRegistry);
     return scheduler;
+  }
+
+  private RetryListener notificationRetryListener(NotificationMetrics metrics) {
+    return new RetryListener() {
+      @Override
+      public void failedDelivery(
+          org.apache.kafka.clients.consumer.ConsumerRecord<?, ?> record,
+          Exception exception,
+          int deliveryAttempt) {
+        record.headers().remove(KafkaEventHeaders.LEDGERFLOW_DELIVERY_ATTEMPT);
+        record
+            .headers()
+            .add(
+                KafkaEventHeaders.LEDGERFLOW_DELIVERY_ATTEMPT,
+                Integer.toString(deliveryAttempt)
+                    .getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        if (deliveryAttempt > 1) {
+          metrics.consumer(NotificationMetrics.ConsumerMetric.RETRY);
+        }
+      }
+
+      @Override
+      public void recovered(
+          org.apache.kafka.clients.consumer.ConsumerRecord<?, ?> record, Exception exception) {
+        metrics.consumer(NotificationMetrics.ConsumerMetric.DLT);
+      }
+
+      @Override
+      public void recoveryFailed(
+          org.apache.kafka.clients.consumer.ConsumerRecord<?, ?> record,
+          Exception original,
+          Exception failure) {
+        metrics.consumer(NotificationMetrics.ConsumerMetric.FAILURE);
+      }
+    };
   }
 
   private ConcurrentKafkaListenerContainerFactory<String, String> baseFactory(

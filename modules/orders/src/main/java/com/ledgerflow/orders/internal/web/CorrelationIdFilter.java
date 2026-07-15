@@ -28,11 +28,11 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
     String correlationId = selectCorrelationId(request.getHeader(HEADER));
     request.setAttribute(ATTRIBUTE, correlationId);
     response.setHeader(HEADER, correlationId);
-    MDC.put("correlationId", correlationId);
+    MDC.put("correlation_id", correlationId);
     try {
       filterChain.doFilter(request, response);
     } finally {
-      MDC.remove("correlationId");
+      MDC.remove("correlation_id");
     }
   }
 

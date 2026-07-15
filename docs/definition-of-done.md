@@ -39,6 +39,7 @@ A LedgerFlow task is done only when every applicable item below is true and the 
 - PostgreSQL Testcontainers integration tests cover persistence and external boundaries.
 - Architecture tests pass and cover any new module relationship.
 - OpenAPI validation and affected contract tests pass.
+- Changed telemetry has in-memory propagation, redaction, bounded-cardinality, and exporter-failure tests; Prometheus rules and Grafana/Collector provisioning validate with pinned images.
 - Tests are deterministic and do not depend on execution order, local time zone, or the developer's machine.
 - No required test is ignored, quarantined, or conditionally skipped.
 - Security-sensitive input limits, rate limits, and redaction rules have focused boundary tests when applicable.
@@ -52,6 +53,7 @@ A LedgerFlow task is done only when every applicable item below is true and the 
 - Configuration and examples contain placeholders rather than real credentials.
 - Security, dependency, build-image, or Compose-image changes pass `./scripts/security-scan` with no committed-secret or packaged-application exception and no unapproved, stale, or expired Compose finding. Local Compose acceptance must be exact, digest-bound, documented, expiring, and never represented as production acceptance.
 - Operational failure and recovery behavior is documented for risky changes.
+- Every new alert uses an exported bounded metric and links to a version-controlled runbook with diagnosis, impact, safe actions, escalation, and recovery verification.
 
 ## Final verification
 

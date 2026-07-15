@@ -103,15 +103,15 @@ public class DeadLetterReplayService implements DeadLetterReplay {
             .get(properties.brokerAcknowledgementTimeout().toMillis(), TimeUnit.MILLISECONDS);
       } catch (InterruptedException exception) {
         Thread.currentThread().interrupt();
-        span.failed(exception);
+        span.failed("replay_interrupted");
         store.markReplayFailed(claim, "REPLAY_INTERRUPTED", FAILURE_SUMMARY, clock.instant());
         return new ReplayResult(replayRequestId, ReplayOutcome.FAILED, correlationId);
       } catch (ExecutionException | TimeoutException exception) {
-        span.failed(exception);
+        span.failed("replay_publish_failed");
         store.markReplayFailed(claim, "REPLAY_PUBLISH_FAILED", FAILURE_SUMMARY, clock.instant());
         return new ReplayResult(replayRequestId, ReplayOutcome.FAILED, correlationId);
       } catch (RuntimeException exception) {
-        span.failed(exception);
+        span.failed("replay_publish_failed");
         store.markReplayFailed(claim, "REPLAY_PUBLISH_FAILED", FAILURE_SUMMARY, clock.instant());
         return new ReplayResult(replayRequestId, ReplayOutcome.FAILED, correlationId);
       }
@@ -159,7 +159,7 @@ public class DeadLetterReplayService implements DeadLetterReplay {
     Span span =
         openTelemetry
             .getTracer("com.ledgerflow.notifications")
-            .spanBuilder("dead letter replay " + event.eventType())
+            .spanBuilder("deadletter.replay.publish")
             .setSpanKind(SpanKind.PRODUCER)
             .setNoParent()
             .startSpan();
@@ -181,8 +181,8 @@ public class DeadLetterReplayService implements DeadLetterReplay {
       this.scope = scope;
     }
 
-    private void failed(Throwable failure) {
-      span.recordException(failure);
+    private void failed(String errorCode) {
+      span.setStatus(io.opentelemetry.api.trace.StatusCode.ERROR, errorCode);
     }
 
     @Override

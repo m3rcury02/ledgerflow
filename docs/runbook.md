@@ -209,7 +209,7 @@ Controlled fault injection requires an active `local`, `test`, or `integration-t
 
 ## Milestone 5D alert response
 
-Prometheus rules are provisioned in `infra/prometheus/rules/ledgerflow-abuse-controls.yaml`. Production alert routing and final thresholds require deployment approval. The rule labels are bounded; event IDs, subjects, coordinates, hashes, and error text are never labels.
+Prometheus rules are provisioned in `infra/prometheus/rules/ledgerflow-abuse-controls.yaml` and `infra/prometheus/rules/ledgerflow-observability.yaml`. Every rule links to the version-controlled [observability alert runbook](observability-runbook.md). Production alert routing and final thresholds require deployment approval. Rule labels are bounded; event IDs, subjects, coordinates, hashes, and error text are never labels.
 
 | Alert | Meaning | Immediate response | Clear condition |
 | --- | --- | --- | --- |

@@ -2,6 +2,8 @@ package com.ledgerflow.operations.internal;
 
 import com.ledgerflow.operations.api.FaultInjection;
 import com.ledgerflow.operations.api.WorkTracker;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.config.MeterFilter;
 import java.time.Clock;
 import org.apache.kafka.clients.admin.Admin;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -19,8 +21,9 @@ import org.springframework.kafka.core.KafkaAdmin;
 class OperationsConfiguration {
 
   @Bean
-  DrainableWorkTracker drainableWorkTracker(OperationsProperties properties) {
-    return new DrainableWorkTracker(properties.drainTimeout());
+  DrainableWorkTracker drainableWorkTracker(
+      OperationsProperties properties, MeterRegistry meterRegistry) {
+    return new DrainableWorkTracker(properties.drainTimeout(), meterRegistry);
   }
 
   @Bean
@@ -40,8 +43,15 @@ class OperationsConfiguration {
   }
 
   @Bean
-  ReadinessProbeCache readinessProbeCache(DependencyProbe probe, OperationsProperties properties) {
-    return new ReadinessProbeCache(probe, properties.healthProbeCacheTtl(), Clock.systemUTC());
+  ReadinessProbeCache readinessProbeCache(
+      DependencyProbe probe, OperationsProperties properties, MeterRegistry meterRegistry) {
+    return new ReadinessProbeCache(
+        probe, properties.healthProbeCacheTtl(), Clock.systemUTC(), meterRegistry);
+  }
+
+  @Bean
+  MeterFilter ledgerFlowMeterFilter() {
+    return new LedgerFlowMeterFilter();
   }
 
   @Bean

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+  <springProperty
+      scope="context"
+      name="LEDGERFLOW_CONSOLE_FORMAT"
+      source="logging.structured.format.console"
+      defaultValue="ecs"/>
+
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+      <level>${CONSOLE_LOG_THRESHOLD}</level>
+    </filter>
+    <encoder class="org.springframework.boot.logging.logback.StructuredLogEncoder">
+      <format>${LEDGERFLOW_CONSOLE_FORMAT}</format>
+      <charset>${CONSOLE_LOG_CHARSET}</charset>
+    </encoder>
+  </appender>
+
+  <appender
+      name="OTEL"
+      class="io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender">
+    <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+      <level>INFO</level>
+    </filter>
+    <captureExperimentalAttributes>false</captureExperimentalAttributes>
+    <captureCodeAttributes>false</captureCodeAttributes>
+    <captureMarkerAttribute>false</captureMarkerAttribute>
+    <captureKeyValuePairAttributes>true</captureKeyValuePairAttributes>
+    <captureLoggerContext>false</captureLoggerContext>
+    <captureTemplate>false</captureTemplate>
+    <captureArguments>false</captureArguments>
+    <captureLogstashMarkerAttributes>false</captureLogstashMarkerAttributes>
+    <captureLogstashStructuredArguments>false</captureLogstashStructuredArguments>
+    <captureMdcAttributes>correlation_id</captureMdcAttributes>
+    <numLogsCapturedBeforeOtelInstall>100</numLogsCapturedBeforeOtelInstall>
+  </appender>
+
+  <root level="INFO">
+    <appender-ref ref="CONSOLE"/>
+    <appender-ref ref="OTEL"/>
+  </root>
+</configuration>

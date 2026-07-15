@@ -13,3 +13,15 @@ scrape_configs:
   - job_name: ledgerflow-otel-collector
     static_configs:
       - targets: [otel-collector:8889]
+
+  - job_name: ledgerflow-otel-collector-internal
+    static_configs:
+      - targets: [otel-collector:8888]
+
+  - job_name: ledgerflow
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: [host.docker.internal:8082]
+        labels:
+          service: ledgerflow
+          environment: local
