@@ -1,6 +1,6 @@
 # LedgerFlow
 
-LedgerFlow is a Java 25 and Spring Boot 4.1 modular-monolith portfolio project. Its public vertical slice exposes contract-first, JWT-secured create/read order APIs with durable PostgreSQL idempotency. Non-public payment and capture-accounting slices implement explicit provider states, safe timeout reconciliation, immutable balanced journals, a transactional outbox, at-least-once Kafka publication/consumption, transport and semantic notification idempotency, terminal malformed-DLT evidence, and audited dead-letter replay. Public payment orchestration, final order completion, and an operator HTTP workflow are not implemented yet.
+LedgerFlow is a Java 25 and Spring Boot 4.1 modular-monolith portfolio project. Its contract-first, JWT-secured public workflow creates an order, safely authorizes/captures through an external mock provider, posts one immutable balanced journal and transactional outbox event, finalizes `CAPTURED`/`COMPLETED`, then publishes/consumes through Kafka asynchronously with transport and semantic notification idempotency. Terminal malformed-DLT evidence and audited CLI replay are implemented; the secured operator HTTP workflow remains later work.
 
 ## Prerequisites
 
@@ -91,12 +91,13 @@ export LEDGERFLOW_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 export LEDGERFLOW_OAUTH2_AUDIENCE=ledgerflow-api
 export LEDGERFLOW_OAUTH2_ISSUER=http://localhost:8081/realms/ledgerflow
 export LEDGERFLOW_OAUTH2_JWK_SET_URI=http://localhost:8081/realms/ledgerflow/protocol/openid-connect/certs
+export LEDGERFLOW_PAYMENT_PROVIDER_BASE_URL=http://127.0.0.1:8090
 export LEDGERFLOW_MANAGEMENT_PORT=8082
 export LEDGERFLOW_HEALTH_PROBE_CACHE_TTL=2s
 ./gradlew :application:bootRun
 ```
 
-Flyway applies `V001__create_orders_and_idempotency.sql` through `V007__record_terminal_dlt_evidence.sql` at startup. The Kafka publisher and notification/DLT consumers are disabled by default; enable them explicitly with `LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED`, `LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED`, and `LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED`. No cache integration or public payment/ledger route exists.
+Flyway applies V001 through `V008__finalize_public_order_workflow.sql` at startup. The Kafka publisher and notification/DLT consumers are disabled by default; enable them explicitly with `LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED`, `LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED`, and `LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED`. No cache integration or direct public payment/ledger route exists.
 
 Actuator is not served on application port `8080`. With the local override above, status-only liveness/readiness and Prometheus are available on management port `8082`; aggregate health, details, components, and `info` are unavailable. The management listener must never be public. Production ingress, network-policy, and Kafka ACL requirements are defined in [deployment security](docs/deployment-security.md).
 
@@ -121,10 +122,10 @@ curl --fail-with-body http://localhost:8080/api/v1/orders \
   --header 'Content-Type: application/json' \
   --header 'Idempotency-Key: checkout-order-0001' \
   --header 'X-Correlation-Id: checkout-demo-001' \
-  --data '{"clientReference":"checkout-0001","amount":{"amountMinor":259900,"currency":"INR"}}'
+  --data '{"clientReference":"checkout-0001","amount":{"amountMinor":259900,"currency":"INR"},"paymentMethodReference":"pm_mock_success"}'
 ```
 
-Repeat that request with the same key and body to receive the original `201` result and `Idempotency-Replayed: true`. Changing a canonical request field while retaining the key returns `409`. Read the owned order with:
+On success the response is `201` with order `COMPLETED` and payment `CAPTURED`; this means the balanced journal and outbox event are durable, not that Kafka or notification processing completed. Repeat the same key/body for the original result plus `Idempotency-Replayed: true`. Changing any canonical field, including the opaque payment reference, returns `409`. Read the owned order with:
 
 ```bash
 curl --fail-with-body "http://localhost:8080/api/v1/orders/${ORDER_ID}" \
@@ -136,13 +137,13 @@ The complete schemas, examples, validation rules, problem details, and status co
 
 ## Payment provider test harness
 
-Payment authorization and capture are intentionally not connected to the public order routes yet, and neither order `COMPLETED` nor a final payment `CAPTURED` state is implemented. Integration tests start a deterministic external HTTP fixture from `application/src/integrationTest`, validate its separate contract, and cover success, decline, temporary failure, timeout-after-processing, slow response, invalid response, crash recovery, and concurrent transitions.
+Public creation is connected to the payment workflow. Integration tests start a deterministic external HTTP fixture, validate its separate contract, and cover success, both declines, temporary failure, timeout-confirmed lookup, timeout/`NOT_FOUND` same-ID resend, slow response, invalid response, crash recovery, and concurrency. The fixture is test-only and is not packaged in `ledgerflow.jar`; manual curl use requires a separately running implementation of `application/src/testFixtures/openapi/mock-payment-provider.yaml` at `LEDGERFLOW_PAYMENT_PROVIDER_BASE_URL`. If the origin is unset, create fails safely with `503` and its initialization transaction rolls back.
 
-Provider connect/read/overall deadlines, bounded retry, circuit breaker, and zero-queue concurrency bulkhead use `LEDGERFLOW_PAYMENT_PROVIDER_*` configuration. The default application has no provider base URL, so no provider client/workflow bean starts accidentally. See [the payment recovery runbook](docs/runbook.md) for state interpretation and safe recovery constraints.
+Provider connect/read/overall/active-operation deadlines, bounded retry, circuit breaker, and zero-queue concurrency bulkhead use `LEDGERFLOW_PAYMENT_PROVIDER_*`. The default application has no provider base URL, so no outbound provider client starts accidentally. See [the payment recovery runbook](docs/runbook.md).
 
 ## Capture accounting and Kafka slice
 
-The internal ledger use case posts an already `CAPTURE_CONFIRMED` payment once. One `READ COMMITTED` transaction locks the payment, inserts a clearing debit and merchant-payable credit in INR minor units, transitions it to `CAPTURE_ACCOUNTED`, and appends the version-1 payment-captured outbox event through `messaging.api`. Deferred PostgreSQL constraints reject incomplete, unbalanced, or mismatched journals at commit; repeated and concurrent posting returns the original journal and event identity. Posted rows cannot be updated or deleted, and corrections append an exact compensating transaction.
+One `READ_COMMITTED` transaction locks a `CAPTURE_CONFIRMED` payment, inserts the clearing debit and merchant-payable credit, transitions it to `CAPTURE_ACCOUNTED`, and appends the version-1 payment-captured outbox event. A separate short transaction finalizes payment/order/idempotency. V008 deferred checks reject `COMPLETED` without the captured payment, journal, and outbox evidence. Repeated/concurrent execution returns the original identities. Posted rows are immutable; corrections append an exact compensating transaction.
 
 A dedicated publisher leases rows with `SELECT ... FOR UPDATE SKIP LOCKED`, sends outside a database transaction, and marks them published only after Kafka acknowledgement. The notification listener bounds concurrency and poll intake, uses one initial attempt plus three pause-based retries, then publishes poison records to `ledgerflow.payment-captured.v1.dlt` after broker acknowledgement. Inbox event-ID/hash checks make matching envelope redelivery a transport no-op. A separate database-unique identity based on the immutable capture ledger transaction prevents a new event ID from repeating the same notification business effect and detects conflicting content. Terminal invalid DLT input is acknowledged only after immutable sanitized evidence using actual DLT coordinates commits. This is at-least-once delivery, not end-to-end exactly-once delivery.
 
@@ -152,7 +153,7 @@ The default topics are `ledgerflow.payment-captured.v1` and `ledgerflow.payment-
 scripts/replay-dead-letter '<dead-letter-uuid>' '<actor>' '<specific reason of at least 10 characters>'
 ```
 
-The narrow command runs the application in non-web mode with listeners and the outbox publisher disabled. It preserves the original envelope and Kafka key while creating new transport correlation and trace context; see [the runbook](docs/runbook.md). This slice deliberately adds no HTTP endpoint, provider call, final order transition, or operator HTTP API. Use [the read-only ledger SQL](docs/sql/ledger-queries.sql) for account balances and payment transaction history.
+The narrow command runs the application in non-web mode with listeners and the outbox publisher disabled. It preserves the original envelope and Kafka key while creating new transport correlation and trace context; see [the runbook](docs/runbook.md). It remains development-only pending replay hardening and adds no operator HTTP API. Use [the read-only ledger SQL](docs/sql/ledger-queries.sql) for balances and payment history.
 
 ## Project structure
 

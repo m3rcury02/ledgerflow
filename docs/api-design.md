@@ -1,90 +1,71 @@
 # LedgerFlow MVP API Design
 
-- Status: Partially implemented
-- Last updated: 2026-07-14
+- Status: Implemented for the public order workflow
+- Last updated: 2026-07-15
 - Authoritative contract: `application/src/main/openapi/ledgerflow.yaml`
 
-This document explains the active Create Order slice. The OpenAPI document is authoritative for
-request and response schemas. Payments, provider simulation, ledger posting, Kafka, notifications,
-and operator recovery remain future milestones and are not exposed by the application yet.
+The OpenAPI document is authoritative for request/response schemas and examples. This document
+explains the durability, recovery, and compatibility semantics that are easy to misread from an
+HTTP schema alone. Kafka publication and notification processing are asynchronous; no public
+response claims that either completed.
 
-## Conventions
+## Conventions and authorization
 
 - Base path: `/api/v1`
 - Success media type: `application/json`
-- Error media type: `application/problem+json`, using RFC 9457 fields
-- Authentication: OAuth 2.0 bearer JWT
+- Error media type: RFC 9457 `application/problem+json`
 - Timestamps: RFC 3339 UTC instants
-- IDs: opaque UUID strings; order IDs are PostgreSQL 18 UUIDv7 values
-- Money: positive `int64` minor units plus a three-letter currency; the MVP accepts `INR` only
-- Unknown JSON properties: rejected with `400`
+- IDs: opaque UUIDs; PostgreSQL business IDs are UUIDv7
+- Money: positive `int64` minor units plus explicit `INR`
+- Unknown/duplicate JSON properties and undocumented query parameters: rejected
 
-Tokens must be RS256-signed JWTs with the configured exact issuer, audience `ledgerflow-api`, valid
-expiry/not-before claims, and both the route scope and an allowlisted Keycloak realm role. The
-order-write scope is `ledgerflow.orders.write`; the order-read scope is
-`ledgerflow.orders.read`. Active order routes permit `customer` or `admin`, but not `operator`
-alone. The authenticated JWT `sub` owns the resource. A caller-supplied customer identifier is
-never accepted. Future `/api/v1/operator/**` routes are already fail-closed behind
-`ledgerflow.operations.read` or `ledgerflow.operations.retry` plus `operator` or `admin`, but no
-operator HTTP operation is implemented or present in OpenAPI.
+Tokens must be RS256 JWTs with the configured exact issuer, `ledgerflow-api` audience, valid time
+claims, route scope, and `customer` or `admin` realm role. POST requires
+`ledgerflow.orders.write`; GET requires `ledgerflow.orders.read`. JWT `sub` owns the resource. No
+caller-supplied customer ID is accepted. Missing and differently owned orders return the same
+`404`. Reserved operator routes require operations scope plus `operator`/`admin`, but no operator
+HTTP operation is active yet.
 
-`X-Correlation-Id` is optional. A value must contain 1–64 characters matching
-`[A-Za-z0-9._-]+`; otherwise LedgerFlow replaces it. Every response carries the selected value and
-structured application logs include it.
+`X-Correlation-Id` is optional and must match `[A-Za-z0-9._-]{1,64}`. Invalid/absent values are
+replaced. Every response contains the selected ID. The API uses no-store, content/type/frame,
+referrer, permissions, and cross-origin security headers; HSTS is emitted only for HTTPS.
 
-Responses use Spring's safe API header baseline plus `Content-Security-Policy: default-src 'none'`,
-`Referrer-Policy: no-referrer`, restrictive permissions and cross-origin policies, MIME sniffing
-protection, frame denial, and no-store/no-cache directives. HTTPS responses also carry one-year
-HSTS with subdomains; HTTP development responses deliberately do not.
-
-## Request and resource limits
-
-Order operations accept no undocumented query parameters. `POST /api/v1/orders` accepts only
-`application/json` and no compressed request body. It rejects duplicate or unknown JSON
-properties, excessive nesting/token/string or
-number lengths, and a body larger than the configured limit (16 KiB by default). The server also
-limits aggregate request headers to 16 KiB. Rejections are bounded problem details and occur before
-the order transaction.
-
-Each application instance applies a fixed-window limit to create attempts per authenticated
-subject (60 per minute by default). Only a bounded number of SHA-256 subject hashes is retained;
-raw subjects, bearer tokens, and idempotency keys are not rate-limit state. The first request over
-the limit receives `429`, `Retry-After`, and the correlation ID without a business write. This is
-per-instance defense in depth. A trusted ingress must enforce aggregate and unauthenticated
-volumetric limits across a production deployment.
+POST accepts only uncompressed `application/json`, defaults to a 16 KiB body limit, and is bounded
+for headers, nesting, tokens, names, strings, and numbers. A per-instance subject-hash limiter
+returns `429`/`Retry-After`; deployment ingress must provide aggregate and unauthenticated limits.
 
 ## Idempotency contract
 
-`POST /api/v1/orders` requires a case-sensitive `Idempotency-Key` containing 8–128 characters
-matching `[A-Za-z0-9._:-]+`.
-
-The durable scope is:
+`POST /api/v1/orders` requires a case-sensitive 8–128 character `Idempotency-Key` matching
+`[A-Za-z0-9._:-]+`. The durable scope is:
 
 ```text
 {JWT subject, CREATE_ORDER_V1, SHA-256(validated key bytes)}
 ```
 
-Raw keys and raw request payloads are not persisted or logged. The request fingerprint is SHA-256
-over a versioned, length-delimited encoding of these validated fields in fixed order:
+The version-2 request fingerprint is SHA-256 over a length-delimited fixed-order encoding of:
 
 1. `clientReference` presence and UTF-8 value;
-2. `amountMinor` as a signed 64-bit integer; and
-3. `currency` as uppercase ASCII.
+2. `amountMinor` as signed 64-bit integer;
+3. uppercase ASCII currency; and
+4. the opaque ASCII `paymentMethodReference`.
 
-JSON whitespace, JSON property order, authorization, correlation, and trace headers are excluded.
-Null and an empty client reference have different canonical encodings, although an empty value is
-rejected at the API boundary.
+JSON order/whitespace, authorization, correlation, and trace headers are excluded. Raw keys and
+request bodies are never persisted or logged.
 
-The key claim, new `CREATED` order, and immutable `201` response snapshot commit in one PostgreSQL
-transaction. A database primary key on `(principal_scope, operation, key_hash)` serializes
-contenders. PostgreSQL waits for an uncommitted conflicting insert: after the winner commits, an
-identical request replays its snapshot and a changed request returns `409`. If the winner rolls
-back, a contender can claim the key and create the order. No provider or Kafka call occurs in this
-transaction.
+The initial short transaction claims the unique key, inserts a `PAYMENT_PROCESSING` order and one
+payment with its stable authorization operation ID, and attaches the order ID to the in-progress
+record. It commits before provider I/O. This intentionally supersedes ADR 0003's historical
+single-transaction `CREATED` snapshot for new version-2 public requests; existing completed
+snapshots remain replayable data.
 
-## Create order
+After a terminal/retry-pending result, a short transaction writes the original status, location,
+and business representation. Matching replay returns those business fields with the current
+request's correlation header and `Idempotency-Replayed: true`. Changed canonical input returns
+`409 idempotency_key_reused`. A contender that observes a recent active provider call waits only a
+bounded interval and otherwise returns retryable `503`; it never starts a second provider call.
 
-`POST /api/v1/orders`
+## Create and complete order
 
 ```http
 POST /api/v1/orders HTTP/1.1
@@ -94,108 +75,93 @@ Idempotency-Key: order-019535d9-3df7-79fb
 X-Correlation-Id: checkout-order-001
 
 {
-  "clientReference": "checkout-20260713-0001",
-  "amount": {
-    "amountMinor": 259900,
-    "currency": "INR"
-  }
+  "clientReference": "checkout-20260715-0001",
+  "amount": {"amountMinor": 259900, "currency": "INR"},
+  "paymentMethodReference": "pm_mock_success"
 }
 ```
 
-Validation rules:
+`paymentMethodReference` is required, 9–128 characters, and matches `pm_mock_[a-z_]+`. It is an
+opaque local/test provider token, not card data. It is never returned or logged and is cleared from
+the payment after authorization resolves. PAN, CVV, real credentials, or arbitrary payment fields
+are rejected.
 
-- `clientReference` is optional, 1–100 characters when present, and has no surrounding whitespace;
-- `amountMinor` is a positive signed 64-bit integer;
-- `currency` is the explicit value `INR`; and
-- the request contains no payment method because payment behavior is outside this slice.
-
-A new order returns:
+A normal success returns after local financial finalization:
 
 ```http
 HTTP/1.1 201 Created
-Content-Type: application/json
 Location: /api/v1/orders/019535d9-3df7-79fb-b466-fa907fa17f9e
 X-Correlation-Id: checkout-order-001
+Content-Type: application/json
 
 {
   "orderId": "019535d9-3df7-79fb-b466-fa907fa17f9e",
-  "clientReference": "checkout-20260713-0001",
-  "status": "CREATED",
-  "amount": {
-    "amountMinor": 259900,
-    "currency": "INR"
+  "clientReference": "checkout-20260715-0001",
+  "status": "COMPLETED",
+  "amount": {"amountMinor": 259900, "currency": "INR"},
+  "payment": {
+    "paymentId": "019535d9-4a20-7e29-9d35-a6e4aeab9e07",
+    "status": "CAPTURED",
+    "failureCode": null
   },
-  "createdAt": "2026-07-13T09:42:00Z",
-  "updatedAt": "2026-07-13T09:42:00Z"
+  "createdAt": "2026-07-15T17:24:00Z",
+  "updatedAt": "2026-07-15T17:24:01Z"
 }
 ```
 
-An identical replay returns the same `201`, body, `Location`, and order ID, with the current
-operation's correlation header and:
+`COMPLETED`/`CAPTURED` means one balanced journal and one logical payment-captured outbox event are
+durable. The outbox may still be `PENDING`; Kafka acknowledgement and notification creation are not
+awaited.
 
-```http
-Idempotency-Replayed: true
-```
+Confirmed authorization/capture decline returns `201` with order `PAYMENT_DECLINED`, the matching
+payment decline state, and a stable sanitized failure code. It creates no ledger or outbox effect.
+Exhausted temporary failure or unresolved unknown outcome returns `202` with order
+`PAYMENT_RETRY_PENDING`; the original `202` is replayable and later recovery requires approved
+operator work. A malformed/contradictory provider response persists order/payment `FAILED` and
+returns replayable `502 provider_protocol_error` with `Location`; the owner can GET the failed
+resource. Provider response text is never returned.
 
-A changed-payload reuse returns:
-
-```http
-HTTP/1.1 409 Conflict
-Content-Type: application/problem+json
-X-Correlation-Id: checkout-order-002
-
-{
-  "type": "https://ledgerflow.example/problems/idempotency-key-reused",
-  "title": "Idempotency key reused",
-  "status": 409,
-  "detail": "The idempotency key was already used with a different request.",
-  "instance": "/api/v1/orders",
-  "code": "idempotency_key_reused",
-  "correlationId": "checkout-order-002"
-}
-```
+Timeout is not failure proof. LedgerFlow first looks up the persisted operation ID. Confirmed
+success continues without a resend. Only `NOT_FOUND` permits a resend with exactly the same ID.
+After provider success but before local persistence, a later request waits out the active-call
+deadline, performs that lookup, and continues. After the ledger/outbox transaction, a later request
+replays those unique effects and completes final states.
 
 ## Get order
 
-`GET /api/v1/orders/{orderId}` returns only an order owned by the authenticated subject.
-
-```http
-GET /api/v1/orders/019535d9-3df7-79fb-b466-fa907fa17f9e HTTP/1.1
-Authorization: Bearer <customer-token>
-X-Correlation-Id: checkout-read-001
-```
-
-The `200` body uses the same order schema. Missing and non-owned IDs both return `404` so the API
-does not disclose another subject's resource. A malformed UUID returns `400`.
+`GET /api/v1/orders/{orderId}` returns the owner-visible current order/payment representation. It
+can show `PAYMENT_PROCESSING` during a durable in-progress recovery window, but terminal create
+responses are `COMPLETED`, `PAYMENT_DECLINED`, `PAYMENT_RETRY_PENDING`, or `FAILED`. It does not
+include payment-method/provider references or notification-delivery status.
 
 ## Problem details
 
-Every error uses the RFC 9457 members `type`, `title`, `status`, `detail`, and `instance`, plus stable
-LedgerFlow properties `code` and `correlationId`. Validation failures can also contain an `errors`
-array of JSON-style field paths and stable codes.
-
-The active operations document these responses:
+Every problem uses `type`, `title`, `status`, `detail`, and `instance`, plus stable `code` and the
+current `correlationId`. Validation can add bounded field/code entries.
 
 | Status | Meaning |
 | ---: | --- |
-| `400` | Invalid body, UUID, required header, idempotency-key syntax, unexpected query, or validation |
+| `400` | Invalid body/path/header/query or idempotency-key syntax |
 | `401` | Missing or invalid bearer authentication |
-| `403` | Authenticated token lacks the required scope or allowlisted realm role |
-| `404` | Order does not exist or is not owned by the subject |
-| `406` | Requested response media type is unsupported |
-| `409` | Idempotency key is bound to a different canonical payload |
-| `413` | Request payload exceeds the configured byte limit |
-| `415` | Request media type or content encoding is unsupported |
-| `422` | A well-formed currency is unsupported; the MVP accepts INR only |
-| `429` | Per-instance subject write limit exceeded; retry after the response delay |
-| `500` | Sanitized unexpected server failure |
-| `503` | PostgreSQL or safe idempotency completion is temporarily unavailable |
+| `403` | Required scope or realm role absent |
+| `404` | Order absent or not owned by subject |
+| `406` | Response media type unsupported |
+| `409` | Idempotency key bound to a different canonical request |
+| `413` | Payload exceeds configured bound |
+| `415` | Media type/content encoding unsupported |
+| `422` | Currency is well formed but not INR |
+| `429` | Per-instance subject write limit exceeded |
+| `500` | Sanitized unexpected failure; retry same key if outcome is uncertain |
+| `502` | Malformed/contradictory provider response; failed order is durable at `Location` |
+| `503` | Durable dependency unavailable or another provider call is still safely active |
 
-Problem responses never expose hashes, original payloads, raw keys, tokens, SQL, or stack traces.
+Problems/logs never expose keys, hashes, request bodies, tokens, SQL, stack traces, provider bodies,
+payment-method references, PANs, or CVVs.
 
-## Compatibility and deferred behavior
+## Compatibility
 
-The current response state is only `CREATED`. Later milestones may add payment-related current
-states and fields only after updating and validating OpenAPI first. They must preserve the original
-Create Order replay snapshot and keep `GET` as the current-state read. Provider, ledger, outbox,
-Kafka, notification, and operator routes described in product planning are not active contracts.
+Adding `paymentMethodReference` changes the create request and terminal representation within the
+pre-release MVP v1 contract. ADR 0013 records the explicit maintainer-approved break from the
+historical Milestone 3 slice. There is no production compatibility promise yet. Database migration
+V008 is additive/forward-only and continues to permit historical `CREATED` rows and completed 201
+snapshots. Kafka event schema version 1 is unchanged.

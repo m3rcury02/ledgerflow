@@ -25,4 +25,15 @@ class RequestFingerprintTest {
     assertThat(RequestFingerprint.create("checkout-1", money))
         .isNotEqualTo(RequestFingerprint.create("checkout-1", new Money(10_001, "INR")));
   }
+
+  @Test
+  void completeWorkflowFingerprintIncludesTheOpaquePaymentReference() {
+    Money money = new Money(10_000, "INR");
+
+    assertThat(RequestFingerprint.createWorkflow("checkout-1", money, "pm_mock_success"))
+        .hasSize(32)
+        .isNotEqualTo(
+            RequestFingerprint.createWorkflow(
+                "checkout-1", money, "pm_mock_authorization_decline"));
+  }
 }

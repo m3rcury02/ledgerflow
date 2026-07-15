@@ -1,6 +1,6 @@
-package com.ledgerflow.payments.internal.domain;
+package com.ledgerflow.payments.api;
 
-public enum PaymentState {
+public enum PaymentStatus {
   CREATED,
   AUTHORIZING,
   AUTHORIZED,

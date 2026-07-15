@@ -63,6 +63,7 @@ public class PaymentWorkflowService {
     Payment current = get(paymentId);
     if (current.state() == PaymentState.CAPTURE_CONFIRMED
         || current.state() == PaymentState.CAPTURE_ACCOUNTED
+        || current.state() == PaymentState.CAPTURED
         || current.state() == PaymentState.CAPTURE_DECLINED) {
       return current;
     }

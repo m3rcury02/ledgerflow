@@ -126,7 +126,8 @@ components:
           description: >-
             Deterministic test scenario: success, authorization_decline, capture_decline,
             authorization_timeout, capture_timeout, authorization_temporary_error,
-            capture_temporary_error, slow_response, or invalid_response. The last
+            capture_temporary_error, authorization_timeout_not_found,
+            capture_timeout_not_found, slow_response, or invalid_response. The last
             scenario intentionally violates the response schema to test fail-closed handling.
     CaptureRequest:
       type: object

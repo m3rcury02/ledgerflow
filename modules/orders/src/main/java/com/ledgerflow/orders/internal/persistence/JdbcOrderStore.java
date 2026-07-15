@@ -71,6 +71,22 @@ public class JdbcOrderStore implements OrderStore {
   @Override
   public Order insertOrder(
       String ownerSubject, String clientReference, Money amount, String correlationId) {
+    return insertOrder(ownerSubject, clientReference, amount, correlationId, OrderStatus.CREATED);
+  }
+
+  @Override
+  public Order insertWorkflowOrder(
+      String ownerSubject, String clientReference, Money amount, String correlationId) {
+    return insertOrder(
+        ownerSubject, clientReference, amount, correlationId, OrderStatus.PAYMENT_PROCESSING);
+  }
+
+  private Order insertOrder(
+      String ownerSubject,
+      String clientReference,
+      Money amount,
+      String correlationId,
+      OrderStatus status) {
     return jdbcClient
         .sql(
             """
@@ -78,7 +94,7 @@ public class JdbcOrderStore implements OrderStore {
                 owner_subject, client_reference, amount_minor, currency, status,
                 initial_correlation_id
             ) VALUES (
-                :ownerSubject, :clientReference, :amountMinor, :currency, 'CREATED',
+                :ownerSubject, :clientReference, :amountMinor, :currency, :status,
                 :correlationId
             )
             RETURNING id, owner_subject, client_reference, amount_minor, currency, status,
@@ -88,8 +104,55 @@ public class JdbcOrderStore implements OrderStore {
         .param("clientReference", clientReference, Types.VARCHAR)
         .param("amountMinor", amount.amountMinor())
         .param("currency", amount.currency())
+        .param("status", status.name())
         .param("correlationId", correlationId)
         .query(this::mapOrder)
+        .single();
+  }
+
+  @Override
+  public void attachIdempotencyResource(
+      String principalScope, String operation, byte[] keyHash, UUID resourceId) {
+    int updated =
+        jdbcClient
+            .sql(
+                """
+                UPDATE idempotency_records
+                SET resource_id = :resourceId, updated_at = statement_timestamp()
+                WHERE principal_scope = :principalScope
+                  AND operation = :operation
+                  AND key_hash = :keyHash
+                  AND state = 'IN_PROGRESS'
+                  AND resource_id IS NULL
+                """)
+            .param("resourceId", resourceId)
+            .param("principalScope", principalScope)
+            .param("operation", operation)
+            .param("keyHash", keyHash)
+            .update();
+    if (updated != 1) {
+      throw new IllegalStateException("Idempotency resource was not attached exactly once");
+    }
+  }
+
+  @Override
+  public IdempotencyRecord lockIdempotencyKey(
+      String principalScope, String operation, byte[] keyHash) {
+    return jdbcClient
+        .sql(
+            """
+            SELECT request_hash, state, resource_id, response_status,
+                   response_location, response_body::text AS response_body
+            FROM idempotency_records
+            WHERE principal_scope = :principalScope
+              AND operation = :operation
+              AND key_hash = :keyHash
+            FOR UPDATE
+            """)
+        .param("principalScope", principalScope)
+        .param("operation", operation)
+        .param("keyHash", keyHash)
+        .query(this::mapIdempotencyRecord)
         .single();
   }
 
@@ -146,6 +209,63 @@ public class JdbcOrderStore implements OrderStore {
         .param("ownerSubject", ownerSubject)
         .query(this::mapOrder)
         .optional();
+  }
+
+  @Override
+  public Optional<Order> findOrder(UUID orderId) {
+    return jdbcClient
+        .sql(
+            """
+            SELECT id, owner_subject, client_reference, amount_minor, currency, status,
+                   created_at, updated_at
+            FROM orders
+            WHERE id = :orderId
+            """)
+        .param("orderId", orderId)
+        .query(this::mapOrder)
+        .optional();
+  }
+
+  @Override
+  public Order transitionOrder(UUID orderId, OrderStatus expected, OrderStatus target) {
+    Optional<Order> transitioned =
+        jdbcClient
+            .sql(
+                """
+                UPDATE orders
+                SET status = :target,
+                    version = version + 1,
+                    updated_at = statement_timestamp()
+                WHERE id = :orderId AND status = :expected
+                RETURNING id, owner_subject, client_reference, amount_minor, currency, status,
+                          created_at, updated_at
+                """)
+            .param("target", target.name())
+            .param("orderId", orderId)
+            .param("expected", expected.name())
+            .query(this::mapOrder)
+            .optional();
+    if (transitioned.isPresent()) {
+      return transitioned.get();
+    }
+    Order current = findOrder(orderId).orElseThrow();
+    if (current.status() == target) {
+      return current;
+    }
+    throw new IllegalStateException(
+        "Order state changed concurrently from " + expected + " to " + current.status());
+  }
+
+  private IdempotencyRecord mapIdempotencyRecord(ResultSet resultSet, int rowNumber)
+      throws SQLException {
+    return new IdempotencyRecord(
+        false,
+        resultSet.getBytes("request_hash"),
+        resultSet.getString("state"),
+        resultSet.getObject("resource_id", UUID.class),
+        resultSet.getObject("response_status", Integer.class),
+        resultSet.getString("response_location"),
+        resultSet.getString("response_body"));
   }
 
   private Order mapOrder(ResultSet resultSet, int rowNumber) throws SQLException {

@@ -10,6 +10,7 @@ public record PaymentProviderProperties(
     Duration connectTimeout,
     Duration readTimeout,
     Duration overallTimeout,
+    Duration activeOperationTimeout,
     int maxAttempts,
     Duration baseBackoff,
     Duration maxBackoff,
@@ -47,6 +48,10 @@ public record PaymentProviderProperties(
     if (overallTimeout.compareTo(readTimeout) < 0 || overallTimeout.compareTo(connectTimeout) < 0) {
       throw new IllegalArgumentException(
           "provider overall timeout must not be less than connect or read timeout");
+    }
+    if (activeOperationTimeout == null || activeOperationTimeout.compareTo(overallTimeout) < 0) {
+      throw new IllegalArgumentException(
+          "provider active operation timeout must not be less than the overall timeout");
     }
     if (circuitFailureThreshold < 1 || circuitFailureThreshold > 100) {
       throw new IllegalArgumentException("circuitFailureThreshold must be between 1 and 100");

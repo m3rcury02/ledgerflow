@@ -1,11 +1,10 @@
 package com.ledgerflow.orders.internal.web;
 
-import com.ledgerflow.orders.internal.application.CreateOrderCommand;
-import com.ledgerflow.orders.internal.application.CreateOrderResult;
-import com.ledgerflow.orders.internal.application.OrderService;
-import com.ledgerflow.orders.internal.application.OrderView;
-import com.ledgerflow.orders.internal.domain.IdempotencyKey;
-import com.ledgerflow.orders.internal.domain.Money;
+import com.ledgerflow.orders.api.CreateOrderWorkflow;
+import com.ledgerflow.orders.api.OrderWorkflow;
+import com.ledgerflow.orders.api.OrderWorkflowResult;
+import com.ledgerflow.orders.api.PublicOrder;
+import com.ledgerflow.orders.internal.application.ProviderProtocolException;
 import com.ledgerflow.orders.internal.web.OrderHttpModels.CreateOrderRequest;
 import com.ledgerflow.orders.internal.web.OrderHttpModels.OrderResponse;
 import jakarta.servlet.http.HttpServletRequest;
@@ -30,10 +29,10 @@ public class OrderController {
 
   private static final Logger LOGGER = LoggerFactory.getLogger(OrderController.class);
 
-  private final OrderService orderService;
+  private final OrderWorkflow orderWorkflow;
 
-  public OrderController(OrderService orderService) {
-    this.orderService = orderService;
+  public OrderController(OrderWorkflow orderWorkflow) {
+    this.orderWorkflow = orderWorkflow;
   }
 
   @PostMapping(
@@ -45,20 +44,27 @@ public class OrderController {
       JwtAuthenticationToken authentication,
       HttpServletRequest servletRequest) {
     String correlationId = correlationId(servletRequest);
-    CreateOrderResult result =
-        orderService.create(
-            new CreateOrderCommand(
+    OrderWorkflowResult result =
+        orderWorkflow.create(
+            new CreateOrderWorkflow(
                 ownerSubject(authentication),
                 correlationId,
                 request.clientReference(),
-                new Money(request.amount().amountMinor(), request.amount().currency()),
-                new IdempotencyKey(rawIdempotencyKey)));
+                request.amount().amountMinor(),
+                request.amount().currency(),
+                request.paymentMethodReference(),
+                rawIdempotencyKey));
+    if (result.responseStatus() == 502) {
+      throw new ProviderProtocolException(result.location(), result.replayed());
+    }
     LOGGER.info(
-        "Order create completed: orderId={}, replayed={}",
+        "Order workflow completed: orderId={}, status={}, replayed={}",
         result.order().orderId(),
+        result.order().status(),
         result.replayed());
     ResponseEntity.BodyBuilder response =
-        ResponseEntity.status(201).header(HttpHeaders.LOCATION, result.location());
+        ResponseEntity.status(result.responseStatus())
+            .header(HttpHeaders.LOCATION, result.location());
     if (result.replayed()) {
       response.header("Idempotency-Replayed", "true");
     }
@@ -69,7 +75,7 @@ public class OrderController {
       value = "/{orderId}",
       produces = org.springframework.http.MediaType.APPLICATION_JSON_VALUE)
   public OrderResponse getOrder(@PathVariable UUID orderId, JwtAuthenticationToken authentication) {
-    OrderView order = orderService.get(orderId, ownerSubject(authentication));
+    PublicOrder order = orderWorkflow.get(orderId, ownerSubject(authentication));
     LOGGER.info("Order read completed: orderId={}", orderId);
     return OrderResponse.from(order);
   }

@@ -3,7 +3,9 @@ package com.ledgerflow.orders.internal.web;
 import com.ledgerflow.orders.internal.application.IdempotencyConflictException;
 import com.ledgerflow.orders.internal.application.IdempotencyUnavailableException;
 import com.ledgerflow.orders.internal.application.OrderNotFoundException;
+import com.ledgerflow.orders.internal.application.ProviderProtocolException;
 import com.ledgerflow.orders.internal.domain.UnsupportedCurrencyException;
+import com.ledgerflow.payments.api.PaymentWorkflowUnavailableException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.List;
 import java.util.Map;
@@ -131,6 +133,25 @@ public class OrderProblemHandler {
         request);
   }
 
+  @ExceptionHandler(ProviderProtocolException.class)
+  ResponseEntity<ProblemDetail> providerProtocol(
+      ProviderProtocolException exception, HttpServletRequest request) {
+    ResponseEntity.BodyBuilder response =
+        ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+            .header(org.springframework.http.HttpHeaders.LOCATION, exception.location());
+    if (exception.replayed()) {
+      response.header("Idempotency-Replayed", "true");
+    }
+    return response.body(
+        problemDetailsFactory.create(
+            HttpStatus.BAD_GATEWAY,
+            "provider-protocol-error",
+            "Payment provider protocol error",
+            "The payment provider returned an invalid response.",
+            "provider_protocol_error",
+            request));
+  }
+
   @ExceptionHandler(OrderNotFoundException.class)
   ResponseEntity<ProblemDetail> notFound(
       OrderNotFoundException exception, HttpServletRequest request) {
@@ -155,7 +176,11 @@ public class OrderProblemHandler {
         request);
   }
 
-  @ExceptionHandler({IdempotencyUnavailableException.class, TransientDataAccessException.class})
+  @ExceptionHandler({
+    IdempotencyUnavailableException.class,
+    PaymentWorkflowUnavailableException.class,
+    TransientDataAccessException.class
+  })
   ResponseEntity<ProblemDetail> temporarilyUnavailable(
       Exception exception, HttpServletRequest request) {
     return problem(

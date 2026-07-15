@@ -8,7 +8,7 @@
 
 This threat model covers the MVP public API, operator API, modular-monolith process, mock payment-provider boundary, PostgreSQL, Kafka topics, OpenTelemetry export, and administrative retry flow.
 
-The active scope includes the Create Order HTTP/PostgreSQL boundary, the non-public payment/provider integration harness, non-public capture accounting, the transactional outbox publisher, notification consumer/inbox, DLT catalog, terminal malformed-DLT evidence, isolated management listener, and audited replay CLI. Capture accounting commits payment `CAPTURE_ACCOUNTED`, the balanced journal, and outbox event together. Kafka publish/consume is at least once; event-ID/hash transport checks plus a versioned semantic-effect constraint prevent the covered capture notification from repeating under a new envelope. Public financial orchestration, order `COMPLETED`, payment `CAPTURED`, and the operator HTTP controls below remain launch requirements, not claims about current behavior.
+The active scope includes the complete public order/payment workflow, capture accounting, transactional outbox publisher, notification consumer/inbox, DLT evidence, isolated management listener, and audited replay CLI. Capture accounting commits `CAPTURE_ACCOUNTED`, the balanced journal, and outbox together; a separate guarded transaction finalizes `CAPTURED`, `COMPLETED`, and the original HTTP result. Kafka publish/consume remains at least once, with independent transport and semantic-effect idempotency. Secured operator HTTP controls below remain launch requirements.
 
 It does not certify PCI DSS compliance or cover a real payment provider, identity-provider implementation, host/container hardening, Kafka/PostgreSQL control planes, or internet-scale denial-of-service protection.
 
@@ -60,8 +60,8 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 | T-03 | Customer calls operator endpoint or operator retries without retry scope | Privilege escalation and duplicate money movement | Reserved operator route policy requires separate read/retry scopes plus operator/admin role; deny by default; future handlers repeat use-case authorization | Negative role/scope route tests now; operator use-case matrix when endpoints exist |
 | T-04 | Idempotency-key replay with changed payload | Wrong order returned or duplicate charge | Principal/operation scope, normalized request hash, unique DB key, `409` mismatch | Sequential and concurrent mismatch tests |
 | T-05 | Guessing or leaking idempotency keys | Replay intelligence or cross-client collision | 8–128 bounded ASCII values, client guidance for ≥128-bit entropy, SHA-256 data minimization, no logging, owner/operation scope | Log/DB inspection and cross-scope tests |
-| T-06 | Concurrent requests race state transitions | Double authorization, capture, ledger, or outbox | Stable provider keys, optimistic versions, unique business references, guarded SQL | Concurrency and stale-version tests |
-| T-07 | Provider timeout hides a successful operation | Duplicate provider effect or missing local capture | Query by stable operation key before resend; idempotent provider contract; durable pre-call state | Timeout/crash-window tests |
+| T-06 | Concurrent requests race state transitions | Double authorization, capture, ledger, or outbox | Stable provider keys, optimistic versions, active-call recovery deadline, bounded contender wait, guarded SQL, unique business references | Public workflow convergence, provider-call-count, and stale-version tests |
+| T-07 | Provider timeout or process crash hides a successful operation | Duplicate provider effect or missing local capture | Durable pre-call state, wait out active deadline, lookup by stable operation key, resend only after `NOT_FOUND` using same ID | Confirmed-lookup, `NOT_FOUND` same-ID resend, and crash-window tests |
 | T-08 | Malicious or compromised provider sends impossible data | Invalid payment state committed | Strict response outcome/reference validation, state guard, bounded body, sanitized failure | Invalid/contradictory-response tests; amount echo validation remains a real-provider requirement |
 | T-09 | SSRF through configurable provider URL | Access to internal services/metadata | Provider base URI comes only from trusted deployment config, must be absolute HTTP(S), and is never request-supplied; production egress allowlisting is required | Configuration tests, deployment policy, and review |
 | T-10 | SQL injection or mass assignment | Data compromise | Parameterized JDBC, typed commands, explicit field mapping, reject unknown JSON properties | Static analysis and hostile input tests |
@@ -89,7 +89,7 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 ## Input and external-service safety
 
 - Bean validation is not the only boundary: normalized commands, state guards, and database constraints revalidate critical invariants.
-- The active public API accepts only JSON, rejects query parameters and compressed create bodies, and bounds headers, body bytes, nesting, tokens, names, strings, and numbers. Duplicate and unknown fields—including payment/card-like fields—are rejected before a business write. The non-public integration harness accepts only opaque `pm_mock_*` references; no PAN, CVV, or real credential is accepted.
+- The active public API accepts only JSON, rejects query parameters/compression, and bounds headers/body/structure. It accepts one required opaque `pm_mock_*` reference for the external test provider and rejects unknown payment/card-like fields. No PAN, CVV, or real credential is accepted. The value is hashed into idempotency, never returned/logged/evented, and retained only while authorization recovery needs it.
 - Create Order has a bounded per-instance fixed-window limiter keyed by a SHA-256 hash of authenticated subject. Raw identity/token/key material is not stored in limiter state. Global and unauthenticated attack control remains the responsibility of a trusted deployment ingress.
 - The mock payment-method reference is persisted only while authorization may need recovery, then cleared after success or a terminal authorization result. It is never returned or copied to attempt history. A real provider requires a new token-vault/envelope-encryption decision, restricted database privileges, and threat review.
 - Provider host and timeout configuration are deployment input, never client input. The current adapter accepts HTTP for loopback integration tests; production TLS validation, egress allowlisting, credentials, and host policy require the real-provider milestone.
@@ -100,7 +100,7 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 
 ## Kafka and outbox safety
 
-- Capture accounting appends the outbox event through `messaging.api` in the same PostgreSQL transaction as payment `CAPTURE_ACCOUNTED` and the ledger journal. It does not mutate the order or claim final payment `CAPTURED`.
+- Capture accounting appends the outbox through `messaging.api` in the same PostgreSQL transaction as `CAPTURE_ACCOUNTED` and the journal. A later provider-free transaction finalizes payment/order/idempotency after verifying that evidence. Kafka is never called from either transaction.
 - The publisher claims with `SELECT ... FOR UPDATE SKIP LOCKED` in short transactions, publishes outside PostgreSQL, and uses owner-guarded acknowledgement/failure markers. Ten attempts use bounded exponential backoff and jitter.
 - Production Kafka uses TLS/SASL and distinct least-privilege principals for main publishing, notification consumption, retry/DLT publishing, and DLT inspection where the platform permits.
 - Topic auto-creation is disabled outside local/test. Deployment validates topic existence, partitions, retention, maximum message size, and ACLs.
@@ -114,11 +114,12 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 ## Ledger integrity and audit safety
 
 - Only a provider-confirmed payment can enter the accounting transaction. The transaction locks that payment, inserts its complete balanced journal, changes the payment to `CAPTURE_ACCOUNTED`, and appends the outbox event; a failed deferred check or outbox append rolls back every effect.
+- V008 deferred finalization checks require a `COMPLETED` order to have its unique `CAPTURED` payment, capture journal, and matching immutable outbox identity. They also reject terminal decline/retry/failure order states that contradict payment state. These checks are defense in depth, not a substitute for module APIs.
 - Concurrent and repeated requests converge on the same journal because the payment row serializes writers and PostgreSQL independently enforces unique capture source/payment keys.
 - Domain code rejects fewer than two entries, mixed currencies, non-positive amounts, overflow, and unequal totals before SQL. PostgreSQL rechecks row and aggregate invariants at commit and verifies the capture's exact accounts, amount, payment, and order.
 - Posted transaction and entry rows reject update/delete. Corrections append an exact linked reversal and retain the original evidence.
 - Correlation ID, actor, source, and posting timestamp are required, bounded, and stored on each journal transaction. They are audit metadata, not authorization decisions.
-- The current ledger use case is module-internal. Until an authenticated coordinator/operator boundary exists, its `actor` value must be supplied only by trusted application code and must not be exposed as a client-controlled field.
+- The authenticated orders coordinator supplies a fixed internal ledger actor. No request field can set the actor or call ledger posting directly.
 - Local and integration environments use a schema-owner credential for convenience. Production launch requires a separate non-owner runtime role that cannot disable triggers, run DDL, or mutate immutable rows; owner compromise remains outside application-level protection.
 
 ## Telemetry safety
@@ -153,9 +154,9 @@ The following controls apply to the future operator HTTP workflow and are not im
 - Query, media/content encoding, duplicate/unknown JSON, header/body size, rate-limit, and malformed JSON boundary tests.
 - Concurrent HTTP idempotency tests; operator-HTTP retry tests remain future.
 - Multi-instance outbox/replay claims, expired-lease takeover, and stale-owner completion-rejection tests.
-- Provider contract tests for malformed IDs, wrong amount/currency, oversized body, timeout, and unknown outcome.
+- Provider contract tests for stable IDs, decline, malformed response, timeout-confirmed lookup, timeout-`NOT_FOUND` same-ID resend, temporary failure, and success-lost-before-persistence recovery.
 - Direct PostgreSQL tests proving balance, immutability, unique source, and state constraints.
-- Concurrent ledger-posting tests proving one payment produces one journal and one payment accounting transition.
+- Concurrent HTTP/workflow and ledger-posting tests proving one order/payment, one provider mutation per stage, one journal, and one logical outbox event.
 - Database-role tests proving the runtime user cannot perform DDL or update/delete immutable ledger/audit rows while Flyway can migrate.
 - Kafka tests for malformed event, unknown version, duplicate delivery, re-enveloping and semantic conflicts, the publish/marker crash window, poison records, retry exhaustion, malformed DLT routing, terminal-evidence persistence failure/recovery, and partition progress.
 - Toxiproxy tests for provider latency/reset/timeout and temporary PostgreSQL/Kafka loss; recovery assertions restore each fault before completion.
@@ -163,13 +164,14 @@ The following controls apply to the future operator HTTP workflow and are not im
 - DLT-catalog tests for safe evidence, idempotent original and actual DLT coordinates, immutable terminal evidence, replay eligibility, lease safety, and immutable audit. Provisioned alerts cover terminal intake and evidence-persistence failure; production routing remains a deployment responsibility.
 - Captured structured-log, in-memory trace-exporter, outbox-header, and DLT-record assertions that seeded secret markers never appear.
 - A Docker-backed scan of repository secrets/misconfiguration, packaged Java dependencies, and every explicit Compose image. Any exception requires an owner, rationale, compensating control, and expiry.
-- Production-profile startup tests proving no mock service or permissive authentication can be enabled before a public payment route exists.
+- Production-profile startup tests proving no embedded mock service or permissive authentication is present. Without a configured provider origin, create fails safely and its initialization transaction rolls back.
 
 ## Residual risks and launch conditions
 
 - The application limiter is per instance; aggregate and unauthenticated volumetric DDoS protection requires a trusted deployment edge before internet exposure.
 - Production JWT launch still requires explicit JWKS transport/cache budgets, key-rotation and issuer-outage exercises, and an agreed readiness policy.
 - A real payment provider requires a new threat review, token-storage decision, provider-specific reconciliation, and PCI assessment.
+- The current payment-method reference and deterministic scenarios are demonstration-only. They are not acceptable as a real-provider credential or public production contract.
 - Data retention for idempotency, audit, outbox, inbox, notification, DLT, logs, and traces must be approved before production launch.
 - Database-owner compromise can bypass trigger-based ledger protection; production role separation, privileged-access audit, and restore testing remain launch conditions.
 - Backup/restore, disaster recovery, key rotation, vulnerability management, and broker/database hardening require deployment runbooks outside this MVP implementation plan.

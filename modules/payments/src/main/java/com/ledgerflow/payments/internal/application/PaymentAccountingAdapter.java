@@ -49,7 +49,7 @@ public class PaymentAccountingAdapter implements PaymentAccounting {
   private CaptureAccountingStatus accountingStatus(PaymentState state) {
     return switch (state) {
       case CAPTURE_CONFIRMED -> CaptureAccountingStatus.CONFIRMED;
-      case CAPTURE_ACCOUNTED -> CaptureAccountingStatus.ACCOUNTED;
+      case CAPTURE_ACCOUNTED, CAPTURED -> CaptureAccountingStatus.ACCOUNTED;
       default -> throw new PaymentNotReadyForAccountingException();
     };
   }

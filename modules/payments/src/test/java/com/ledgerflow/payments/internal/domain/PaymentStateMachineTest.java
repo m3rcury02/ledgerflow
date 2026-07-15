@@ -20,6 +20,7 @@ class PaymentStateMachineTest {
     Payment capturing = authorized.startCapture(captureRequestId, NOW);
     Payment confirmed = capturing.captureSucceeded("capture-provider-1", NOW);
     Payment accounted = confirmed.captureAccounted(NOW.plusSeconds(1));
+    Payment finalized = accounted.captureFinalized(NOW.plusSeconds(2));
 
     assertThat(authorizing.state()).isEqualTo(PaymentState.AUTHORIZING);
     assertThat(authorized.state()).isEqualTo(PaymentState.AUTHORIZED);
@@ -28,7 +29,9 @@ class PaymentStateMachineTest {
     assertThat(confirmed.state()).isEqualTo(PaymentState.CAPTURE_CONFIRMED);
     assertThat(confirmed.providerCaptureId()).isEqualTo("capture-provider-1");
     assertThat(accounted.state()).isEqualTo(PaymentState.CAPTURE_ACCOUNTED);
-    assertThat(PaymentState.values()).extracting(Enum::name).doesNotContain("CAPTURED");
+    assertThat(finalized.state()).isEqualTo(PaymentState.CAPTURED);
+    assertThatThrownBy(() -> confirmed.captureFinalized(NOW.plusSeconds(2)))
+        .isInstanceOf(IllegalPaymentTransitionException.class);
   }
 
   @Test

@@ -1,11 +1,11 @@
 openapi: 3.1.0
 info:
   title: LedgerFlow API
-  version: 0.3.0
+  version: 0.4.0
   description: >-
-    LedgerFlow's contract-first HTTP API. The current vertical slice creates and reads INR orders;
-    implemented payment, ledger, outbox, Kafka, and notification capabilities are not invoked by
-    these public operations.
+    LedgerFlow's contract-first HTTP API. Creating an INR order synchronously drives the mock
+    payment authorization/capture and durable financial finalization. Outbox publication and
+    notification processing are asynchronous and are not prerequisites for the HTTP result.
 servers:
   - url: http://localhost:8080
     description: Local application
@@ -18,11 +18,14 @@ paths:
       operationId: createOrder
       summary: Create an order idempotently
       description: >-
-        Creates one INR order for the authenticated subject. Reusing the same Idempotency-Key with
-        the same canonical request returns the original result; reusing it with a different request
-        returns 409. The JWT must have the ledgerflow.orders.write scope and customer or admin realm
-        role. Query parameters, compressed bodies, duplicate/unknown JSON properties, and request
-        bodies larger than 16 KiB are rejected.
+        Creates and advances one INR order for the authenticated subject. Provider authorization
+        and capture are synchronous, while outbox publication and notification processing remain
+        asynchronous. Reusing the same Idempotency-Key with the same canonical request returns the
+        original business result; reusing it with a different request returns 409. An unknown
+        provider outcome is looked up using the original operation ID before any same-ID resend.
+        The JWT must have the ledgerflow.orders.write scope and customer or admin realm role. Query
+        parameters, compressed bodies, duplicate/unknown JSON properties, and request bodies larger
+        than 16 KiB are rejected.
       security:
         - bearerAuth: []
       parameters:
@@ -42,9 +45,13 @@ paths:
                   amount:
                     amountMinor: 259900
                     currency: INR
+                  paymentMethodReference: pm_mock_success
       responses:
         "201":
-          description: Order created, or original creation result replayed
+          description: >-
+            Original or replayed terminal order result. COMPLETED means payment CAPTURED and the
+            balanced journal plus durable outbox event committed; it does not mean Kafka publication
+            or notification processing completed. PAYMENT_DECLINED is also a terminal created order.
           headers:
             Location:
               $ref: "#/components/headers/Location"
@@ -57,8 +64,28 @@ paths:
               schema:
                 $ref: "#/components/schemas/Order"
               examples:
-                created:
-                  $ref: "#/components/examples/CreatedOrder"
+                completed:
+                  $ref: "#/components/examples/CompletedOrder"
+                declined:
+                  $ref: "#/components/examples/DeclinedOrder"
+        "202":
+          description: >-
+            The order and stable provider identities are durable, but a bounded temporary or unknown
+            provider outcome requires a later retry with the same Idempotency-Key.
+          headers:
+            Location:
+              $ref: "#/components/headers/Location"
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+              examples:
+                retryPending:
+                  $ref: "#/components/examples/RetryPendingOrder"
         "400":
           $ref: "#/components/responses/InvalidRequest"
         "401":
@@ -111,6 +138,31 @@ paths:
                     correlationId: order-currency-001
         "500":
           $ref: "#/components/responses/InternalError"
+        "502":
+          description: >-
+            The provider returned malformed or contradictory data. The failed order remains
+            owner-readable at Location, and an identical idempotent replay returns this outcome.
+          headers:
+            Location:
+              $ref: "#/components/headers/Location"
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                providerProtocol:
+                  value:
+                    type: https://ledgerflow.example/problems/provider-protocol-error
+                    title: Payment provider protocol error
+                    status: 502
+                    detail: The payment provider returned an invalid response.
+                    instance: /api/v1/orders
+                    code: provider_protocol_error
+                    correlationId: order-provider-001
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "429":
@@ -146,7 +198,7 @@ paths:
                 $ref: "#/components/schemas/Order"
               examples:
                 current:
-                  $ref: "#/components/examples/CreatedOrder"
+                  $ref: "#/components/examples/CompletedOrder"
         "400":
           $ref: "#/components/responses/InvalidRequest"
         "401":
@@ -234,7 +286,7 @@ components:
     CreateOrderRequest:
       type: object
       additionalProperties: false
-      required: [amount]
+      required: [amount, paymentMethodReference]
       properties:
         clientReference:
           type: string
@@ -244,6 +296,15 @@ components:
           example: checkout-20260713-0001
         amount:
           $ref: "#/components/schemas/Money"
+        paymentMethodReference:
+          type: string
+          minLength: 9
+          maxLength: 128
+          pattern: "^pm_mock_[a-z_]+$"
+          description: >-
+            Opaque local/test mock-provider token. It is included in idempotency hashing, is never
+            returned or logged, and must never contain card data or real payment credentials.
+          example: pm_mock_success
     Money:
       type: object
       additionalProperties: false
@@ -263,7 +324,7 @@ components:
     Order:
       type: object
       additionalProperties: false
-      required: [orderId, status, amount, createdAt, updatedAt]
+      required: [orderId, status, amount, payment, createdAt, updatedAt]
       properties:
         orderId:
           type: string
@@ -278,9 +339,22 @@ components:
           maxLength: 100
         status:
           type: string
-          enum: [CREATED]
+          enum:
+            - CREATED
+            - PAYMENT_PROCESSING
+            - COMPLETED
+            - PAYMENT_DECLINED
+            - PAYMENT_RETRY_PENDING
+            - FAILED
         amount:
           $ref: "#/components/schemas/Money"
+        payment:
+          description: >-
+            Payment workflow state for Milestone 6 orders. Null is retained only so historical
+            pre-Milestone-6 CREATED orders remain readable after an in-place database upgrade.
+          oneOf:
+            - $ref: "#/components/schemas/PaymentSummary"
+            - type: "null"
         createdAt:
           type: string
           format: date-time
@@ -288,7 +362,39 @@ components:
         updatedAt:
           type: string
           format: date-time
-          example: 2026-07-13T09:42:00Z
+          example: 2026-07-13T09:42:01Z
+    PaymentSummary:
+      type: object
+      additionalProperties: false
+      required: [paymentId, status]
+      properties:
+        paymentId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+            - CREATED
+            - AUTHORIZING
+            - AUTHORIZED
+            - DECLINED
+            - AUTHORIZATION_RETRY_PENDING
+            - AUTHORIZATION_UNKNOWN
+            - CAPTURING
+            - CAPTURE_CONFIRMED
+            - CAPTURE_ACCOUNTED
+            - CAPTURED
+            - CAPTURE_DECLINED
+            - CAPTURE_RETRY_PENDING
+            - CAPTURE_UNKNOWN
+            - FAILED
+        failureCode:
+          type:
+            - string
+            - "null"
+          maxLength: 64
+          pattern: "^[A-Z0-9_]+$"
+          example: AUTHORIZATION_DECLINED
     ValidationError:
       type: object
       additionalProperties: false
@@ -429,13 +535,45 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
   examples:
-    CreatedOrder:
+    CompletedOrder:
       value:
         orderId: 019535d9-3df7-79fb-b466-fa907fa17f9e
         clientReference: checkout-20260713-0001
-        status: CREATED
+        status: COMPLETED
         amount:
           amountMinor: 259900
           currency: INR
+        payment:
+          paymentId: 019535d9-4a20-7e29-9d35-a6e4aeab9e07
+          status: CAPTURED
+          failureCode: null
         createdAt: 2026-07-13T09:42:00Z
-        updatedAt: 2026-07-13T09:42:00Z
+        updatedAt: 2026-07-13T09:42:01Z
+    DeclinedOrder:
+      value:
+        orderId: 019535d9-3df7-79fb-b466-fa907fa17f9e
+        clientReference: checkout-20260713-0002
+        status: PAYMENT_DECLINED
+        amount:
+          amountMinor: 259900
+          currency: INR
+        payment:
+          paymentId: 019535d9-4a20-7e29-9d35-a6e4aeab9e08
+          status: DECLINED
+          failureCode: AUTHORIZATION_DECLINED
+        createdAt: 2026-07-13T09:42:00Z
+        updatedAt: 2026-07-13T09:42:01Z
+    RetryPendingOrder:
+      value:
+        orderId: 019535d9-3df7-79fb-b466-fa907fa17f9e
+        clientReference: checkout-20260713-0003
+        status: PAYMENT_RETRY_PENDING
+        amount:
+          amountMinor: 259900
+          currency: INR
+        payment:
+          paymentId: 019535d9-4a20-7e29-9d35-a6e4aeab9e09
+          status: AUTHORIZATION_RETRY_PENDING
+          failureCode: PROVIDER_TEMPORARY_FAILURE
+        createdAt: 2026-07-13T09:42:00Z
+        updatedAt: 2026-07-13T09:42:01Z

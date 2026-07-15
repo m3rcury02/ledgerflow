@@ -42,6 +42,7 @@ class PaymentProviderPropertiesTest {
         connectTimeout,
         readTimeout,
         overallTimeout,
+        overallTimeout.plusMillis(500),
         2,
         Duration.ofMillis(100),
         Duration.ofSeconds(1),

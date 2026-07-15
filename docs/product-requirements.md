@@ -23,22 +23,21 @@ The goal is not a feature-complete commerce product. The goal is to prove correc
 
 ## Current delivery status
 
-The public Create Order slice is implemented. Authenticated clients with the required scope and
-allowlisted realm role can create one positive INR order in `CREATED` state and read only an owned
-order; strict request limits, per-instance subject throttling, and secure response headers protect
-that boundary. No public route starts payment. Non-public module slices implement provider
-authorization/capture, immutable capture accounting, and transactional outbox/Kafka notification
-delivery. Capture accounting atomically commits payment `CAPTURE_ACCOUNTED`, the balanced journal,
-and one outbox event. A leased publisher, event-ID transport idempotency, and a versioned capture
-notification semantic identity deliver one logical notification database effect with at-least-once
-semantics. Invalid DLT input advances only after sanitized terminal evidence is durable, and a
-narrow audited CLI can replay validated DLT records. Order `COMPLETED`, payment `CAPTURED`, public
-financial orchestration, and the operator HTTP workflow remain planned.
+The complete customer order workflow is implemented. An authenticated create request persists one
+order and payment identity, performs authorization and capture through the external mock-provider
+boundary, reconciles unknown outcomes by the same stable operation ID, posts one balanced journal
+and one logical outbox event, and returns the durable order/payment outcome. Provider calls occur
+outside PostgreSQL transactions. Capture accounting atomically commits payment
+`CAPTURE_ACCOUNTED`, the journal, and outbox event; a following short local transaction finalizes
+payment `CAPTURED`, order `COMPLETED`, and the idempotency snapshot. Kafka publication and
+notification remain asynchronous and at least once. Transport and semantic idempotency still
+produce one logical notification effect. Invalid DLT evidence and the narrow audited replay CLI are
+implemented; the secured operator HTTP workflow remains planned.
 
 ## Actors
 
 - **API client** creates and reads its orders using an OAuth 2.0 bearer token.
-- **Operator** inspects failed operations and requests controlled retries using a token with operator scopes.
+- **Operator (planned Milestone 7B)** inspects failed operations and requests controlled retries using a token with operator scopes.
 - **Mock payment provider** exposes an external HTTP boundary for authorization, capture, lookup, latency, timeout, decline, and temporary-failure scenarios.
 - **Outbox publisher** relays committed domain events from PostgreSQL to Kafka.
 - **Notification consumer** consumes payment-captured events and creates notification records idempotently.
@@ -48,10 +47,10 @@ financial orchestration, and the operator HTTP workflow remain planned.
 - Create an order exactly once for a client-scoped idempotency key.
 - Validate all order and payment state changes explicitly.
 - Keep external payment calls outside database transactions.
-- Atomically account a provider-confirmed capture by committing payment `CAPTURE_ACCOUNTED`, balanced ledger entries, and an outbox event in one PostgreSQL transaction.
+- Atomically account a provider-confirmed capture by committing payment `CAPTURE_ACCOUNTED`, balanced ledger entries, and an outbox event in one PostgreSQL transaction, then finalize `CAPTURED`/`COMPLETED` in a separate guarded local transaction.
 - Publish and consume with at-least-once delivery while preventing duplicate business effects.
 - Preserve correlation and distributed trace context across HTTP, asynchronous publication, Kafka retries, and consumption.
-- Expose sanitized, auditable operator recovery without direct database or Kafka access.
+- Preserve the identities and immutable evidence needed for a later sanitized, auditable operator recovery path without direct database or Kafka manipulation.
 
 ## Non-goals
 
@@ -66,15 +65,15 @@ financial orchestration, and the operator HTTP workflow remain planned.
 
 ## Target end-to-end behavior
 
-Steps 1–3 are active through the public API. Steps 4–6 and 10–12 are implemented behind non-public/module or background-worker boundaries. Steps 7–9 and the general operator API in step 13 require later milestones.
+Steps 1–12 are implemented. Steps 1–9 form the synchronous public command and durable local result; steps 10–12 remain asynchronous. The general operator API in step 13 requires a later milestone.
 
 1. The client sends `POST /api/v1/orders` with a bearer token, `Idempotency-Key`, optional `X-Correlation-Id`, and a valid order request.
 2. LedgerFlow validates authentication, payload, supported currency, idempotency-key syntax, and request ownership before creating data.
-3. A unique client-and-operation-scoped idempotency record and order are created in PostgreSQL. A later milestone starts the payment workflow without changing the original Create Order replay result.
+3. One short PostgreSQL transaction creates the scoped in-progress idempotency record, `PAYMENT_PROCESSING` order, and payment with its stable authorization operation ID. It commits before provider I/O.
 4. The payment module calls the mock provider through an outbound HTTP port. Authorization and capture use stable provider operation keys so uncertain calls can be queried and safely retried.
 5. Normal success is processed synchronously. No PostgreSQL transaction remains open while waiting for the provider.
-6. After confirmed capture, one PostgreSQL transaction changes payment to `CAPTURE_ACCOUNTED`, creates a balanced ledger transaction, and inserts one outbox event. It does not complete the order or introduce a final payment `CAPTURED` state.
-7. A future orchestration milestone updates the public result and any final order/payment states without recreating the ledger or payment-captured event. A successful completed order remains a target behavior.
+6. After confirmed capture, one PostgreSQL transaction changes payment to `CAPTURE_ACCOUNTED`, creates a balanced ledger transaction, and inserts one logical outbox event.
+7. A separate short local transaction changes the accounted payment to `CAPTURED`, the order to `COMPLETED`, and the idempotency record to its immutable `201` result. Deferred constraints require the journal and outbox evidence. Neither provider nor Kafka I/O occurs in this transaction.
 8. A terminal provider decline still creates the order and returns `201 Created` with `PAYMENT_DECLINED`; it creates no ledger or outbox rows.
 9. Exhausted temporary failures or unresolved timeouts return `202 Accepted` with `PAYMENT_RETRY_PENDING`. The original response remains replayable while the current resource state is available through `GET /api/v1/orders/{orderId}`.
 10. The outbox publisher claims due rows with a lease, publishes to Kafka, waits for broker acknowledgement, and marks them published. A crash can cause duplicate publication but not event loss.
@@ -92,17 +91,17 @@ Steps 1–3 are active through the public API. Steps 4–6 and 10–12 are imple
 - **FR-004:** Repeating a completed request with the same scope, key, and fingerprint returns the original status, body, `Location`, and business identifiers without repeating payment, ledger, or outbox effects.
 - **FR-005:** A replay uses the correlation ID and trace context of the replaying HTTP operation and adds `Idempotency-Replayed: true`; these transport headers are not part of the cached business result.
 - **FR-006:** Reusing a key in the same scope with a different fingerprint returns `409 Conflict` with problem code `idempotency_key_reused`.
-- **FR-007:** Concurrent matching requests cannot create two orders. PostgreSQL serializes conflicting key claims until the winning short transaction commits or rolls back; a matching contender then replays the result. Database timeouts produce a retryable `503`, and the client retries with the same key.
+- **FR-007:** Concurrent matching requests cannot create two orders. PostgreSQL serializes the initial key claim; matching contenders resume or replay the same durable order/payment. Optimistic payment versions, guarded order transitions, and database uniqueness make resumptions converge. A still-active provider call returns a retryable `503` rather than initiating a second call.
 - **FR-008:** MVP idempotency records are retained indefinitely. A retention and archival policy requires a later ADR.
 - **FR-009:** `GET /api/v1/orders/{orderId}` returns the current state only to its owning subject. Operators use the sanitized operations API rather than the customer order representation.
 
 ### Payment processing
 
 - **FR-010:** Authorization and capture occur through a payment-provider port implemented by an HTTP adapter.
-- **FR-011:** The local/test mock provider supports success, bounded latency, timeout-after-processing with initially unavailable reconciliation, authorization decline, one-shot temporary failure, and temporary failure that exhausts the automatic retry budget.
+- **FR-011:** The local/test mock provider supports success, bounded latency, timeout after confirmed processing, timeout with lookup `NOT_FOUND` and safe same-ID resend, authorization/capture decline, one-shot temporary failure, and temporary failure that exhausts the automatic retry budget.
 - **FR-012:** Provider requests carry stable authorization or capture operation keys. A timeout or unknown outcome is reconciled through provider lookup before any resend.
 - **FR-013:** Declines are terminal and are not automatically retried.
-- **FR-014:** Temporary failures receive at most one automatic retry after the initial attempt. Exhaustion creates a retryable failed operation and an authorization/capture retry-pending state. An unresolved timeout uses the corresponding explicit unknown state.
+- **FR-014:** Temporary failures receive at most one automatic retry after the initial attempt. Exhaustion creates an authorization/capture retry-pending state; the general failed-operation projection remains Milestone 7B work. An unresolved timeout uses the corresponding explicit unknown state.
 - **FR-015:** Every payment transition is checked against the state machine and guarded by optimistic concurrency. Invalid or stale transitions make no database change.
 - **FR-016:** The application never holds a database transaction open across a provider HTTP call.
 
@@ -111,7 +110,7 @@ Steps 1–3 are active through the public API. Steps 4–6 and 10–12 are imple
 - **FR-017:** A confirmed capture creates one immutable ledger transaction with exactly one `PAYMENT_CLEARING` debit and one `MERCHANT_PAYABLE` credit for the same positive INR amount.
 - **FR-018:** Database constraints and a deferred constraint trigger reject an unbalanced, incomplete, mixed-currency, or non-positive ledger transaction at commit.
 - **FR-019:** A unique capture reference prevents multiple ledger transactions for the same payment.
-- **FR-020:** Payment `CAPTURE_ACCOUNTED`, ledger rows, and the payment-captured outbox event commit in one PostgreSQL transaction. This milestone does not change order state or add payment `CAPTURED`.
+- **FR-020:** Payment `CAPTURE_ACCOUNTED`, ledger rows, and the payment-captured outbox event commit in one PostgreSQL transaction. A later short local transaction finalizes payment `CAPTURED`, order `COMPLETED`, and the HTTP idempotency result without recreating those effects.
 - **FR-021:** If that transaction fails, none of its local changes commit. Recovery reconciles the provider operation and repeats local finalization idempotently.
 
 ### Kafka and notifications
@@ -153,7 +152,7 @@ Steps 1–3 are active through the public API. Steps 4–6 and 10–12 are imple
 
 ## Delivered milestone acceptance criteria
 
-The `AC-M3` criteria record the delivered public Create Order slice, `AC-M5B` records the delivered non-public messaging slice, `AC-M5C` records security hardening, and `AC-M5D` records the pre-observability abuse-case remediation. Statements about what Milestone 3 did not introduce are historical scope assertions, not claims that those capabilities are still absent.
+The `AC-M3` criteria record the historical Create Order slice, `AC-M5B` records messaging, `AC-M5C` records security hardening, `AC-M5D` records abuse-case remediation, and `AC-M6` records the complete public workflow. Historical scope exclusions are not claims that those capabilities are still absent.
 
 - **AC-M3-001:** A valid scoped request returns `201`, a UUIDv7 `CREATED` order, positive INR minor units, UTC timestamps, `Location`, and a correlation ID.
 - **AC-M3-002:** The same subject, key, and canonical payload returns the byte-equivalent original body and location with `Idempotency-Replayed: true`, without another order.
@@ -187,9 +186,17 @@ The `AC-M3` criteria record the delivered public Create Order slice, `AC-M5B` re
 - **AC-M5D-004:** Terminal malformed DLT input stores one immutable sanitized row by actual DLT coordinates before offset advancement. Evidence-store failure retains the offset, and recovery permits later partition records to progress without duplicate evidence.
 - **AC-M5D-005:** V006 and V007 upgrade compatible V005 evidence without deletion; unmappable or semantically duplicated legacy data fails closed for explicit reconciliation.
 
-## Target full-flow acceptance criteria
+- **AC-M6-001:** A valid authenticated request returns `201`, order `COMPLETED`, payment `CAPTURED`, one balanced capture journal, and one pending or published logical outbox event without waiting for Kafka or notification completion.
+- **AC-M6-002:** Identical replay returns the original business result and location; changed payload returns `409`; concurrent requests/resumptions use one order, payment, provider authorization/capture identity, journal, and logical outbox event.
+- **AC-M6-003:** Authorization/capture decline, bounded temporary failure, lookup-confirmed timeout, lookup-`NOT_FOUND` same-ID resend, and malformed provider response produce the documented `201`, `202`, or replayable `502` outcomes without false financial effects.
+- **AC-M6-004:** Provider success lost before local persistence recovers by lookup; a crash after ledger/outbox commit resumes finalization without another journal or outbox event.
+- **AC-M6-005:** Kafka unavailability cannot roll back completed business state. Duplicate publication/delivery and semantic re-enveloping still create one notification effect.
+- **AC-M6-006:** Owner-filtered reads, strict JWT authorization, bounded input, safe failure codes, and payment-reference redaction remain enforced.
+- **AC-M6-007:** V008 adds final states and deferred cross-table finalization constraints without modifying merged migrations; PostgreSQL rejects a completed order lacking the captured payment, journal, or outbox evidence.
 
-The following remain proposed for later milestones:
+## Full-flow acceptance criteria
+
+Milestone 6 delivers AC-001 through AC-011, AC-014, and AC-016. Observability AC-013 remains Milestone 7A, operator AC-012 remains Milestone 7B, and AC-015 is rerun for every milestone.
 
 - **AC-001:** A valid success request returns `201`, a `COMPLETED` order, a `CAPTURED` payment, two balanced ledger entries, and one pending or published outbox event.
 - **AC-002:** Replaying AC-001 with the same key and semantically identical payload returns the original status and body with `Idempotency-Replayed: true`; row counts and provider-call counts do not increase.

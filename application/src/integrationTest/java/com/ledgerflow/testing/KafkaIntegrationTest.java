@@ -62,4 +62,12 @@ public abstract class KafkaIntegrationTest extends LedgerIntegrationTestSupport 
   protected static String kafkaBootstrapServers() {
     return KAFKA.getBootstrapServers();
   }
+
+  protected static void pauseKafka() {
+    KAFKA.getDockerClient().pauseContainerCmd(KAFKA.getContainerId()).exec();
+  }
+
+  protected static void unpauseKafka() {
+    KAFKA.getDockerClient().unpauseContainerCmd(KAFKA.getContainerId()).exec();
+  }
 }

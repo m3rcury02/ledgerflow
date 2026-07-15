@@ -70,6 +70,16 @@ public class JdbcPaymentStore implements PaymentStore {
   }
 
   @Override
+  @Transactional(readOnly = true)
+  public Optional<Payment> findByOrderId(UUID orderId) {
+    return jdbcClient
+        .sql("SELECT * FROM payments WHERE order_id = :orderId")
+        .param("orderId", orderId)
+        .query(this::mapPayment)
+        .optional();
+  }
+
+  @Override
   @Transactional(propagation = Propagation.MANDATORY)
   public Payment lock(UUID paymentId) {
     return jdbcClient

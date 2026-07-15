@@ -2,7 +2,7 @@
 
 ## Status
 
-This document defines the architectural constraints for LedgerFlow. Milestones 1 and 2 established the application and local infrastructure, Milestone 3 added the Create Order HTTP/persistence slice, Milestone 4 added the non-public payment/provider boundary, Milestone 5A added immutable ledger posting, Milestone 5B added the transactional outbox, Kafka relay, notification consumer, dead-letter catalog, audited command-line replay, and bounded resilience controls, Milestone 5C hardened the active HTTP security and supply-chain checks, and Milestone 5D isolated management probes and added semantic notification idempotency plus terminal malformed-DLT evidence. Public payment orchestration, order completion, a final payment `CAPTURED` state, and operator HTTP workflows remain future work.
+This document defines the architectural constraints for LedgerFlow. Milestones 1–5D established the verified modular monolith, local infrastructure, order/payment/ledger/outbox/Kafka/notification slices, resilience/security controls, management isolation, and semantic/DLT abuse controls. Milestone 6 connects them through the public order workflow and final `CAPTURED`/`COMPLETED` states. End-to-end observability and secured operator HTTP recovery remain later milestones.
 
 ## Architectural goals
 
@@ -59,7 +59,7 @@ When hexagonal architecture is used:
 
 Do not introduce interfaces, mapping layers, commands, events, or duplicate models solely to imitate an architectural pattern.
 
-The `orders` slice keeps framework-free money, key, fingerprint, and order types behind one application-owned persistence port. This narrow boundary makes the PostgreSQL idempotency transaction testable without imposing ports on every feature. The HTTP and `JdbcClient` adapters remain module-internal.
+The `orders` module owns the concrete public coordinator and keeps framework-free money, key, fingerprint, and order types behind one persistence port. Its named `orders.api` is the HTTP-facing use-case contract. The coordinator calls only `payments.api` and `ledger.api`; it is specific to this flow and is not a generic workflow engine. HTTP and `JdbcClient` adapters remain module-internal.
 
 The `payments` module uses a hexagonal boundary because provider I/O is replaceable and unreliable, while the payment state machine must remain independently testable. Its application-owned `PaymentProvider` and `PaymentStore` ports isolate a JDK HTTP adapter and guarded JDBC adapter. The workflow itself is deliberately not transactional: each persistence call opens one short transaction, and no provider call or retry delay runs with a database transaction open.
 
@@ -67,7 +67,7 @@ The provider adapter has ordered connect, response, and overall deadlines. An ov
 
 The `ledger` module keeps a framework-independent journal model because balance, immutability, and compensation rules need focused unit tests. Its small `ledger.api` is the only cross-module posting surface. Ledger posting uses the `payments.api` accounting boundary; it does not import payment internals or query payment tables. Spring transactions and JDBC remain internal adapters, and ArchUnit verifies that the ledger domain does not depend on them.
 
-Capture accounting has two directed feature dependencies: `ledger -> payments.api` and `ledger -> messaging.api`. A capture-posting transaction locks the payment, inserts the ledger transaction and entries, marks it `CAPTURE_ACCOUNTED`, and invokes the mandatory-transaction outbox appender. Payments and messaging do not call ledger, so the dependencies remain acyclic. A later coordinator may call the public APIs but must not bypass module internals.
+The directed feature graph is `orders -> ledger.api`, `orders -> payments.api`, `ledger -> payments.api`, and `ledger -> messaging.api`. Capture accounting locks the payment, inserts the journal, marks `CAPTURE_ACCOUNTED`, and invokes the mandatory-transaction outbox appender. The orders coordinator then finalizes through `payments.api`; payments, messaging, and ledger never call orders, so the graph remains acyclic.
 
 The `messaging.api.OutboxEventAppender` is deliberately narrow: it appends one typed payment-captured event only when a caller already owns a PostgreSQL transaction. The messaging module owns canonical envelope serialization, outbox persistence, leases, retry timing, Kafka publication, and W3C trace-header injection. The notifications module owns validation, inbox deduplication, notification persistence, bounded consumer retry, the DLT catalog, and audited replay. Neither consumer nor replay path may call ledger or mutate financial state.
 
@@ -76,6 +76,8 @@ The `operations.api` package exposes only in-flight work registration and allowl
 ADR 0004 accepts one narrow database-boundary exception: the payment-owned `V002` constraint trigger reads only an order's ID, amount, and currency to reject a payment whose copied money differs from its referenced order. Application code still cannot query another module's tables, and a PostgreSQL integration test verifies this invariant. This exception does not authorize general cross-module SQL.
 
 ADR 0005 accepts a second narrow database-integrity exception: `V003` adds the payment-owned `CAPTURE_ACCOUNTED` state constraints, and the ledger's deferred validator reads only the referenced payment's state, order ID, amount, and currency. This is necessary to prevent payment accounting status and its journal from diverging at commit. Ledger application code still uses `payments.api` and never queries the payment table. Any expansion of this trigger contract requires a new ADR review.
+
+ADR 0013 accepts a third narrow database-integrity exception: V008's deferred terminal-workflow validator reads one order, its unique payment, capture journal identity, and immutable outbox identity. It rejects `COMPLETED` without `CAPTURED` plus journal/outbox evidence and rejects decline/retry/failed order states that contradict payment state. Application code still uses module APIs. The trigger is a final-state backstop, not an orchestration path and not authorization for general cross-module SQL.
 
 ## HTTP contracts
 
@@ -105,20 +107,20 @@ Migration rules:
 - destructive or long-running migrations require an ExecPlan with compatibility, recovery, and rollout details; and
 - a module accesses only tables it owns unless an accepted ADR defines a controlled exception.
 
-The current local, production-design, and integration-test baseline is PostgreSQL 18. Migrations use ordered `VNNN__description.sql` names. `V001` owns orders and HTTP idempotency; `V002` owns payments and append-only payment attempt history; `V003` owns ledger accounts, journal transactions, entries, deferred balance checks, and `CAPTURE_ACCOUNTED`; `V004` owns the transactional outbox; `V005` owns the notification inbox, notification records, replayable dead-letter catalog, and append-only replay audit; `V006` adds versioned notification semantic-effect identity; and `V007` adds immutable terminal malformed-DLT evidence.
+The current local, production-design, and integration-test baseline is PostgreSQL 18. Migrations use ordered `VNNN__description.sql` names. V001–V007 own the previously described feature data; V008 adds resumable idempotency shape, final order/payment states, and deferred workflow-finalization invariants. No merged migration is edited.
 
 ### Capture-accounting transaction and isolation boundary
 
 Payment-provider I/O completes before accounting starts. `LedgerPosting.postPaymentCapture` then opens one PostgreSQL `READ COMMITTED` transaction and performs this sequence:
 
 1. lock the payment row through `payments.api` using `SELECT ... FOR UPDATE`;
-2. accept `CAPTURE_CONFIRMED`, or verify and replay an existing `CAPTURE_ACCOUNTED` journal;
+2. accept `CAPTURE_CONFIRMED`, or verify and replay an existing `CAPTURE_ACCOUNTED`/`CAPTURED` journal;
 3. insert one journal header and all entries;
 4. transition the locked payment to `CAPTURE_ACCOUNTED` with its expected version;
 5. append one immutable, deduplicated payment-captured outbox row through `messaging.api`; and
 6. let deferred ledger constraints validate the complete journal before commit.
 
-The payment row is the same-payment serialization point. Under `READ COMMITTED`, a concurrent writer waits, then observes `CAPTURE_ACCOUNTED` and verifies the existing journal and outbox event. Unique journal and outbox deduplication keys prevent duplicates even if a future caller fails to follow the lock convention. A constraint, state, or outbox failure rolls back the payment transition, journal, entries, and event together. Order state is unchanged: this transaction does not imply order `COMPLETED` or payment `CAPTURED`. This reasoning does not cover future cross-payment or account-period invariants; such behavior must reassess isolation in an ADR.
+The payment row is the same-payment serialization point. Under `READ_COMMITTED`, a waiter observes accounted/final state and verifies the existing journal/outbox. Unique journal and outbox keys remain backstops. A failure rolls back payment accounting, journal, entries, and event together. A separate short transaction locks the HTTP idempotency row, changes `CAPTURE_ACCOUNTED -> CAPTURED` through `payments.api`, changes the order to `COMPLETED`, and stores the original response. Deferred V008 validation sees both final transitions at commit. This separation creates a recoverable crash window, not false atomicity: after accounting but before finalization, replay verifies and completes the durable effects.
 
 Posted ledger rows reject update and delete. Corrections append an exact reversing transaction linked to the original rather than mutating history. Production privileges must prevent the application role from disabling triggers or applying DDL; the current local/test owner credential is a development convenience, not the production authorization model.
 
@@ -223,7 +225,7 @@ Spring Modulith verifies logical application modules, API/internal access, and c
 
 Keycloak stores its data in a separate database on the local PostgreSQL instance; embedded H2 is not used. The imported realm defines `customer`, `operator`, and `admin` roles, order/operation scopes, and the API audience mapper without users or credentials. Valkey is an ephemeral Redis-compatible cache service and is not an approved application datastore. Local Kafka uses Apache's official native 4.3.1 image as a single combined broker/controller in KRaft mode; the native distribution was selected over the equivalent JVM image after fixed HIGH image findings were detected. Prometheus, Grafana, Tempo, Loki, and OpenTelemetry Collector provide a self-contained observability path without committing credentials or choosing a production observability vendor.
 
-The Create Order slice accepts ADR 0003's scoped idempotency decision and validates JWTs against an issuer/JWK configuration. The non-public payment harness accepts ADR 0004 and exercises a separate deterministic provider fixture over HTTP; no public route invokes it. Capture accounting accepts ADR 0005, and the implemented outbox/Kafka behavior accepts ADRs 0006 and 0007 within their documented scope. ADRs 0010 through 0012 define management isolation, notification semantic identity, and terminal malformed-DLT evidence. Production identity, real payment provider, broker security, persistence roles, deployment topology, TLS, retention, backup, and sizing remain subject to approved implementation or deployment milestones.
+The public workflow accepts ADR 0013, builds on ADR 0003's scoped idempotency and ADR 0004's provider state machine, and invokes the deterministic HTTP provider fixture only in local/test demonstrations. Capture accounting accepts ADR 0005, and the implemented outbox/Kafka behavior accepts ADRs 0006 and 0007 within their documented scope. ADRs 0010 through 0012 define management isolation, notification semantic identity, and terminal malformed-DLT evidence. Production identity, a real payment provider, broker security, persistence roles, deployment topology, TLS, retention, backup, and sizing remain subject to approved implementation or deployment milestones.
 
 ## Decisions intentionally deferred
 

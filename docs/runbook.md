@@ -1,11 +1,11 @@
-# Payment, Ledger, and Messaging Recovery Runbook
+# Public Workflow, Payment, Ledger, and Messaging Recovery Runbook
 
-- Status: Milestone 5D development runbook
+- Status: Milestone 6 development runbook
 - Last updated: 2026-07-15
 
 ## Scope and current limitation
 
-This runbook covers authorization/capture failures, crash recovery, non-public capture accounting, outbox publication, transport and semantic notification idempotency, terminal malformed-DLT evidence, DLT inspection, management health, and narrow audited replay. The current slices intentionally expose no public payment or operator endpoint. Final order/payment workflow states and the secured general operations API remain later work.
+This runbook covers the public create-order workflow, authorization/capture failures, crash recovery, capture accounting and finalization, outbox publication, transport and semantic notification idempotency, terminal malformed-DLT evidence, DLT inspection, management health, and narrow audited replay. The public API exposes order creation and owned-order reads; it does not expose payment mutation or operator recovery endpoints. The secured general operations API remains Milestone 7B work.
 
 In a deployed environment, support staff may perform the read-only inspection below and escalate with the payment ID and correlation ID. They must not invoke the test fixture, update payment rows, delete attempt history, or resend a provider request with a new request ID.
 
@@ -20,6 +20,7 @@ In a deployed environment, support staff may perform the read-only inspection be
 | `AUTHORIZED` | Authorization is confirmed | Capture may start once, with its independent persisted request ID |
 | `CAPTURE_CONFIRMED` | Provider capture is confirmed but no capture journal committed | Invoke the approved internal ledger posting use case; do not resend provider capture |
 | `CAPTURE_ACCOUNTED` | Exactly one matching balanced capture journal and payment-captured outbox event committed with this state | Treat capture accounting as complete; a repeated internal posting verifies and returns the original journal/event |
+| `CAPTURED` | Capture accounting was verified and the public workflow finalized payment and order | Treat financial finalization as complete; Kafka publication and notification remain asynchronous |
 | `FAILED` | Provider response was invalid or contradictory | Investigate configuration/provider contract; do not retry automatically |
 
 ## Read-only inspection
@@ -75,7 +76,21 @@ Ledger posting has one local `READ COMMITTED` transaction after provider success
 
 If the process stops before commit, PostgreSQL rolls back state, journal, and outbox; retry the same internal posting command. If commit completed but the response was lost, retry finds `CAPTURE_ACCOUNTED`, verifies the original outbox content, and returns the original journal. Same-payment calls serialize on the row lock, and unique source/payment/outbox keys prevent duplicate effects.
 
-Do not interpret `CAPTURE_ACCOUNTED` as final order `COMPLETED`, final payment `CAPTURED`, or proof that Kafka has published the outbox event. If deferred validation or outbox append fails, do not disable triggers or patch rows: preserve the error and correlation ID, contain further financial processing, and fix the code/schema forward. If business evidence requires a correction, use the approved compensation command with a specific reason; never update or delete the posted transaction or entries. The current command creates one exact reversal and does not call the provider, remove the capture event, or imply a refund.
+Do not interpret `CAPTURE_ACCOUNTED` by itself as final order `COMPLETED`, final payment `CAPTURED`, or proof that Kafka has published the outbox event. The public workflow follows accounting with a separate short finalization transaction; if a process stops in between, an identical request safely verifies and finalizes the existing journal and outbox rather than creating another. If deferred validation or outbox append fails, do not disable triggers or patch rows: preserve the error and correlation ID, contain further financial processing, and fix the code/schema forward. If business evidence requires a correction, use the approved compensation command with a specific reason; never update or delete the posted transaction or entries. The current command creates one exact reversal and does not call the provider, remove the capture event, or imply a refund.
+
+## Public workflow response and recovery
+
+`POST /api/v1/orders` requires an authenticated customer/admin, an idempotency key, INR minor units, and the demonstration payment-method reference. A new command durably reserves the key, creates `PAYMENT_PROCESSING` order/payment records, and persists the stable authorization operation ID before authorization I/O. The capture operation ID is generated once and persisted in `CAPTURING` before capture I/O. The response is:
+
+- `201` for a completed or provider-declined order;
+- `202` when a bounded temporary or still-unknown provider outcome requires another identical request; or
+- `502` when a malformed or contradictory provider response leaves an owner-readable failed order.
+
+`COMPLETED` means provider capture, one balanced capture journal, one logical payment-captured outbox event, final payment `CAPTURED`, and final order `COMPLETED` are durable. It does not mean Kafka publication or notification delivery completed. `GET /api/v1/orders/{orderId}` returns the current owned state and deliberately returns `404` for both missing and cross-customer orders.
+
+For a lost HTTP response, retry the exact request with the same idempotency key. A changed canonical payload returns `409`; never substitute a new key to force another financial attempt. A recent `AUTHORIZING`/`CAPTURING` state is treated as an in-flight owner until `LEDGERFLOW_PAYMENT_PROVIDER_ACTIVE_OPERATION_TIMEOUT` expires. After expiry, recovery performs provider lookup using the existing operation ID. Only a confirmed `NOT_FOUND` permits the equivalent same-ID resend. Competing resumptions use optimistic state/version guards and converge on the persisted outcome.
+
+If PostgreSQL commits the journal/outbox transaction and the process stops before finalization, retrying the same command verifies the existing effects and changes only `CAPTURE_ACCOUNTED -> CAPTURED` plus the order/idempotency result. If Kafka is unavailable, the HTTP business result remains truthful and the durable outbox remains pending or retryable; restore Kafka and let the publisher recover without changing business rows.
 
 ## Outbox inspection and delivery recovery
 
@@ -166,6 +181,7 @@ Relevant deployment properties are:
 | `LEDGERFLOW_PAYMENT_PROVIDER_CONNECT_TIMEOUT` | `1s` | Positive |
 | `LEDGERFLOW_PAYMENT_PROVIDER_READ_TIMEOUT` | `2s` | Positive |
 | `LEDGERFLOW_PAYMENT_PROVIDER_OVERALL_TIMEOUT` | `2500ms` | At least the read timeout |
+| `LEDGERFLOW_PAYMENT_PROVIDER_ACTIVE_OPERATION_TIMEOUT` | `3s` | At least the overall timeout; bounds when another workflow may reconcile a possibly abandoned call |
 | `LEDGERFLOW_PAYMENT_PROVIDER_MAX_ATTEMPTS` | `2` | `1` or `2`; includes the initial call |
 | `LEDGERFLOW_PAYMENT_PROVIDER_BASE_BACKOFF` | `200ms` | Positive |
 | `LEDGERFLOW_PAYMENT_PROVIDER_MAX_BACKOFF` | `1s` | At least base backoff |
@@ -257,7 +273,7 @@ Do not:
 - update/delete `payment_attempt_history` or disable its trigger;
 - create a new request ID to work around uncertainty;
 - retry a confirmed decline;
-- resend provider capture after `CAPTURE_CONFIRMED` or `CAPTURE_ACCOUNTED`;
+- resend provider capture after `CAPTURE_CONFIRMED`, `CAPTURE_ACCOUNTED`, or `CAPTURED`;
 - update/delete ledger transactions or entries, disable ledger triggers, or alter a posted account identity;
 - change outbox/inbox/notification/DLT/audit rows or Kafka offsets directly;
 - resend an event outside `scripts/replay-dead-letter` or change its envelope/key;

@@ -163,6 +163,19 @@ public record Payment(
         now);
   }
 
+  public Payment captureFinalized(Instant now) {
+    requireTransition(PaymentState.CAPTURED, PaymentState.CAPTURE_ACCOUNTED);
+    return copy(
+        PaymentState.CAPTURED,
+        null,
+        null,
+        captureRequestId,
+        providerAuthorizationId,
+        providerCaptureId,
+        null,
+        now);
+  }
+
   public Payment captureDeclined(String code, Instant now) {
     requireTransition(
         PaymentState.CAPTURE_DECLINED, PaymentState.CAPTURING, PaymentState.CAPTURE_UNKNOWN);

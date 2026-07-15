@@ -145,6 +145,13 @@ public final class MockPaymentProviderServer {
       return new Response(200, "{\"outcome\":\"IMPOSSIBLE\"}", null);
     }
 
+    if (isTimeoutWithoutPersistence(scenario, request.stage()) && callNumber == 1) {
+      return new Response(
+          200,
+          success(successOutcome, referencePrefix + request.requestId()),
+          TIMEOUT_RESPONSE_DELAY);
+    }
+
     boolean declined = isDecline(scenario, request.stage());
     String providerReference = referencePrefix + request.requestId();
     String responseBody =
@@ -267,6 +274,12 @@ public final class MockPaymentProviderServer {
   private boolean isTimeout(String scenario, String stage) {
     return ("AUTHORIZATION".equals(stage) && "pm_mock_authorization_timeout".equals(scenario))
         || ("CAPTURE".equals(stage) && "pm_mock_capture_timeout".equals(scenario));
+  }
+
+  private boolean isTimeoutWithoutPersistence(String scenario, String stage) {
+    return ("AUTHORIZATION".equals(stage)
+            && "pm_mock_authorization_timeout_not_found".equals(scenario))
+        || ("CAPTURE".equals(stage) && "pm_mock_capture_timeout_not_found".equals(scenario));
   }
 
   private boolean isDecline(String scenario, String stage) {

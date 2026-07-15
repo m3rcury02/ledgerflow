@@ -9,7 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.jayway.jsonpath.JsonPath;
-import com.ledgerflow.testing.PostgreSqlIntegrationTest;
+import com.ledgerflow.testing.payment.PaymentIntegrationTestSupport;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,13 +20,14 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 @AutoConfigureMockMvc
-class OrderHttpIntegrationTest extends PostgreSqlIntegrationTest {
+class OrderHttpIntegrationTest extends PaymentIntegrationTestSupport {
 
   private static final String VALID_REQUEST =
       """
       {
         "clientReference": "checkout-http-1",
-        "amount": {"amountMinor": 259900, "currency": "INR"}
+        "amount": {"amountMinor": 259900, "currency": "INR"},
+        "paymentMethodReference": "pm_mock_success"
       }
       """;
 
@@ -46,7 +47,8 @@ class OrderHttpIntegrationTest extends PostgreSqlIntegrationTest {
             .andExpect(status().isCreated())
             .andExpect(header().string("X-Correlation-Id", "http-create-1"))
             .andExpect(header().exists("Location"))
-            .andExpect(jsonPath("$.status").value("CREATED"))
+            .andExpect(jsonPath("$.status").value("COMPLETED"))
+            .andExpect(jsonPath("$.payment.status").value("CAPTURED"))
             .andExpect(jsonPath("$.amount.amountMinor").value(259900))
             .andExpect(jsonPath("$.amount.currency").value("INR"))
             .andReturn();
@@ -62,6 +64,7 @@ class OrderHttpIntegrationTest extends PostgreSqlIntegrationTest {
                         """
                         {
                           "amount": {"currency": "INR", "amountMinor": 259900},
+                          "paymentMethodReference": "pm_mock_success",
                           "clientReference": "checkout-http-1"
                         }
                         """))
@@ -73,6 +76,11 @@ class OrderHttpIntegrationTest extends PostgreSqlIntegrationTest {
     assertThat(replayed.getResponse().getContentAsString())
         .isEqualTo(created.getResponse().getContentAsString());
     assertThat(jdbcClient.sql("SELECT count(*) FROM orders").query(Long.class).single()).isOne();
+    assertThat(
+            jdbcClient.sql("SELECT count(*) FROM ledger_transactions").query(Long.class).single())
+        .isOne();
+    assertThat(jdbcClient.sql("SELECT count(*) FROM outbox_events").query(Long.class).single())
+        .isOne();
   }
 
   @Test

@@ -8,9 +8,11 @@
 - Last updated: 2026-07-15
 - Approved by: LedgerFlow maintainer
 - Approval date: 2026-07-13
-- Current milestone: None; Milestone 5D is `Complete` and Milestone 6 remains `Proposed`
+- Current milestone: Milestone 6 (`Complete`)
 - Milestone 5D approved by: LedgerFlow maintainer
 - Milestone 5D approval date: 2026-07-15
+- Milestone 6 approved by: LedgerFlow maintainer
+- Milestone 6 approval date: 2026-07-15
 - Canonical plan path: `docs/plans/mvp-execplan.md` by explicit maintainer request
 
 ## Purpose and outcome
@@ -20,7 +22,8 @@ Build a production-grade portfolio backend that visibly and safely completes thi
 ```text
 POST order
   -> authorize and capture through an external HTTP mock provider
-  -> atomically complete payment/order, post balanced ledger entries, and write outbox
+  -> atomically post balanced ledger entries and write the outbox
+  -> finalize payment/order in a separate guarded local transaction
   -> publish the outbox event to Kafka at least once
   -> consume idempotently with bounded retries and DLT
   -> create exactly one notification record
@@ -35,24 +38,24 @@ The normative requirements and designs are:
 - `docs/api-design.md`
 - `docs/data-model.md`
 - `docs/threat-model.md`
-- accepted decisions in ADRs 0003 through 0005 and proposed ADRs 0002 and 0006 through 0008 under `docs/adr`
+- accepted decisions in ADRs 0003 through 0007 and 0009 through 0013, plus proposed ADRs 0002 and 0008, under `docs/adr`
 
 ## Current state
 
-The repository contains the verified foundation and completed Create Order, payment/provider, ledger, outbox/Kafka, notification, resilience, and security-hardening slices from Milestones 1 through 5C:
+The repository contains the verified foundation and completed Create Order, payment/provider, ledger, outbox/Kafka, notification, resilience, security, and abuse-remediation slices from Milestones 1 through 5D, plus the in-progress Milestone 6 public workflow:
 
 - `AGENTS.md` establishes Java 25, Spring Boot 4.1, Gradle Kotlin DSL, modular-monolith, PostgreSQL, Flyway, OpenAPI, money/time, idempotency, observability, scope, and quality rules.
 - `.agent/PLANS.md` defines ExecPlan structure and one-approved-milestone discipline.
 - `settings.gradle.kts`, the root build, and the Gradle 9.6.1 Wrapper define one deployable `application` project and six feature-library projects under `modules`.
 - `application/src/main/java/com/ledgerflow/LedgerFlowApplication.java` is the Spring Boot 4.1 entry point; `modules/orders`, `modules/payments`, and `modules/ledger` contain implemented business behavior.
-- `application/src/main/openapi/ledgerflow.yaml` defines active authenticated create/read order contracts and RFC 9457-style problems.
-- `V001__create_orders_and_idempotency.sql`, `V002__create_payment_tables.sql`, and `V003__create_immutable_ledger.sql` create the implemented order, HTTP-idempotency, payment, payment-attempt, and ledger schemas.
-- `application/src/integrationTest` proves context loading, Flyway startup, repository constraints, HTTP idempotency, provider recovery, and payment concurrency against PostgreSQL 18.4 Testcontainers.
+- `application/src/main/openapi/ledgerflow.yaml` defines the authenticated complete-workflow create/read order contracts and RFC 9457-style problems.
+- Flyway V001 through V008 create the implemented order, HTTP-idempotency, payment/attempt, ledger, outbox, notification/DLT, semantic-effect, terminal-evidence, and public-finalization schemas.
+- `application/src/integrationTest` proves context loading, Flyway startup/upgrades, repository constraints, HTTP idempotency/authorization, provider recovery, payment/workflow concurrency, ledger/outbox atomicity, and Kafka/notification idempotency against PostgreSQL and Kafka Testcontainers.
 - `application/src/architectureTest` verifies exactly six Spring Modulith modules and complementary ArchUnit package rules.
 - `compose.yaml`, `.env.example`, `infra`, and `scripts/dev-*` provide the pinned nine-service local environment, safe placeholder defaults, provisioning, and lifecycle commands.
 - `build.gradle.kts` provides the stable formatting, static-analysis, unit, integration, architecture, OpenAPI, Compose, documentation, and aggregate `verify` tasks.
 - `docs/architecture.md`, `docs/development-workflow.md`, `README.md`, and this plan record the approved bootstrap choices and developer commands.
-- ADR 0001 establishes the ADR process; ADR 0003 is accepted for Create Order, ADR 0004 for the provider/payment state machine, and ADR 0005 for ledger posting.
+- ADR 0001 establishes the ADR process; accepted ADRs 0003 through 0007 and 0009 through 0013 record the implemented business and operational boundaries. ADRs 0002 and 0008 remain proposed.
 
 The maintainer's 2026-07-13 transactional-outbox and Kafka request approves the revised Milestone 5B below and accepts the outbox/Kafka decision in ADR 0006. It deliberately excludes public payment/order/operator endpoints and final order-state orchestration. ADR 0007 is accepted only for the Kafka propagation implemented by this milestone; operator recovery tracing remains proposed.
 
@@ -104,8 +107,8 @@ The `scripts/dev-up`, `scripts/dev-down`, `scripts/dev-reset`, and `scripts/dev-
 
 The active operations in `application/src/main/openapi/ledgerflow.yaml` define:
 
-- `POST /api/v1/orders` — required order-write scope and `Idempotency-Key`; returns an original or replayed `201`, or a documented problem response.
-- `GET /api/v1/orders/{orderId}` — returns current owner-visible order state.
+- `POST /api/v1/orders` — required order-write scope, `Idempotency-Key`, INR amount, and opaque demonstration payment-method reference; returns an original or replayed `201`, a durable recoverable `202`, or a documented problem response.
+- `GET /api/v1/orders/{orderId}` — returns current owner-visible order/payment state without claiming asynchronous Kafka or notification completion.
 
 The following remain future operations and are not present in the active OpenAPI contract:
 
@@ -119,9 +122,8 @@ The implemented `application/src/testFixtures/openapi/mock-payment-provider.yaml
 
 ### Package interfaces
 
-- The current `orders.internal` packages own create/read commands, domain rules, HTTP, and JDBC persistence. No cross-module order API is exposed because no other module calls it yet.
-- A future `orders.api` package will own only cross-module commands and guarded order transitions that are actually needed.
-- `payments.api` currently exposes the narrow locked accounting view and state transition needed by ledger; public/provider workflow APIs remain module-internal until an approved coordinator needs them.
+- The current `orders.internal` packages own the concrete public workflow coordinator, domain rules, HTTP, and JDBC persistence. `orders.api` exposes only its public create/read use case and stable public projections.
+- `payments.api` exposes narrow initialization, advancement, read, accounting, and finalization operations needed by the approved orders/ledger coordinators; provider ports and state-machine internals remain private.
 - `ledger.api` exposes idempotent payment-capture posting and exact compensating correction operations.
 - `messaging.api` exposes typed payment-captured envelope types and `OutboxEventAppender`, which must join the caller's transaction.
 - `notifications.api` exposes only the narrow audited `DeadLetterReplay` command; Kafka processing remains module-internal.
@@ -131,17 +133,20 @@ Cross-module callers depend only on these APIs. Payment domain and provider port
 
 ### Persistence
 
-Flyway migrations create the tables, checks, indexes, functions, triggers, and seed accounts specified by `docs/data-model.md`. The first five are implemented:
+Flyway migrations create the tables, checks, indexes, functions, triggers, and seed accounts specified by `docs/data-model.md`. The first eight are implemented:
 
 1. `V001__create_orders_and_idempotency.sql`
 2. `V002__create_payment_tables.sql`
 3. `V003__create_immutable_ledger.sql`
 4. `V004__create_transactional_outbox.sql`
 5. `V005__create_notification_inbox_and_dead_letters.sql`
+6. `V006__add_notification_semantic_identity.sql`
+7. `V007__catalog_terminal_dlt_records.sql`
+8. `V008__finalize_public_order_workflow.sql`
 
 Once merged, these migrations are immutable. Corrections use later versions.
 
-The implemented capture-accounting transaction locks a provider-confirmed payment, inserts one balanced ledger transaction and its entries, transitions the payment to `CAPTURE_ACCOUNTED`, and appends one logical outbox event atomically. Provider and Kafka calls never run inside this transaction. Final payment/order transitions and public workflow orchestration remain a later milestone.
+The implemented capture-accounting transaction locks a provider-confirmed payment, inserts one balanced ledger transaction and its entries, transitions the payment to `CAPTURE_ACCOUNTED`, and appends one logical outbox event atomically. Provider and Kafka calls never run inside this transaction. A separate provider-free finalization transaction verifies that evidence, transitions payment/order to `CAPTURED`/`COMPLETED`, and stores the original HTTP result. Provider calls run outside PostgreSQL transactions; Kafka publication and notification remain asynchronous.
 
 ### Kafka interfaces
 
@@ -171,7 +176,7 @@ Secrets come only from environment/secret injection. Local/test defaults contain
 
 Only the current milestone is approved or in progress. Later milestones remain `Proposed`; completing a milestone does not approve the next.
 
-The required order is: Milestones 1, 2, 3, 4, 5A, 5B, and 5C (`Complete`); Milestone 5D (`Approved`, execute R1 then R2); Milestone 6 (`Proposed`); Milestone 7A (`Proposed`); Milestone 7B (`Proposed`); and Milestone 8 (`Proposed`). R3 and R4 are separately proposed follow-ups, not inserted or implied as approved milestones in that sequence.
+The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, and 6 (`Complete`); Milestone 7A (`Proposed`); Milestone 7B (`Proposed`); and Milestone 8 (`Proposed`). R3 and R4 are separately proposed follow-ups, not inserted or implied as approved milestones in that sequence.
 
 ### Milestone 1 — Scaffold the verified repository and application
 
@@ -429,26 +434,39 @@ The required order is: Milestones 1, 2, 3, 4, 5A, 5B, and 5C (`Complete`); Miles
 
 ### Milestone 6 — Finalize order and expose the complete public workflow
 
-- Status: Proposed
-- Approval gate: Milestone 5D must be Complete before Milestone 6 may be approved or started.
+- Status: Complete
+- Approval gate: Satisfied. Milestone 5D is Complete, and the maintainer explicitly approved Milestone 6 on 2026-07-15.
 - Intended outcome: An accounted and event-recorded capture transitions to final `CAPTURED`, completes its order, and connects the existing public order workflow without repeating provider, ledger, or outbox effects.
 - Implementation work:
-  - Define the coordinator and narrow order/payment APIs needed for guarded finalization.
-  - Preserve the existing Create Order replay contract while exposing current workflow state accurately.
-  - Add no new event for an already-recorded capture; verify the existing outbox identity instead.
+  - Update the OpenAPI contract first so `POST /api/v1/orders` accepts only an opaque mock payment-method reference and returns truthful completed, declined, retry-pending, or provider-protocol outcomes; `GET` exposes the durable current order/payment state without implying synchronous notification delivery.
+  - Put the concrete workflow coordinator in `orders`; export only the narrow `orders.api` and `payments.api` records and operations needed for cross-module initialization, advancement, current-state reads, and finalization. Do not introduce a generic workflow framework.
+  - In one short initial PostgreSQL transaction, claim the scoped HTTP idempotency key, create the `PAYMENT_PROCESSING` order and its payment with a stable authorization operation ID, and attach the order identity to the in-progress record. Commit before provider I/O.
+  - Drive authorization and capture outside a database transaction. Reconcile active/unknown states by provider lookup, resend only after `NOT_FOUND`, and reuse the persisted stage operation ID. Retry only classified temporary failures within existing bounds.
+  - Post the capture journal and append the existing logical payment-captured outbox event through the already idempotent ledger transaction. Then use a separate short local transaction to guard `CAPTURE_ACCOUNTED -> CAPTURED`, `PAYMENT_PROCESSING -> COMPLETED`, and completion of the original HTTP response snapshot.
+  - Map authorization/capture decline to `PAYMENT_DECLINED`, exhausted temporary/unknown recovery to `PAYMENT_RETRY_PENDING`, and malformed/contradictory provider responses to `FAILED` plus a replayable RFC 9457 provider-protocol response with an owner-visible order location.
+  - Make repeated and concurrent resumptions converge through optimistic versions, row locks, current-state re-reads, and database uniqueness for one payment per order, one capture journal, and one logical outbox event. Kafka publication and notification remain asynchronous and are never part of the HTTP transaction.
+  - Add a forward-only Flyway migration for the final order/payment states and resumable idempotency response shape. Keep merged migrations unchanged.
+  - Align product, domain, API, data, threat, architecture, README, runbook, and a new accepted workflow ADR. Explicitly supersede the Create Order slice's immutable `CREATED` snapshot only for the now-approved complete public workflow.
 - Validation commands:
-  - `./gradlew :application:integrationTest --tests '*CaptureFinalizationIntegrationTest'`
-  - `./gradlew :application:integrationTest --tests '*OrderApiIntegrationTest'`
-  - `./gradlew clean verify`
+  - `./gradlew --no-daemon openApiValidate :modules:orders:test :modules:payments:test --console=plain`
+  - `./gradlew --no-daemon :application:integrationTest --tests '*PublicOrderWorkflowIntegrationTest' --tests '*CaptureFinalizationIntegrationTest' --tests '*WorkflowKafkaIntegrationTest' --console=plain`
+  - `./gradlew --no-daemon :application:integrationTest --tests '*OrderHttpIntegrationTest' --tests '*JwtResourceServerSecurityIntegrationTest' --tests '*SensitiveDataSecurityIntegrationTest' --console=plain`
+  - `scripts/security-scan`
+  - `git diff --check`
+  - `./gradlew --no-daemon clean verify --console=plain`
 - Observable acceptance:
-  - Final payment/order transitions are guarded and idempotent.
-  - Provider, ledger, and outbox effects are not repeated.
-  - Public responses and replay behavior match OpenAPI.
+  - An authenticated successful POST returns one truthful `201` representation with order `COMPLETED` and payment `CAPTURED`; the ledger is balanced, one logical outbox event is durable, and Kafka/notification completion is not awaited or claimed.
+  - Identical HTTP replay returns the original status, location, and business representation; the same key with changed canonical payload returns `409`; concurrent requests/resumptions create no duplicate order, provider mutation, ledger journal, or logical outbox event.
+  - Authorization decline, capture decline, bounded temporary failure, timeout with confirmed lookup, timeout with `NOT_FOUND` and safe same-ID resend, malformed response, provider-success/local-persistence crash, and ledger/outbox/finalization crash windows produce the documented recoverable states and HTTP outcomes.
+  - Kafka unavailability leaves `COMPLETED`/`CAPTURED`, the balanced journal, and durable pending outbox intact. Duplicate publication/delivery and a semantic duplicate under a new event ID still create exactly one notification effect.
+  - Owner predicates continue to return `404` for cross-customer reads; missing/wrong authentication remains `401`/`403`; opaque payment references, tokens, and sensitive payloads are absent from responses and logs.
+  - No provider HTTP or Kafka I/O occurs inside a PostgreSQL transaction, and no end-to-end exactly-once or synchronous-notification claim is introduced.
+  - All focused commands, the security scan, and the complete clean verification pass before Milestone 6 is marked Complete.
 
 ### Milestone 7A — Add end-to-end observability
 
 - Status: Proposed
-- Approval gate: Milestone 5D and Milestone 6 must both be Complete. This milestone remains Proposed until both gates are recorded in this plan.
+- Approval gate: Prerequisites satisfied because Milestones 5D and 6 are Complete. Milestone 7A remains Proposed until the maintainer explicitly approves it.
 - Intended outcome: Operators can follow one complete order journey from inbound HTTP through the provider, PostgreSQL business transaction, ledger, outbox, Kafka, and notification worker using correlated traces, metrics, and structured logs without exposing tokens or personal data.
 - Implementation work:
   - Configure OpenTelemetry instrumentation and Micrometer metrics with OTLP export, W3C `traceparent`/`tracestate` propagation, HTTP server/client and Kafka producer/consumer instrumentation, PostgreSQL spans, and response `X-Correlation-Id` continuity.
@@ -581,24 +599,24 @@ Maintain `application/src/main/openapi/ledgerflow.yaml` and `application/src/tes
 
 ### Local runtime
 
-Provide documented explicit local/test/demo configuration with PostgreSQL 18.4 and Kafka 4.3.1 containers and the separate test-fixture mock provider on a fixed local port. The main artifact excludes mock controls; production rejects mock configuration and requires a future approved real-provider URL/credentials. Local secrets are placeholders or generated ephemeral values and are ignored by Git.
+Provide documented explicit local/test/demo configuration with PostgreSQL 18.4 and Kafka 4.3.1 containers. Integration tests run the separate mock-provider fixture on an ephemeral loopback origin; manual local HTTP use requires a separately running implementation of its support contract. The main artifact excludes mock controls. Production deployment must not configure the demonstration provider and requires a separately approved real-provider URL, authentication, TLS, reconciliation, and credential design. Local secrets are placeholders or generated ephemeral values and are ignored by Git.
 
 ## Failure modes
 
 | Failure | Required behavior and evidence |
 | --- | --- |
 | Missing/invalid auth, key, payload | Reject before business rows; safe problem response |
-| Concurrent same-key order | One owner claim/workflow; replay or bounded in-progress conflict |
-| Process dies with idempotency in progress | Lease expires; resumer uses existing order/payment |
+| Concurrent same-key order | One owner claim/workflow; replay or bounded `503` while a provider call is still active |
+| Process dies with idempotency in progress | Resumer uses the existing order/payment; a stale active provider stage is reconciled by lookup after its configured deadline |
 | Provider latency | Bounded client timeout; no open DB transaction |
 | Provider decline | Terminal decline; no retry, ledger, or outbox |
-| Provider temporary failure | One automatic retry; exhaustion becomes operator-visible pending state |
+| Provider temporary failure | One automatic retry; exhaustion becomes an owner-readable pending state while general operator recovery remains future work |
 | Provider timeout or process loss after send | Persist/retain unknown state; lookup same operation key before resend |
 | Malformed/contradictory provider response | Durable order/payment `FAILED`; cached `502` and Location; safe non-retryable operation; no ledger/outbox |
 | Provider capture succeeds; local finalization fails | Local transaction rolls back; lookup confirms capture; repeat idempotent finalization |
 | Illegal/stale transition | Guarded update affects zero rows and becomes conflict/integrity evidence, not a blind overwrite |
-| Unbalanced/incomplete ledger | Deferred constraint aborts entire finalization transaction |
-| Kafka unavailable | Outbox remains durable and retries; exhaustion is operator-visible |
+| Unbalanced/incomplete ledger | Deferred constraint aborts the capture-accounting transaction; no journal/outbox/accounted state commits |
+| Kafka unavailable | Completed business state remains; the outbox stays durable as pending/in-flight/failed evidence for publisher recovery and runbook inspection |
 | Broker ack then publisher crash | Lease expiry republishes same event; consumer deduplicates |
 | Two publisher instances | `SKIP LOCKED`, owner tokens, and leases prevent simultaneous ownership; stale owners cannot mark rows |
 | Consumer DB failure before commit | Offset not committed; retry handles record again |
@@ -727,12 +745,18 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - [x] `2026-07-15 16:59Z` — Ran `scripts/security-scan` against the complete Milestone 5D worktree. Repository-secret and packaged-application gates passed without exceptions; all Compose findings remained visible and matched exact, digest-bound, unexpired local-development-only records. Revalidated Compose plus Prometheus configuration and all four abuse-control rules.
 - [x] `2026-07-15 16:59Z` — Performed a separate read-only review of the complete uncommitted diff across management security/probe lifecycle, semantic-effect concurrency and transaction rollback, V006/V007 compatibility and immutability, DLT acknowledgement/recovery, metrics, alerts, tests, and operational claims. No Critical, High, or Medium finding in the required financial consistency, duplicate-side-effect, lost-event, blocked-partition, security-bypass, data-exposure, or unbounded-resource categories remained.
 - [x] `2026-07-15 17:00Z` — Passed final `git diff --check` and `./gradlew --no-daemon clean verify --console=plain`: 66 formatting, static-analysis, unit, PostgreSQL/Kafka/Toxiproxy integration, architecture, Compose, OpenAPI, and documentation task actions succeeded (24 executed, 40 restored from the verified build cache, 2 up-to-date). No required task was skipped.
+- [x] `2026-07-15 17:24Z` — Recorded explicit maintainer approval for Milestone 6, inspected governance, the canonical plan, normative product/domain/API/data/threat/architecture documents, ADRs 0003–0012, all order/payment/ledger/messaging/notification APIs, migrations, module boundaries, and the complete integration-test inventory, and marked only Milestone 6 In Progress. The implementation boundary is short PostgreSQL initialization/finalization transactions around provider-free work, provider lookup/calls outside transactions, the existing atomic ledger/outbox transaction, and asynchronous Kafka/notification after the HTTP result.
+- [x] `2026-07-15 17:54Z` — Implemented the OpenAPI-first complete public workflow, narrow orders/payments APIs, V008 final-state invariants, stable provider-operation recovery, idempotent ledger/outbox finalization, and truthful asynchronous response semantics. Added focused PostgreSQL, HTTP, provider timeout/lookup, crash, concurrency, database-constraint, Kafka-available/unavailable, and notification tests plus ADR 0013 and aligned product/domain/API/data/threat/architecture/README/runbook documentation. Focused contract, module, security, and integration tests pass after correcting two test-fixture-only compile/timestamp issues without weakening production constraints.
+- [x] `2026-07-15 17:56Z` — Ran `scripts/security-scan`. The committed-content secret/configuration and packaged Java application gates passed without exceptions; Kafka/Prometheus remained clean; every official Compose-image finding stayed visible and matched an exact digest-bound, unexpired local-development-only record. No production risk acceptance or new suppression was introduced.
+- [x] `2026-07-15 17:58Z` — Strengthened the Kafka-unavailable proof by pausing a live Testcontainers broker after startup while the workflow completed and left its outbox `PENDING`; added successful bounded capture-temporary retry coverage. Both focused integration classes passed from clean task execution.
+- [x] `2026-07-15 18:03Z` — Performed the separate read-only review of the complete uncommitted workflow for false atomicity, unsafe retries, duplicate financial/notification effects, stale transitions, idempotency races, object authorization, sensitive-data exposure, runtime Kafka loss, and misleading API/docs. Fixed the active-timeout environment-name mismatch, historical-order OpenAPI nullability, false single-transaction wording, a weak disabled-Kafka fixture, and formatter/static-rule compatibility. No Critical or High finding, or Medium finding in the required financial consistency, lost-event, duplicate-side-effect, security-bypass, data-exposure, or unbounded-resource categories, remains.
+- [x] `2026-07-15 18:03Z` — Passed final `git diff --check` and Java 25/Gradle 9.6.1 `./gradlew --no-daemon clean verify --console=plain`: all 66 formatting, static-analysis, unit, PostgreSQL/Kafka/Toxiproxy integration, architecture, Compose, OpenAPI, and documentation actions succeeded in 1m 54s (33 executed, 30 restored from the verified build cache, 3 up-to-date). Milestone 6 is Complete; no required task was skipped.
 
 ## Surprises and discoveries
 
 - The repository has no Gradle lifecycle, so the first application milestone must establish every required check before later implementation can satisfy the Definition of Done.
 - The requested ExecPlan path conflicts with the default `.agent/plans/...` location. The maintainer's explicit path is treated as a one-plan exception; duplicating a living plan would create drift.
-- The accepted architecture originally deferred the base package, concrete feature modules, and Gradle project structure. The maintainer's Milestone 1 approval selected `com.ledgerflow`, six feature projects, and one deployable application project. ADR 0003 was later accepted for Create Order and ADR 0004 for Milestone 4; the remaining business-flow ADRs stay proposed.
+- The accepted architecture originally deferred the base package, concrete feature modules, and Gradle project structure. The maintainer's Milestone 1 approval selected `com.ledgerflow`, six feature projects, and one deployable application project. ADRs 0003 through 0007 and 0009 through 0013 now record the accepted implemented boundaries; ADRs 0002 and 0008 remain proposed.
 - PostgreSQL row `CHECK` constraints cannot enforce a balance across multiple entries. A deferred constraint trigger on both parent and entry changes is necessary to reject even an empty ledger transaction.
 - Provider capture and the local database cannot be atomic. Stable provider operation keys, lookup, and idempotent local finalization are required; a database transaction held across HTTP would not solve this gap.
 - Bounded Kafka retries use container pausing rather than sleeping the consumer thread. The affected work waits while polling remains alive, preserving a smaller topic topology without risking long blocking backoffs; sustained failures still move to DLT.
@@ -802,13 +826,20 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - **2026-07-15 — Separate notification envelope and business-effect identity.** Retain event-ID/hash transport checks and add `PAYMENT_CAPTURED_NOTIFICATION` identity version 1 keyed by immutable capture ledger transaction ID with order/payment/causation/money/time conflict comparison. This prevents re-enveloping without assuming one event per payment. ADR 0011 records the decision.
 - **2026-07-15 — Persist terminal invalid DLT evidence by actual coordinates.** Missing/malformed routing and invalid event data store immutable bounded sanitized evidence before acknowledgement; database failure retains the Kafka offset and no quarantine topic is added. ADR 0012 records the decision.
 - **2026-07-15 — Add no new production technology for Milestone 5D.** Direct Spring Security and Micrometer declarations in the owning feature modules describe already-present Boot-managed runtime capabilities; PostgreSQL, Kafka, Actuator, and JDK concurrency provide the controls. No manually versioned production dependency is introduced.
+- **2026-07-15 — Put the concrete public workflow in `orders` and expose only narrow module APIs.** `orders.api` defines the public create/read use case and projections; `payments.api` adds only initialization, advancement, read, and guarded capture finalization needed by orders/ledger. The coordinator is specific to this flow, the Gradle graph remains acyclic, and no generic saga/workflow framework or new production dependency is introduced.
+- **2026-07-15 — Use recoverable local transactions rather than false cross-system atomicity.** The initial identity transaction commits before provider I/O; each provider call/lookup occurs outside PostgreSQL; the existing journal plus outbox transaction remains atomic; and a separate provider-free transaction finalizes payment/order/idempotency after verifying that evidence. Kafka and notification are never awaited by HTTP. ADR 0013 records this decision and V008 provides a deferred final-state backstop.
+- **2026-07-15 — Supersede the Milestone 3 immutable `CREATED` snapshot only for new complete-workflow requests.** The same scoped `CREATE_ORDER_V1` key remains bound to its original request hash, while the version-2 canonical fingerprint adds the opaque payment reference and new claims persist an in-progress resource before provider I/O. Historical rows/snapshots remain readable and replayable. Earlier ADR/milestone statements that exclude public orchestration describe their approved historical scope; ADR 0013 and the current normative documents govern Milestone 6 behavior, so those records are not retroactively rewritten.
+- **2026-07-15 — Persist each provider operation identity before its external call and recover by lookup.** Authorization identity commits with payment initialization; capture identity commits with the guarded `CAPTURING` transition. Recent active calls suppress competing execution until a configured deadline; stale active or explicit unknown states look up the same ID, and only `NOT_FOUND` permits an equivalent same-ID resend. This extends ADR 0004 without changing its provider port or retry classification.
+- **2026-07-15 — Keep the deterministic provider implementation outside the production artifact.** The existing validated integration fixture supplies success, decline, latency, temporary, timeout, lookup, and malformed-response behavior over real HTTP. Production code contains only the provider client/port, fails closed when no trusted base URL is configured, and adds no simulator endpoint, card field, credential, or production dependency.
 - **2026-07-11 — Validate OpenAPI without server code generation.** Contract tests enforce conformance without generated framework coupling.
 - **2026-07-11 — Contract the mock provider separately and exclude it from the main artifact.** Its external HTTP behavior is validated without exposing simulator controls in production.
 - **2026-07-11 — Separate Flyway owner and runtime database roles.** Migration authority does not grant the application DDL or mutation rights over immutable financial/audit data.
 
 ## Outcome and follow-up
 
-Current outcome: Milestones 1 through 5D are complete. Management probes are isolated and coalesced, notification transport and semantic idempotency are independent database invariants, and terminal malformed DLT input cannot advance before durable sanitized actual-coordinate evidence or starve later partition work after persistence recovers. V006/V007 upgrade compatible V005 evidence and fail closed on conflicts. The repository secret scan and packaged application dependency scan remain clean with no exception mechanism; native Kafka 4.3.1 and Prometheus 3.13.1 image scans remain clean. Other official local Compose findings remain visible under exact local-development-only records through 2026-08-13 or compatible fixed-image availability, whichever is earlier; this is not production acceptance. Milestone 6 remains Proposed. Quota/retention R3 and authenticated/bounded replay R4 remain separately Proposed production gates. Milestone 7A remains Proposed and cannot start until Milestone 6 is also Complete; Milestone 7B remains Proposed. No operator HTTP behavior, public payment orchestration, final order/capture orchestration, new datastore, quarantine topic, or end-to-end exactly-once claim was introduced by Milestone 5D.
+Current outcome: Milestones 1 through 6 are complete. The authenticated public create command now durably initializes one order/payment identity, authorizes and captures through stable provider operation IDs with lookup-first ambiguity recovery, atomically posts one balanced immutable journal plus one logical outbox event, and finalizes payment/order/idempotency in a separate guarded local transaction. It returns truthful completed, declined, pending, or provider-protocol outcomes without waiting for Kafka. At-least-once publication/consumption, event-ID transport idempotency, and versioned semantic-effect idempotency still create one notification effect under duplicate publication, delivery, or re-enveloping. V008 enforces terminal financial evidence while preserving historical Create Order rows and snapshots.
+
+The repository secret scan and packaged application dependency scan remain clean with no exception mechanism; Kafka 4.3.1 and Prometheus 3.13.1 image scans remain clean. Other official local Compose findings remain visible under exact local-development-only records through 2026-08-13 or compatible fixed-image availability, whichever is earlier; this is not production acceptance. Milestone 7A's prerequisites are now satisfied, but it remains Proposed pending explicit approval; Milestones 7B and 8 also remain Proposed. Quota/retention R3 and authenticated/bounded replay R4 remain separately Proposed production gates. The mock provider is a validated integration fixture rather than a packaged local service or production provider. General payment/outbox/operator recovery is not exposed, so a durable `202`, failed outbox cycle, or replay request still follows the documented inspection/escalation limits. LedgerFlow does not claim a distributed transaction or end-to-end exactly-once delivery.
 
 When all milestones are complete, update this section with:
 

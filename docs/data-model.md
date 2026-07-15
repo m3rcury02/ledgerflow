@@ -3,7 +3,7 @@
 - Status: Partially implemented
 - Last updated: 2026-07-15
 
-PostgreSQL is the source of truth. Flyway creates all structures, constraints, indexes, and trigger functions. Integration tests apply every migration to an empty PostgreSQL Testcontainer. `V001` creates orders and HTTP idempotency; `V002` creates payments and attempt history; `V003` creates the immutable ledger and `CAPTURE_ACCOUNTED`; `V004` creates the transactional outbox; `V005` creates the notification inbox, notification records, dead-letter catalog, and replay audit; `V006` adds versioned notification semantic-effect identity; and `V007` creates terminal malformed-DLT evidence. General operator workflow tables remain proposed and must not be inferred to exist.
+PostgreSQL is the source of truth. Flyway creates all structures, constraints, indexes, and trigger functions. Integration tests apply every migration to an empty PostgreSQL Testcontainer. `V001` creates orders and HTTP idempotency; `V002` creates payments and attempt history; `V003` creates the immutable ledger and `CAPTURE_ACCOUNTED`; `V004` creates the transactional outbox; `V005` creates notification/DLT/replay records; `V006` adds semantic-effect identity; `V007` creates terminal malformed-DLT evidence; and `V008` adds resumable public workflow/final states plus deferred finalization invariants. General operator workflow tables remain proposed.
 
 ## General conventions
 
@@ -28,7 +28,7 @@ PostgreSQL is the source of truth. Flyway creates all structures, constraints, i
 | `client_reference` | `varchar(100)` | Nullable |
 | `amount_minor` | `bigint` | Not null, `> 0` |
 | `currency` | `char(3)` | Not null, `INR` in MVP |
-| `status` | `varchar(32)` | `CREATED` in the current slice |
+| `status` | `varchar(32)` | Allowed order state from the explicit workflow |
 | `initial_correlation_id` | `varchar(64)` | Not null |
 | `version` | `bigint` | Not null, non-negative |
 | `created_at`, `updated_at` | `timestamptz` | Not null; `updated_at >= created_at` |
@@ -37,7 +37,7 @@ Constraints and indexes:
 
 - primary key on `id`;
 - checks that the owner, optional client reference, and correlation ID are not blank;
-- check `status = 'CREATED'` for the current slice;
+- check state in `CREATED`, `PAYMENT_PROCESSING`, `COMPLETED`, `PAYMENT_DECLINED`, `PAYMENT_RETRY_PENDING`, or `FAILED`;
 - checks that currency is uppercase and equals `INR` for the MVP;
 - check that `version >= 0` and `updated_at >= created_at`; and
 - index `(owner_subject, created_at DESC, id DESC)`.
@@ -52,7 +52,7 @@ Constraints and indexes:
 | `request_hash` | `bytea` | SHA-256, exactly 32 bytes |
 | `state` | `varchar(16)` | `IN_PROGRESS` or `COMPLETED` |
 | `resource_id` | `uuid` | Nullable until resource exists |
-| `response_status` | `integer` | Null in progress; exactly `201` when completed |
+| `response_status` | `integer` | Null in progress; `201`, `202`, or `502` when completed |
 | `response_location` | `varchar(300)` | Null in progress; required when completed |
 | `response_body` | `jsonb` | Nullable until completed |
 | `created_at`, `updated_at` | `timestamptz` | Not null; ordered |
@@ -62,12 +62,12 @@ Constraints and indexes:
 
 - primary key `(principal_scope, operation, key_hash)`;
 - checks that both hashes have length 32;
-- a completed row must have resource ID, status `201`, location, body, and completion time; and
-- an in-progress row must have none of those completion fields.
+- a completed row must have resource ID, an allowed status, location, body, and completion time; and
+- an in-progress row has no response/completion fields but may retain the durable order resource ID used for safe resumption.
 
 Rows are retained indefinitely in the MVP. Raw keys and raw request bodies are not stored.
 
-The current Create Order transaction never commits an in-progress row. Its composite primary key and `INSERT ... ON CONFLICT DO NOTHING` serialize same-key requests until the winner commits or rolls back. Lease and takeover columns are deliberately deferred until a later external workflow demonstrates that they are necessary.
+The public workflow intentionally commits an in-progress row together with its order/payment identities before provider I/O. Its composite primary key and `INSERT ... ON CONFLICT DO NOTHING` serialize initial same-key claims. Matching contenders use the resource ID and guarded states to resume or replay; a conflicting request hash returns `409`. No provider lease is stored: recent `AUTHORIZING`/`CAPTURING` timestamps suppress concurrent recovery until the configured active-call deadline, after which lookup-first recovery is safe.
 
 ### `payments`
 
@@ -92,8 +92,8 @@ The current Create Order transaction never commits an in-progress row. Its compo
 Checks enforce:
 
 - the state set from `docs/domain-model.md`, including explicit authorization/capture unknown states;
-- `AUTHORIZED`, `CAPTURING`, capture-retry, capture-unknown, capture-declined, `CAPTURE_CONFIRMED`, and `CAPTURE_ACCOUNTED` require an authorization ID;
-- `CAPTURE_CONFIRMED` and `CAPTURE_ACCOUNTED` require a capture request ID, provider capture ID, and null failure code;
+- `AUTHORIZED`, `CAPTURING`, capture-retry, capture-unknown, capture-declined, `CAPTURE_CONFIRMED`, `CAPTURE_ACCOUNTED`, and `CAPTURED` require an authorization ID;
+- `CAPTURE_CONFIRMED`, `CAPTURE_ACCOUNTED`, and `CAPTURED` require a capture request ID, provider capture ID, and null failure code;
 - retry-pending and unknown states require matching `resume_stage` and failure code;
 - terminal decline and failure states require a failure code; and
 - the payment-method reference is required through authorization retry/reconciliation and is irreversibly cleared when authorization succeeds or becomes terminal; and
@@ -149,7 +149,7 @@ Flyway seeds `PAYMENT_CLEARING` as `00000000-0000-4000-8000-000000000001` and `M
 
 Unique `(source_type, source_id)` prevents duplicate source posting. A partial unique index on `payment_id` for `PAYMENT_CAPTURE` is a second capture-idempotency backstop. A unique non-null reversal reference allows only one exact correction for an original capture.
 
-For `PAYMENT_CAPTURE`, `source_id` equals `payment_id`, the referenced payment must be `CAPTURE_ACCOUNTED`, and the order/currency/amount must match. For `CORRECTION`, `source_id` and `reversal_of_transaction_id` identify the same original payment-capture transaction; payment, order, and currency remain the original values. A deferred constraint trigger validates these relationships.
+For `PAYMENT_CAPTURE`, `source_id` equals `payment_id`, the referenced payment is `CAPTURE_ACCOUNTED` when the immutable journal commits, and order/currency/amount match. The payment can later become `CAPTURED` without mutating that journal. For `CORRECTION`, source/reversal identify the original capture transaction. A deferred constraint trigger validates these relationships.
 
 ### `ledger_entries`
 
@@ -321,7 +321,7 @@ General `failed_operations`, operator retry-request tables, and an operator HTTP
 After provider capture is confirmed, the implemented capture-accounting slice runs one `READ COMMITTED` transaction:
 
 1. lock the payment by ID with `SELECT ... FOR UPDATE` through `payments.api`;
-2. verify `CAPTURE_CONFIRMED`, or verify a matching existing journal for `CAPTURE_ACCOUNTED`;
+2. verify `CAPTURE_CONFIRMED`, or verify a matching existing journal/event for `CAPTURE_ACCOUNTED` or final `CAPTURED`;
 3. insert one `PAYMENT_CAPTURE` journal transaction using its unique source/payment keys;
 4. insert the clearing debit and merchant-payable credit;
 5. transition payment to `CAPTURE_ACCOUNTED` while retaining provider evidence; and
@@ -329,7 +329,7 @@ After provider capture is confirmed, the implemented capture-accounting slice ru
 
 Deferred validation runs before commit. Any error rolls back payment state, journal rows, and outbox together. At `READ COMMITTED`, the payment lock serializes same-payment posting: a waiter observes the committed accounted state and verifies/replays its journal and outbox. Unique indexes remain database backstops for callers that fail to follow the locking convention. Operations that later introduce cross-payment, account-period, or aggregate-balance decisions must reassess the isolation level.
 
-Provider HTTP calls never run inside this boundary. Final payment `CAPTURED`, order `COMPLETED`, and idempotency response finalization remain future work. `V004` adds the outbox table; it does not change those public workflow states.
+Provider HTTP calls never run inside this boundary. After it commits, a separate short transaction locks the idempotency/payment identities, moves `CAPTURE_ACCOUNTED -> CAPTURED` and `PAYMENT_PROCESSING -> COMPLETED`, and stores the HTTP snapshot. V008 deferred triggers reject `COMPLETED` unless the unique payment is `CAPTURED` and its capture journal plus matching immutable outbox identity exist. The same triggers reject decline/retry/failed order states that contradict payment state. Kafka I/O is absent from both transactions.
 
 ## Kafka contract
 
@@ -376,14 +376,15 @@ Kafka headers carry `event_id`, `event_type`, `schema_version`, `x-correlation-i
 
 | Failure | Durable state | Recovery |
 | --- | --- | --- |
-| Process dies during Create Order | The full create transaction committed or no order/idempotency row exists | Retry the same request/key; replay a committed result or safely claim after rollback |
+| Process dies during workflow initialization | Order/payment/in-progress idempotency identities all committed, or none did | Retry same key; resume the one resource or claim after rollback |
 | Provider response lost | Attempt timeout/unknown and stable operation key | Lookup provider before resend |
 | Provider succeeded; result persistence fails | Payment remains active with a stable request ID and `STARTED` event | Lookup records success/decline without another provider effect |
 | Provider response times out after processing | Payment is authorization/capture unknown | Lookup same request ID; resend only after provider returns `NOT_FOUND` |
 | Capture is provider-confirmed | Payment is `CAPTURE_CONFIRMED` | Retry the idempotent ledger posting boundary; no provider resend |
 | Process stops during capture accounting | Payment, journal, and outbox all commit, or none commits | Retry posting; row lock and unique keys return the original journal/event without duplicates |
+| Process stops after capture accounting | `CAPTURE_ACCOUNTED`, journal, and outbox are durable; order/idempotency remain in progress | Retry same key; verify identities and finalize `CAPTURED`/`COMPLETED` |
 | Balance/source/outbox constraint fails | Payment accounting, ledger transaction, and outbox all roll back | Investigate and fix forward; do not patch rows |
-| Kafka unavailable | Outbox is pending/leased with attempt counts | Automatic bounded backoff; after 10 attempts it remains `FAILED` for inspection |
+| Kafka unavailable | Completed business state and durable outbox remain; outbox is pending/leased with attempts | HTTP result is unchanged; publisher retries with bounded backoff and eventually records `FAILED` for inspection |
 | Publish succeeds; mark fails | Outbox lease eventually expires | Publish duplicate; consumer inbox prevents duplicate notification |
 | Consumer DB commit succeeds; offset commit fails | Inbox and notification exist | Redelivery is a no-op and offset can commit |
 | Consumer repeatedly fails | Message reaches DLT after initial plus three retries | DLT listener catalogs safe evidence; audited CLI can replay a validated record |
@@ -392,6 +393,7 @@ Kafka headers carry `event_id`, `event_type`, `schema_version`, `x-correlation-i
 ## Migration and retention rules
 
 - Initial schema is delivered through ordered Flyway migrations and never edited after merge.
+- V008 is forward compatible with historical `CREATED` orders and completed `201` snapshots; rollback to code that assumes only `CREATED` is unsafe after new workflow rows exist, so application rollback requires a forward-compatible release or forward fix.
 - Financial and idempotency records have no automatic deletion in the MVP.
 - Published outbox, inbox, notification, dead-letter, and replay-audit retention must be set before production launch through an operations/data-retention ADR.
 - Schema rollback uses forward corrective migrations. Application rollback is allowed only while the deployed schema remains backward compatible.

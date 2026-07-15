@@ -94,4 +94,6 @@ If one deployable process temporarily shares a Kafka principal, its ACL is the u
 
 Credentials, trust material, and tokens come from environment-variable injection or an approved secret store, never committed files. Production also requires TLS policy, separate Flyway-owner and non-owner runtime database roles, backup/restore testing, retention decisions, broker/database hardening, and the unresolved quota/idempotency-retention and authenticated replay controls tracked in the MVP ExecPlan.
 
+The Milestone 6 payment adapter is a deterministic demonstration provider, not a production payment integration. If it is enabled, `LEDGERFLOW_PAYMENT_PROVIDER_BASE_URL` must name an allowlisted trusted origin and egress policy must permit only that origin. A production provider requires an approved authentication, TLS, credential-rotation, reconciliation, and data-handling design. Do not place the opaque payment-method reference, idempotency key, bearer token, provider body, or payment credentials in logs or traces.
+
 Local Compose binds services to `127.0.0.1` and is demonstration infrastructure only. Its placeholder credentials, shared database owner, plaintext endpoints, and local vulnerability risk acceptances are not a production deployment design.
