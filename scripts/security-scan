@@ -5,6 +5,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ENV_FILE=${LEDGERFLOW_ENV_FILE:-"$ROOT_DIR/.env"}
 TRIVY_IMAGE='ghcr.io/aquasecurity/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f'
 TRIVY_CACHE_VOLUME=${LEDGERFLOW_TRIVY_CACHE_VOLUME:-ledgerflow-trivy-cache}
+EXCEPTION_POLICY="$ROOT_DIR/config/security/local-compose-vulnerability-exceptions.json"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   ENV_FILE="$ROOT_DIR/.env.example"
@@ -62,6 +63,108 @@ docker run --rm \
   --no-progress \
   /workspace/application/build/libs
 
+if ! command -v jq >/dev/null 2>&1; then
+  echo "jq is required to evaluate the exact local-development image policy." >&2
+  exit 1
+fi
+
+if [[ ! -f "$EXCEPTION_POLICY" ]]; then
+  echo "Local-development image policy is missing: $EXCEPTION_POLICY" >&2
+  exit 1
+fi
+
+if ! jq --exit-status '
+  .schemaVersion == 1
+  and .scope == "local-compose-only"
+  and (.riskRegister | type == "string" and length > 0)
+  and (.exceptions | type == "array" and length > 0)
+  and all(
+    .exceptions[];
+    (.riskRecord | type == "string" and length > 0)
+    and (.image | type == "string" and length > 0)
+    and (.digest | type == "string" and test("@sha256:[0-9a-f]{64}$"))
+    and (.target | type == "string" and length > 0)
+    and (.package | type == "string" and length > 0)
+    and (.installedVersion | type == "string" and length > 0)
+    and (.vulnerabilityIds | type == "array" and length > 0)
+    and all(.vulnerabilityIds[]; type == "string" and test("^CVE-[0-9]{4}-[0-9]+$"))
+    and (.owner | type == "string" and length > 0)
+    and (.acceptedAt | type == "string" and length > 0)
+    and (.expiresAt | type == "string" and length > 0)
+  )
+' "$EXCEPTION_POLICY" >/dev/null; then
+  echo "Local-development image policy does not match schema version 1." >&2
+  exit 1
+fi
+
+if ! jq --exit-status '
+  [
+    .exceptions[] as $exception
+    | $exception.vulnerabilityIds[]
+    | {
+        image: $exception.image,
+        digest: $exception.digest,
+        target: $exception.target,
+        package: $exception.package,
+        installedVersion: $exception.installedVersion,
+        vulnerabilityId: .
+      }
+  ] as $expanded
+  | ($expanded | length) == ($expanded | unique | length)
+  and ([.exceptions[].riskRecord] | length) == ([.exceptions[].riskRecord] | unique | length)
+' "$EXCEPTION_POLICY" >/dev/null; then
+  echo "Local-development image policy contains duplicate tuples or risk-record identifiers." >&2
+  exit 1
+fi
+
+risk_register=$(jq --exit-status --raw-output '.riskRegister' "$EXCEPTION_POLICY")
+risk_register_path="$ROOT_DIR/$risk_register"
+if [[ ! -f "$risk_register_path" ]]; then
+  echo "Risk register referenced by image policy is missing: $risk_register" >&2
+  exit 1
+fi
+
+now_epoch=$(date -u +%s)
+policy_invalid=0
+while IFS=$'\t' read -r risk_record owner accepted_at expires_at; do
+  if ! accepted_epoch=$(jq --exit-status --null-input --arg value "$accepted_at" \
+    '$value | fromdateiso8601' 2>/dev/null) ||
+    ! expires_epoch=$(jq --exit-status --null-input --arg value "$expires_at" \
+      '$value | fromdateiso8601' 2>/dev/null); then
+    echo "Risk record $risk_record has an invalid acceptance or expiry timestamp." >&2
+    policy_invalid=1
+    continue
+  fi
+
+  if ((expires_epoch <= accepted_epoch || expires_epoch - accepted_epoch > 30 * 24 * 60 * 60)); then
+    echo "Risk record $risk_record exceeds the 30-day initial exception limit." >&2
+    policy_invalid=1
+  fi
+
+  if ((now_epoch >= expires_epoch)); then
+    echo "Risk record $risk_record expired at $expires_at." >&2
+    policy_invalid=1
+  fi
+
+  if ((accepted_epoch > now_epoch)); then
+    echo "Risk record $risk_record has a future acceptance timestamp: $accepted_at" >&2
+    policy_invalid=1
+  fi
+
+  if ! grep --fixed-strings --quiet "$risk_record" "$risk_register_path"; then
+    echo "Risk record $risk_record is not documented in $risk_register." >&2
+    policy_invalid=1
+  fi
+done < <(
+  jq --raw-output \
+    '.exceptions[] | [.riskRecord, .owner, .acceptedAt, .expiresAt] | @tsv' \
+    "$EXCEPTION_POLICY"
+)
+
+if [[ $policy_invalid -ne 0 ]]; then
+  exit 1
+fi
+
 mapfile -t COMPOSE_IMAGES < <(
   docker compose \
     --env-file "$ENV_FILE" \
@@ -69,10 +172,52 @@ mapfile -t COMPOSE_IMAGES < <(
     config --images | sort --unique
 )
 
+while IFS= read -r policy_image; do
+  if ! printf '%s\n' "${COMPOSE_IMAGES[@]}" | grep --fixed-strings --line-regexp --quiet "$policy_image"; then
+    echo "Risk policy contains an image that is not in Compose: $policy_image" >&2
+    policy_invalid=1
+  fi
+done < <(jq --raw-output '[.exceptions[].image] | unique[]' "$EXCEPTION_POLICY")
+
+if [[ $policy_invalid -ne 0 ]]; then
+  exit 1
+fi
+
 image_scan_failed=0
+report_directory=$(mktemp --directory)
+trap 'rm -rf "$report_directory"' EXIT
+
 for image in "${COMPOSE_IMAGES[@]}"; do
   echo "Scanning container image $image"
   docker image inspect "$image" >/dev/null 2>&1 || docker pull "$image" >/dev/null
+
+  mapfile -t repository_digests < <(
+    docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image"
+  )
+  if [[ ${#repository_digests[@]} -eq 0 ]]; then
+    echo "Cannot resolve a repository digest for $image." >&2
+    image_scan_failed=1
+    continue
+  fi
+
+  image_digest=${repository_digests[0]}
+  mapfile -t expected_digests < <(
+    jq --arg image "$image" --raw-output \
+      '[.exceptions[] | select(.image == $image) | .digest] | unique[]' \
+      "$EXCEPTION_POLICY"
+  )
+  if [[ ${#expected_digests[@]} -gt 1 ]]; then
+    echo "Risk policy contains multiple digests for $image." >&2
+    image_scan_failed=1
+  elif [[ ${#expected_digests[@]} -eq 1 ]]; then
+    for repository_digest in "${repository_digests[@]}"; do
+      if [[ "$repository_digest" == "${expected_digests[0]}" ]]; then
+        image_digest=$repository_digest
+        break
+      fi
+    done
+  fi
+
   if ! docker run --rm \
     --cap-drop=ALL \
     --security-opt=no-new-privileges \
@@ -83,18 +228,108 @@ for image in "${COMPOSE_IMAGES[@]}"; do
     --timeout 15m \
     --scanners vuln \
     --ignore-unfixed \
-    --exit-code 1 \
+    --exit-code 0 \
     --severity HIGH,CRITICAL \
     --table-mode detailed \
     --no-progress \
     "$image"; then
+    echo "Trivy could not produce the detailed scanner output for $image." >&2
     image_scan_failed=1
+    continue
+  fi
+
+  report_file="$report_directory/$(printf '%s' "$image" | tr '/:' '__').json"
+  if ! docker run --rm \
+    --cap-drop=ALL \
+    --security-opt=no-new-privileges \
+    --volume /var/run/docker.sock:/var/run/docker.sock:ro \
+    --volume "$TRIVY_CACHE_VOLUME:/root/.cache/trivy" \
+    "$TRIVY_IMAGE" \
+    image \
+    --timeout 15m \
+    --scanners vuln \
+    --ignore-unfixed \
+    --severity HIGH,CRITICAL \
+    --format json \
+    --no-progress \
+    "$image" >"$report_file"; then
+    echo "Trivy could not produce the policy report for $image." >&2
+    image_scan_failed=1
+    continue
+  fi
+
+  comparison=$(
+    jq --compact-output --null-input \
+      --slurpfile policy "$EXCEPTION_POLICY" \
+      --slurpfile report "$report_file" \
+      --arg image "$image" \
+      --arg digest "$image_digest" '
+        def tuple($target; $id; $package; $installedVersion):
+          {
+            target: $target,
+            vulnerabilityId: $id,
+            package: $package,
+            installedVersion: $installedVersion
+          };
+
+        [
+          $report[0].Results[]? as $result
+          | $result.Vulnerabilities[]?
+          | tuple($result.Target; .VulnerabilityID; .PkgName; .InstalledVersion)
+        ]
+        | unique as $observed
+        | [
+            $policy[0].exceptions[]
+            | select(.image == $image and .digest == $digest) as $exception
+            | $exception.vulnerabilityIds[]
+            | tuple(
+                $exception.target;
+                .;
+                $exception.package;
+                $exception.installedVersion
+              ) + {riskRecord: $exception.riskRecord}
+          ] as $accepted
+        | [$accepted[] | del(.riskRecord)]
+        | unique as $allowed
+        | {
+            accepted: $accepted,
+            unapproved: ($observed - $allowed),
+            stale: ($allowed - $observed)
+          }
+      '
+  )
+
+  unapproved_count=$(jq '.unapproved | length' <<<"$comparison")
+  stale_count=$(jq '.stale | length' <<<"$comparison")
+
+  if [[ $unapproved_count -ne 0 ]]; then
+    jq --raw-output \
+      '.unapproved[] | "Unapproved finding: \(.vulnerabilityId) \(.target) \(.package) \(.installedVersion)"' \
+      <<<"$comparison" >&2
+    image_scan_failed=1
+  fi
+
+  if [[ $stale_count -ne 0 ]]; then
+    jq --raw-output \
+      '.stale[] | "Stale exception requiring review: \(.vulnerabilityId) \(.target) \(.package) \(.installedVersion)"' \
+      <<<"$comparison" >&2
+    image_scan_failed=1
+  fi
+
+  if [[ $unapproved_count -eq 0 && $stale_count -eq 0 ]]; then
+    mapfile -t accepted_records < <(
+      jq --raw-output '[.accepted[].riskRecord] | unique[]' <<<"$comparison"
+    )
+    if [[ ${#accepted_records[@]} -gt 0 ]]; then
+      printf 'Accepted local-development risk records for %s: %s\n' \
+        "$image" "${accepted_records[*]}"
+    fi
   fi
 done
 
 if [[ $image_scan_failed -ne 0 ]]; then
-  echo "One or more Compose images have unsuppressed fixed HIGH or CRITICAL findings." >&2
+  echo "One or more Compose images have unapproved, stale, expired, or unscannable findings." >&2
   exit 1
 fi
 
-echo "Security scan completed without unsuppressed fixed HIGH or CRITICAL findings"
+echo "Security scan completed: secret and application gates passed; Compose findings are absent or exactly covered by unexpired local-development risk records."

@@ -8,7 +8,7 @@ x-logging: &default-logging
 
 services:
   postgres:
-    image: postgres:18.4-alpine3.24
+    image: postgres:18.4-trixie
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-ledgerflow}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-local-postgres}
@@ -193,7 +193,7 @@ services:
     networks: [ledgerflow]
 
   prometheus:
-    image: prom/prometheus:v3.13.0
+    image: prom/prometheus:v3.13.1
     command:
       - --config.file=/etc/prometheus/prometheus.yaml
       - --storage.tsdb.path=/prometheus

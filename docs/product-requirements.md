@@ -178,7 +178,7 @@ The `AC-M3` criteria record the delivered public Create Order slice, `AC-M5B` re
 - **AC-M5C-005:** The configured per-subject attempts are admitted to normal processing and the next receives `429`, `Retry-After`, and correlation ID without a business effect; tracked state is bounded and hashed.
 - **AC-M5C-006:** The local realm declares customer/operator/admin roles, order/operation scopes, and API audience without users, passwords, or client secrets.
 - **AC-M5C-007:** Sensitive marker tests show rejected request/key material absent from API responses, captured logs, and order/idempotency persistence; direct SQL audit update/delete fails.
-- **AC-M5C-008:** The pinned scan finds no unapproved committed secret or fixed HIGH/CRITICAL application-dependency/Compose-image vulnerability.
+- **AC-M5C-008:** The pinned scan finds no committed secret or fixed HIGH/CRITICAL application-dependency vulnerability and no unapproved, stale, changed, or expired Compose-image finding; any accepted Compose tuple is exact, visible, expiring, and local-development-only.
 
 ## Target full-flow acceptance criteria
 

@@ -205,11 +205,14 @@ scans repository content/configuration, packaged Java dependencies, and every im
 Compose. Read-only Docker-socket access is still highly privileged; isolate and protect the runner.
 
 A fixed HIGH/CRITICAL vulnerability or committed-secret finding fails the command. Prefer upgrading
-or removing the affected component within an approved milestone. Do not add an ignore merely to
-make CI green. Any temporary exception requires maintainer approval and must record the identifier,
-component, owner, rationale, compensating control, and expiry in version control. Rotate and revoke
-any real secret immediately, remove it from current content, assess history exposure, and follow the
-secret owner's incident procedure; deleting only the latest line is not sufficient containment.
+or removing the affected component within an approved milestone. Repository-secret and packaged-
+application gates never consult the Compose exception policy. The current [container risk
+register](security/local-development-container-risk-register.md) and its machine-readable policy
+cover only exact local-development image digests and tuples, expire within 30 days, and remain
+visible in Trivy output. A new, changed, stale, undocumented, or expired tuple fails. Never use this
+acceptance for production or replace it with a broad ignore. Rotate and revoke any real secret
+immediately, remove it from current content, assess history exposure, and follow the secret owner's
+incident procedure; deleting only the latest line is not sufficient containment.
 
 ## Escalation and prohibited actions
 

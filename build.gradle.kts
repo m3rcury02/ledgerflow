@@ -241,6 +241,7 @@ val documentationCheck =
                 "docs/data-model.md",
                 "docs/threat-model.md",
                 "docs/runbook.md",
+                "docs/security/local-development-container-risk-register.md",
                 "docs/sql/ledger-queries.sql",
                 "docs/plans/mvp-execplan.md",
                 "docs/adr/0001-record-architecture-decisions.md",
@@ -252,6 +253,7 @@ val documentationCheck =
                 "scripts/dev-status",
                 "scripts/replay-dead-letter",
                 "scripts/security-scan",
+                "config/security/local-compose-vulnerability-exceptions.json",
             )
         val markdownFiles =
             fileTree(rootDir) {

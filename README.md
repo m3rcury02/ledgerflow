@@ -6,6 +6,7 @@ LedgerFlow is a Java 25 and Spring Boot 4.1 modular-monolith portfolio project. 
 
 - JDK 25
 - Docker-compatible runtime for Testcontainers
+- `jq` for exact vulnerability-policy evaluation
 - GNU Make (optional; every command delegates to the Gradle Wrapper)
 
 Do not install Gradle separately. The committed Gradle 9.6.1 Wrapper is the supported build entry point.
@@ -25,7 +26,7 @@ Security-sensitive, dependency, or container-image changes also run the separate
 ./scripts/security-scan
 ```
 
-The command builds the application artifact, scans repository configuration and committed content for secrets, scans packaged Java dependencies, and scans every Compose image. It fails on unsuppressed fixed HIGH or CRITICAL vulnerabilities. It uses a version-and-digest-pinned Trivy container and read-only Docker-socket access for image inspection; run it only on a trusted development or CI host.
+The command builds the application artifact, scans repository configuration and committed content for secrets, scans packaged Java dependencies, and scans every Compose image. Repository-secret and application-artifact findings always fail. Compose findings fail unless they exactly match an unexpired, digest-bound local-development record in the [container risk register](docs/security/local-development-container-risk-register.md); Trivy still prints every finding. These exceptions are prohibited for production. The command uses a version-and-digest-pinned Trivy container and read-only Docker-socket access for image inspection; run it only on a trusted development or CI host.
 
 ## Local dependency environment
 

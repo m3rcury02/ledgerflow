@@ -197,7 +197,7 @@ Outbox rows persist the originating correlation ID and validated W3C `traceparen
 
 Untrusted correlation IDs must be length- and character-limited before logging. Logs must not contain credentials, tokens, secret configuration, full financial payloads, or unnecessary personal data.
 
-Secrets are supplied through environment variables or an approved secret-management system. Source code, configuration, fixtures, documentation, and example files contain placeholders only. `scripts/security-scan` uses a version-and-digest-pinned build container to scan committed content, packaged dependencies, and every Compose image. Its vulnerability database must be refreshed in CI; fixed HIGH/CRITICAL findings and secret detections fail unless an explicit, owned, expiring exception is approved.
+Secrets are supplied through environment variables or an approved secret-management system. Source code, configuration, fixtures, documentation, and example files contain placeholders only. `scripts/security-scan` uses a version-and-digest-pinned build container to scan committed content, packaged dependencies, and every Compose image. Its vulnerability database must be refreshed in CI. Secret and packaged-application findings have no exception path. The only current image exceptions are exact, digest-bound tuples in the [local-development container risk register](security/local-development-container-risk-register.md); they expire, remain visible, and are invalid for production.
 
 ## Automated architecture verification
 
