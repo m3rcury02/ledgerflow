@@ -1,6 +1,6 @@
 # Portfolio Extension Execution Plan
 
-- Status: Extension 6 In Progress
+- Status: Extension 7 In Progress
 - Last updated: 2026-07-16
 - Related plan: `docs/plans/mvp-execplan.md` (Completed)
 
@@ -30,10 +30,10 @@ This plan outlines the sequential execution of the 7 extensions required to fina
 - **Status:** Complete
 - **Implementation:** Validated AWS Terraform design for a two-AZ VPC, load balancer, ECS Fargate, RDS PostgreSQL, ElastiCache (if justified), Secrets Manager, CloudWatch/OTLP, IAM, and encryption. Validated with `terraform validate`, `tflint`, and `Checkov`. No actual `apply`.
 
-### Extension 6 — Optional AI operations assistant (`In Progress`)
-- **Status:** In Progress
+### Extension 6 — Optional AI operations assistant (`Complete`)
+- **Status:** Complete
 - **Implementation:** Python FastAPI service providing AI incident assistance, deterministic fake provider default, runbook retrieval, structured output, prompt-injection resistant, and strict token/timeout bounds.
 
-### Extension 7 — Final portfolio release (`Proposed`)
-- **Status:** Proposed
+### Extension 7 — Final portfolio release (`In Progress`)
+- **Status:** In Progress
 - **Implementation:** Polished README, architecture diagrams, demo video script, interview discussion guide, documented trade-offs, CI/performance/Kubernetes/Terraform evidence, and final security gates. Draft PR creation.
