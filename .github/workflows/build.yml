@@ -69,6 +69,42 @@ jobs:
       - name: Render Helm Chart
         run: helm template deploy/helm/ledgerflow
 
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive infra/terraform
+
+      - name: Terraform Init (dev)
+        run: |
+          cd infra/terraform/environments/dev
+          terraform init -backend=false
+
+      - name: Terraform Validate (dev)
+        run: |
+          cd infra/terraform/environments/dev
+          terraform validate
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.50.3
+
+      - name: TFLint
+        run: |
+          cd infra/terraform/environments/dev
+          tflint --init
+          tflint --recursive
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: infra/terraform
+          framework: terraform
+          soft_fail: true
+
       - name: Validate Git Cleanliness
         run: git diff --check
 

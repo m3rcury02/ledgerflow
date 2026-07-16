@@ -7,3 +7,5 @@
 out/
 .env
 
+.terraform/
+.terraform.lock.hcl
