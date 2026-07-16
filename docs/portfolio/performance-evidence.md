@@ -9,6 +9,6 @@ LedgerFlow prioritizes strict consistency and accurate financial processing over
 - **Provider Timeouts**: Hard connection, read, and active operation timeouts are enforced for outbound API calls to mock payment providers to prevent thread exhaustion during external degradation.
 
 ## Scalability Principle
-*No inflated production scale claims.* 
+*No inflated production scale claims.*
 
 LedgerFlow is currently designed for moderate-scale environments. At extreme scales, the database-backed outbox may become a bottleneck, which would require migrating to a Change Data Capture (CDC) based outbox (e.g., Debezium) or sharding the PostgreSQL database, though that is out of scope for this MVP portfolio release.
