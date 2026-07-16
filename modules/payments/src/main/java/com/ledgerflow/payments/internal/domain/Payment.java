@@ -238,6 +238,31 @@ public record Payment(
         now);
   }
 
+  public Payment operatorResume(Instant now) {
+    requireTransition(PaymentState.FAILED);
+    if (captureRequestId == null) {
+      return copy(
+          PaymentState.AUTHORIZATION_RETRY_PENDING,
+          PaymentStage.AUTHORIZATION,
+          paymentMethodReference,
+          null,
+          null,
+          null,
+          null,
+          now);
+    } else {
+      return copy(
+          PaymentState.CAPTURE_RETRY_PENDING,
+          PaymentStage.CAPTURE,
+          null,
+          captureRequestId,
+          providerAuthorizationId,
+          null,
+          null,
+          now);
+    }
+  }
+
   public UUID requestId(PaymentStage stage) {
     return switch (stage) {
       case AUTHORIZATION -> authorizationRequestId;

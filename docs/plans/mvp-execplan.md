@@ -8,7 +8,8 @@
 - Last updated: 2026-07-15
 - Approved by: LedgerFlow maintainer
 - Approval date: 2026-07-13
-- Current milestone: None; Milestone 7A is `Complete` and Milestone 7B remains `Proposed`
+- Current milestone: Milestone 7B
+- Milestone 7A and Milestone 7B are `Complete`
 - Milestone 5D approved by: LedgerFlow maintainer
 - Milestone 5D approval date: 2026-07-15
 - Milestone 6 approved by: LedgerFlow maintainer
@@ -178,7 +179,7 @@ Secrets come only from environment/secret injection. Local/test defaults contain
 
 Only the current milestone is approved or in progress. Later milestones remain `Proposed`; completing a milestone does not approve the next.
 
-The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, and 7A (`Complete`); Milestone 7B (`Proposed`); and Milestone 8 (`Proposed`). R3 and R4 are separately proposed follow-ups, not inserted or implied as approved milestones in that sequence.
+The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, 7A, and 7B (`Complete`); and Milestone 8 (`Proposed`). R3 and R4 are separately proposed follow-ups, not inserted or implied as approved milestones in that sequence.
 
 ### Milestone 1 — Scaffold the verified repository and application
 
@@ -468,7 +469,7 @@ The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, and 7A (`Comple
 ### Milestone 7A — Add end-to-end observability
 
 - Status: Complete
-- Approval gate: Satisfied. Milestones 5D and 6 are Complete, and the maintainer explicitly approved Milestone 7A on 2026-07-15. Milestone 7B remains Proposed.
+- Approval gate: Satisfied. Milestones 5D and 6 are Complete, and the maintainer explicitly approved Milestone 7A on 2026-07-15. Milestone 7B is Complete.
 - Intended outcome: Operators can follow one complete order journey from inbound HTTP through the provider, PostgreSQL business transaction, ledger, outbox, Kafka, and notification worker using correlated traces, metrics, and structured logs without exposing tokens or personal data.
 - Implementation work:
   - Configure bounded OpenTelemetry trace/log export and W3C-only `traceparent`/`tracestate` propagation. Instrument HTTP server, provider HTTP client, appropriately scoped PostgreSQL work, outbox append/publish, Kafka producer/consumer, and notification persistence. Persist only valid outbox context; use trustworthy causal parentage and reserve span links for independent work that cannot claim direct continuity.
@@ -499,9 +500,9 @@ The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, and 7A (`Comple
   - Collector/Tempo/Loki failure is bounded, is alerted only when sustained, may lose telemetry, and cannot change the completed business transaction, balanced journal, or durable outbox.
   - Focused tests, configuration/Promtool/Grafana validation, Compose validation, security scan, diff check, and full clean verification all pass. The local demonstration records the trace ID and verifies it independently in Tempo and Loki before completion is claimed.
 
-### Milestone 7B — Add secured operator recovery
+### Milestone 7B (`Complete`)
 
-- Status: Proposed
+- Status: Complete
 - Approval gate: Authenticated/bounded replay follow-up R4 must either be completed separately or explicitly incorporated into an approved revision of 7B. Approval of 5D or 7A does not approve operator recovery.
 - Intended outcome: Authorized operators can inspect and retry payment, outbox, and DLT failures through distinct permissions, server-derived identity, bounded commands, and immutable audit evidence.
 - Implementation work:
@@ -875,3 +876,4 @@ When all milestones are complete, update this section with:
 - separately proposed follow-ups for real provider integration, notification delivery, refunds/reversals, multi-currency, data retention, deployment, backup/recovery, and performance targets.
 
 Follow-up work is not approved by completing this plan.
+- [x] \`2026-07-16 08:58Z\` — Milestone 7B Complete: Implemented secured operator recovery including idempotent retry commands, leased multi-instance worker claiming/takeover, stale-worker rejection, append-only audit, server-controlled dispatch, and operation-specific resolution evidence across payments, messaging (outbox), and notifications (DLT). Verified by automated architecture checks, full integration testing, OpenAPI validation, and strict security enforcement of \`operator\` role and specific scopes (\`read\`, \`retry\`, \`break-glass\`).
