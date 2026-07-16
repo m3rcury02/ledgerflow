@@ -1,6 +1,6 @@
 # Portfolio Extension Execution Plan
 
-- Status: Extension 2 In Progress
+- Status: Extension 3 In Progress
 - Last updated: 2026-07-16
 - Related plan: `docs/plans/mvp-execplan.md` (Completed)
 
@@ -14,12 +14,12 @@ This plan outlines the sequential execution of the 7 extensions required to fina
 - **Implementation:** GitHub Actions CI, static analysis, unit/integration/architecture tests, OpenAPI/doc checks, migration validation, CodeQL, secret scanning, Trivy scanning, SBOM generation, OCI image builds, non-root runtime, action pinning, least-privilege workflow permissions, and branch protection docs.
 - **Commit:** `ci: add secure build and release pipeline`
 
-### Extension 2 — Performance and failure experiments (`In Progress`)
-- **Status:** In Progress
+### Extension 2 — Performance and failure experiments (`Complete`)
+- **Status:** Complete
 - **Implementation:** k6 scenarios for traffic bursting, idempotency contention, unique-key resource growth, slow/timed-out providers, database lock contention, Kafka outage/recovery, duplicates, worker restarts, and outbox drainage.
 
-### Extension 3 — Production-oriented containers (`Proposed`)
-- **Status:** Proposed
+### Extension 3 — Production-oriented containers (`In Progress`)
+- **Status:** In Progress
 - **Implementation:** Multi-stage images, Java 25 runtime, non-root execution, bounded writable storage, graceful shutdown, OCI metadata, reproducible build guidance, SBOM, vulnerability scanning, JVM resource settings.
 
 ### Extension 4 — Local Kubernetes and Helm (`Proposed`)
