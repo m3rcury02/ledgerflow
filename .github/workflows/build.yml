@@ -63,6 +63,12 @@ jobs:
             ghcr.io/aquasecurity/trivy:0.72.0 \
             image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 ledgerflow:latest
 
+      - name: Lint Helm Chart
+        run: helm lint deploy/helm/ledgerflow
+
+      - name: Render Helm Chart
+        run: helm template deploy/helm/ledgerflow
+
       - name: Validate Git Cleanliness
         run: git diff --check
 

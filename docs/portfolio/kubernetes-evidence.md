@@ -1,6 +1,6 @@
 # Kubernetes Evidence
 
-The `infra/kubernetes` directory contains declarative configurations for deploying LedgerFlow into a Kubernetes cluster.
+The `deploy/helm/ledgerflow` directory contains the Helm chart for deploying LedgerFlow into a Kubernetes cluster.
 
 - Deployments are modeled to enforce a strict boundary between the public Application port (`8080`) and the private Management port (`8082`).
 - Configuration Maps and Secrets are used to inject runtime environment variables.
