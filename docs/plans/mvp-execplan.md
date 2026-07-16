@@ -179,7 +179,7 @@ Secrets come only from environment/secret injection. Local/test defaults contain
 
 Only the current milestone is approved or in progress. Later milestones remain `Proposed`; completing a milestone does not approve the next.
 
-The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, 7A, and 7B (`Complete`); and Milestone 8 (`Proposed`). R3 and R4 are separately proposed follow-ups, not inserted or implied as approved milestones in that sequence.
+The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, 7A, 7B, and 8 (`Complete`). R3 and R4 are separately proposed follow-ups, not inserted or implied as approved milestones in that sequence.
 
 ### Milestone 1 — Scaffold the verified repository and application
 
@@ -529,9 +529,9 @@ The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, 7A, and 7B (`Co
 - **R3 — Quota and idempotency retention (`Proposed`).** The detailed design remains Finding 4/R3 in `.agent/plans/2026-07-14-abuse-case-remediation.md`. It requires separate maintainer approval and is a production gate before sustained or multi-tenant public use. It is not part of Milestone 5D, Milestone 6, or Milestone 7A.
 - **R4 — Authenticated and bounded replay (`Proposed`).** The detailed design remains Finding 5/R4 in `.agent/plans/2026-07-14-abuse-case-remediation.md`. It requires separate maintainer approval and is a production gate before replay or secured operator recovery is enabled. It may be completed before 7B or incorporated only through an explicitly approved 7B plan revision; it is not part of Milestone 5D or Milestone 7A.
 
-### Milestone 8 — Prove the complete MVP and operational failure matrix
+### Milestone 8 (`Complete`) — Prove the complete MVP and operational failure matrix
 
-- Status: Proposed
+- Status: Complete
 - Intended outcome: One reproducible demonstration and automated suite proves all product acceptance criteria and leaves implementation/operations documentation accurate.
 - Implementation work:
   - Add an end-to-end test and documented local demo for success, replay, conflict, decline, timeout/recovery, Kafka duplicate, poison/DLT, and operator retry.
@@ -877,3 +877,5 @@ When all milestones are complete, update this section with:
 
 Follow-up work is not approved by completing this plan.
 - [x] \`2026-07-16 08:58Z\` — Milestone 7B Complete: Implemented secured operator recovery including idempotent retry commands, leased multi-instance worker claiming/takeover, stale-worker rejection, append-only audit, server-controlled dispatch, and operation-specific resolution evidence across payments, messaging (outbox), and notifications (DLT). Verified by automated architecture checks, full integration testing, OpenAPI validation, and strict security enforcement of \`operator\` role and specific scopes (\`read\`, \`retry\`, \`break-glass\`).
+
+- [x] `2026-07-16 10:09Z` — Milestone 8 Complete: Executed automated end-to-end matrix of 25 failure/success scenarios. Completed whole-repository review, fixed all static analysis findings, completed all documentation deliverables, and successfully executed the full validation suite. LedgerFlow MVP is now complete.
