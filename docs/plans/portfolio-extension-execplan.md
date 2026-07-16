@@ -1,6 +1,6 @@
 # Portfolio Extension Execution Plan
 
-- Status: Extension 4 In Progress
+- Status: Extension 5 In Progress
 - Last updated: 2026-07-16
 - Related plan: `docs/plans/mvp-execplan.md` (Completed)
 
@@ -22,12 +22,12 @@ This plan outlines the sequential execution of the 7 extensions required to fina
 - **Status:** Complete
 - **Implementation:** Multi-stage images, Java 25 runtime, non-root execution, bounded writable storage, graceful shutdown, OCI metadata, reproducible build guidance, SBOM, vulnerability scanning, JVM resource settings.
 
-### Extension 4 — Local Kubernetes and Helm (`In Progress`)
-- **Status:** In Progress
+### Extension 4 — Local Kubernetes and Helm (`Complete`)
+- **Status:** Complete
 - **Implementation:** kind cluster, Helm chart, API/worker Deployments, Services, probes, ConfigMaps, resource limits, security contexts, dropped capabilities, NetworkPolicies, ServiceAccounts, Helm linting, and a smoke test. No service mesh.
 
-### Extension 5 — AWS Terraform design (`Proposed`)
-- **Status:** Proposed
+### Extension 5 — AWS Terraform design (`In Progress`)
+- **Status:** In Progress
 - **Implementation:** Validated AWS Terraform design for a two-AZ VPC, load balancer, ECS Fargate, RDS PostgreSQL, ElastiCache (if justified), Secrets Manager, CloudWatch/OTLP, IAM, and encryption. Validated with `terraform validate`, `tflint`, and `Checkov`. No actual `apply`.
 
 ### Extension 6 — Optional AI operations assistant (`Proposed`)
