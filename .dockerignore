@@ -1,0 +1,14 @@
+.git
+.gradle
+.idea
+.vscode
+build/
+out/
+/application/build/
+/modules/*/build/
+.env
+.env.*
+compose.yaml
+infra/
+docs/
+scripts/

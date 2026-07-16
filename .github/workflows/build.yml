@@ -52,6 +52,17 @@ jobs:
             --format cyclonedx \
             --output /workspace/sbom.json
 
+      - name: Build Application Container
+        run: docker build -t ledgerflow:latest .
+
+      - name: Scan Application Container
+        run: |
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock:ro \
+            --volume "${PWD}:/workspace" \
+            ghcr.io/aquasecurity/trivy:0.72.0 \
+            image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 ledgerflow:latest
+
       - name: Validate Git Cleanliness
         run: git diff --check
 
