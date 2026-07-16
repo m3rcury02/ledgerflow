@@ -1,6 +1,6 @@
 # CI Evidence
 
-Continuous Integration in LedgerFlow is strictly enforced through local pipeline-equivalent scripts and standard CI mechanisms.
+Continuous Integration in LedgerFlow is strictly enforced through GitHub Actions workflows located in `.github/workflows/` (e.g. `build.yml`, `codeql.yml`) as well as local pipeline-equivalent scripts.
 
 ## Build and Test Passing
 
