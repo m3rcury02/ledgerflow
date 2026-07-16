@@ -1,6 +1,6 @@
 # Portfolio Extension Execution Plan
 
-- Status: Extension 5 In Progress
+- Status: Extension 6 In Progress
 - Last updated: 2026-07-16
 - Related plan: `docs/plans/mvp-execplan.md` (Completed)
 
@@ -26,12 +26,12 @@ This plan outlines the sequential execution of the 7 extensions required to fina
 - **Status:** Complete
 - **Implementation:** kind cluster, Helm chart, API/worker Deployments, Services, probes, ConfigMaps, resource limits, security contexts, dropped capabilities, NetworkPolicies, ServiceAccounts, Helm linting, and a smoke test. No service mesh.
 
-### Extension 5 — AWS Terraform design (`In Progress`)
-- **Status:** In Progress
+### Extension 5 — AWS Terraform design (`Complete`)
+- **Status:** Complete
 - **Implementation:** Validated AWS Terraform design for a two-AZ VPC, load balancer, ECS Fargate, RDS PostgreSQL, ElastiCache (if justified), Secrets Manager, CloudWatch/OTLP, IAM, and encryption. Validated with `terraform validate`, `tflint`, and `Checkov`. No actual `apply`.
 
-### Extension 6 — Optional AI operations assistant (`Proposed`)
-- **Status:** Proposed
+### Extension 6 — Optional AI operations assistant (`In Progress`)
+- **Status:** In Progress
 - **Implementation:** Python FastAPI service providing AI incident assistance, deterministic fake provider default, runbook retrieval, structured output, prompt-injection resistant, and strict token/timeout bounds.
 
 ### Extension 7 — Final portfolio release (`Proposed`)
