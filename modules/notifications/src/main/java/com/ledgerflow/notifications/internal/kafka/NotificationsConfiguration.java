@@ -102,7 +102,8 @@ public class NotificationsConfiguration {
       NotificationsProperties properties,
       KafkaListenerEndpointRegistry registry,
       @Qualifier("notificationRetryTaskScheduler") TaskScheduler retryScheduler,
-      NotificationMetrics metrics) {
+      NotificationMetrics metrics,
+      FaultInjection faultInjection) {
     requireManualCommit(consumerFactory);
     ConcurrentKafkaListenerContainerFactory<String, String> factory =
         baseFactory(consumerFactory, properties);
@@ -121,6 +122,7 @@ public class NotificationsConfiguration {
         DeadLetterPublishingRecoverer.HeaderNames.HeadersToAdd.EX_STACKTRACE);
     recoverer.addHeadersFunction(
         (record, exception) -> {
+          faultInjection.before(com.ledgerflow.operations.api.FaultPoint.NOTIFICATION_DLT_PUBLISH);
           RecordHeaders headers = new RecordHeaders();
           int attempt = KafkaEventHeaders.deliveryAttempt(record.headers());
           headers.add(

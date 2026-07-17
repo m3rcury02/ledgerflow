@@ -109,6 +109,8 @@ extensions.configure<SpotlessExtension> {
             "scripts/replay-*",
             "scripts/security-*",
             "scripts/*observability*",
+            "scripts/smoke-test",
+            "scripts/demo-mvp",
         )
         targetExclude("**/build/**", ".gradle/**")
         trimTrailingWhitespace()
@@ -246,10 +248,19 @@ val documentationCheck =
                 "docs/runbook.md",
                 "docs/observability.md",
                 "docs/observability-runbook.md",
+                "docs/mvp-evidence.md",
+                "docs/mvp-review.md",
+                "docs/failure-injection.md",
+                "docs/operational-limitations.md",
+                "docs/dependency-inventory.md",
+                "docs/migration-inventory.md",
+                "docs/runbook-index.md",
                 "docs/security/local-development-container-risk-register.md",
+                "docs/security/mvp-residual-risk-register.md",
                 "docs/sql/ledger-queries.sql",
                 "docs/plans/mvp-execplan.md",
                 "docs/adr/0001-record-architecture-decisions.md",
+                "docs/adr/README.md",
                 "compose.yaml",
                 ".env.example",
                 "scripts/dev-up",
@@ -260,6 +271,8 @@ val documentationCheck =
                 "scripts/security-scan",
                 "scripts/validate-observability",
                 "scripts/demo-observability",
+                "scripts/smoke-test",
+                "scripts/demo-mvp",
                 "config/security/local-compose-vulnerability-exceptions.json",
             )
         val markdownFiles =

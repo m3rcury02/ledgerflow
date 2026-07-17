@@ -1,7 +1,7 @@
 # LedgerFlow Observability
 
 - Status: Milestone 7A Complete
-- Last updated: 2026-07-15
+- Last updated: 2026-07-17
 - Canonical plan: `plans/mvp-execplan.md`
 
 ## Signal architecture
@@ -181,3 +181,8 @@ the local stack, enabled publisher/consumers, a separately running implementatio
 mock-provider contract, and a valid customer token in `LEDGERFLOW_ACCESS_TOKEN`. The script never
 prints that token. It fails telemetry verification independently after reporting whether the
 business transaction completed.
+
+The in-process release proof is `TracePropagationIntegrationTest`; it deterministically verifies
+the full HTTP/provider/database/ledger/outbox/Kafka/notification trace without requiring a shared
+telemetry backend. `scripts/demo-observability` is the separate local Tempo/Loki walkthrough. The
+two forms of evidence are mapped without conflation in [MVP evidence](mvp-evidence.md).

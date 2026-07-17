@@ -1,7 +1,8 @@
 # ADR 0002: Define MVP Module Boundaries and Orchestration
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-11
+- Accepted: 2026-07-17
 - Decision owners: LedgerFlow maintainers
 
 ## Context

@@ -216,7 +216,7 @@ The `AC-M3` criteria record the historical Create Order slice, `AC-M5B` records 
 
 ## Full-flow acceptance criteria
 
-Milestones 6 and 7A deliver AC-001 through AC-011, AC-013, AC-014, and AC-016. Operator AC-012 remains Milestone 7B, and AC-015 is rerun for every milestone.
+Milestones 6, 7A, and 7B deliver AC-001 through AC-014 and AC-016. AC-015 is rerun for every milestone, with the final MVP evidence mapped in `docs/mvp-evidence.md`.
 
 - **AC-001:** A valid success request returns `201`, a `COMPLETED` order, a `CAPTURED` payment, two balanced ledger entries, and one pending or published outbox event.
 - **AC-002:** Replaying AC-001 with the same key and semantically identical payload returns the original status and body with `Idempotency-Replayed: true`; row counts and provider-call counts do not increase.
@@ -226,7 +226,7 @@ Milestones 6 and 7A deliver AC-001 through AC-011, AC-013, AC-014, and AC-016. O
 - **AC-006:** Latency succeeds within the configured provider timeout; temporary failure retries once; unresolved timeout or exhausted temporary failure returns `202 PAYMENT_RETRY_PENDING` and creates an inspectable operation.
 - **AC-007:** Every invalid payment or order transition is rejected by unit tests, and stale concurrent updates are rejected by optimistic locking.
 - **AC-008:** Direct attempts to commit unbalanced, incomplete, non-positive, or mixed-currency ledger rows fail at the database boundary.
-- **AC-009:** Fault injection at every capture-accounting statement proves payment `CAPTURE_ACCOUNTED`, ledger entries, and outbox event are all committed or all rolled back. Later order/payment finalization must not recreate those effects.
+- **AC-009:** Fault injection at every capture-accounting mutation proves the successful transaction commits payment `CAPTURE_ACCOUNTED`, balanced ledger entries, and one outbox event together, while any failed mutation leaves payment `CAPTURE_CONFIRMED` and rolls back every journal/outbox write. Later order/payment finalization must not recreate those effects.
 - **AC-010:** A publisher crash after Kafka acknowledgement but before marking the outbox row can produce a duplicate event, and event-ID plus versioned semantic-effect idempotency still creates one notification.
 - **AC-011:** A transient consumer failure receives one initial attempt plus exactly three bounded pause-based retries before DLT; polling continues with bounded intake, and non-retryable schema, version, or integrity failures go to DLT without transient retries. The catalog is visible through the sanitized operator API.
 - **AC-012:** Repeating an operator retry command does not schedule duplicate work; a successful retry resolves the failed operation and preserves the original business/event identifier.

@@ -430,5 +430,6 @@ Kafka headers carry `event_id`, `event_type`, `schema_version`, `x-correlation-i
 
 ## References
 
+- [Flyway migration inventory](migration-inventory.md)
 - [PostgreSQL constraint documentation](https://www.postgresql.org/docs/current/ddl-constraints.html)
 - [PostgreSQL `CREATE TRIGGER`](https://www.postgresql.org/docs/current/sql-createtrigger.html)

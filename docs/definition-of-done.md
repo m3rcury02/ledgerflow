@@ -77,4 +77,9 @@ The final review confirms:
 - the diff contains only approved changes; and
 - the change summary identifies delivered behavior, verification evidence, migrations, dependencies, documentation, and known limitations.
 
+For the MVP release, `scripts/smoke-test` and `scripts/demo-mvp` also pass, AC-001 through AC-016
+map to evidence in `docs/mvp-evidence.md`, the complete repository review has no unresolved
+Critical/High or material Medium defect, and the residual-risk/operational-limit documents do not
+represent future or production work as delivered.
+
 If any required check cannot run, the task is not done. Record the blocker and the exact condition needed to complete verification.

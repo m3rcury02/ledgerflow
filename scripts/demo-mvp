@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+echo "LedgerFlow MVP automated demonstration"
+echo "Proof uses ephemeral PostgreSQL and Kafka Testcontainers; no local data is changed."
+
+"$ROOT_DIR/gradlew" \
+  --no-daemon \
+  :modules:operations:test \
+  --tests '*DrainableWorkTrackerTest' \
+  --console=plain
+
+proof_tests=(
+  '*LedgerFlowMvpEndToEndTest'
+  '*OrderHttpIntegrationTest'
+  '*PublicOrderWorkflowIntegrationTest'
+  '*PaymentProviderIntegrationTest'
+  '*PaymentRecoveryIntegrationTest'
+  '*CaptureFinalizationIntegrationTest'
+  '*TransactionalOutboxIntegrationTest'
+  '*WorkflowKafkaUnavailableIntegrationTest'
+  '*OutboxPublisherIntegrationTest'
+  '*KafkaRetryAndDltIntegrationTest'
+  '*KafkaCommitFailureIntegrationTest'
+  '*OperatorPaymentRecoveryIntegrationTest'
+  '*OperatorApiIntegrationTest'
+  '*OperatorRetryIntegrationTest'
+  '*TelemetryFailureIsolationIntegrationTest'
+)
+
+gradle_args=(--no-daemon :application:integrationTest --console=plain)
+for proof_test in "${proof_tests[@]}"; do
+  gradle_args+=(--tests "$proof_test")
+done
+"$ROOT_DIR/gradlew" "${gradle_args[@]}"
+
+echo "MVP scenario demonstration passed. See docs/mvp-evidence.md for the evidence map."

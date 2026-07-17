@@ -80,6 +80,8 @@ During development, run the smallest relevant checks:
 ./gradlew observabilityValidate
 ./gradlew documentationCheck
 ./scripts/security-scan
+./scripts/smoke-test
+./scripts/demo-mvp
 ```
 
 Expected task responsibilities:
@@ -94,6 +96,8 @@ Expected task responsibilities:
 - `observabilityValidate`: validate Collector configuration, Prometheus configuration and rules, all alert/runbook links, Grafana data sources, and all provisioned dashboards with the pinned Compose images.
 - `documentationCheck`: check Markdown formatting, internal links, and required document structure.
 - `scripts/security-scan`: build the executable artifact and use the pinned container scanner for repository secrets/misconfiguration, packaged Java dependencies, and every Compose image.
+- `scripts/smoke-test`: run one complete public HTTP-to-notification acceptance journey against ephemeral PostgreSQL and Kafka.
+- `scripts/demo-mvp`: run the focused MVP failure/recovery evidence matrix plus graceful-drain proof.
 - `verify`: depend on every task above.
 
 `integrationTest`, `composeValidate`, `observabilityValidate`, `verify`, and `scripts/security-scan` require a working Docker-compatible container runtime with Docker Compose. The security scan is intentionally separate from `verify` because it downloads vulnerability intelligence, scans large images, and needs read-only access to the privileged Docker socket. Run it for security, dependency, build-image, or Compose-image changes and in the scheduled CI security workflow.
@@ -130,6 +134,10 @@ Confirm that:
 - the applicable supply-chain scan completed with no unapproved finding.
 
 Record the commands and results in the ExecPlan or change summary.
+
+For an MVP release candidate, also update `docs/mvp-evidence.md`, run `scripts/smoke-test` and
+`scripts/demo-mvp`, review dependencies/migrations/ADRs/residual risks, and record the exact final
+evidence in the canonical ExecPlan. A tag is created only after every required check passes.
 
 ## Bootstrap requirement
 

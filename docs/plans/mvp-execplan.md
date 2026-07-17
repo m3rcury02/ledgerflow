@@ -2,13 +2,13 @@
 
 ## Metadata
 
-- Status: In Progress
+- Status: Complete
 - Owner: Codex
 - Created: 2026-07-11
 - Last updated: 2026-07-17
 - Approved by: LedgerFlow maintainer
 - Approval date: 2026-07-13
-- Current milestone: None (Milestone 7B `Complete`; Milestone 8 `Proposed`)
+- Current milestone: Milestone 8 (`Complete`)
 - Milestone 5D approved by: LedgerFlow maintainer
 - Milestone 5D approval date: 2026-07-15
 - Milestone 6 approved by: LedgerFlow maintainer
@@ -17,6 +17,8 @@
 - Milestone 7A approval date: 2026-07-15
 - Milestone 7B approved by: LedgerFlow maintainer
 - Milestone 7B approval date: 2026-07-17
+- Milestone 8 approved by: LedgerFlow maintainer
+- Milestone 8 approval date: 2026-07-17
 - Canonical plan path: `docs/plans/mvp-execplan.md` by explicit maintainer request
 
 ## Purpose and outcome
@@ -42,11 +44,11 @@ The normative requirements and designs are:
 - `docs/api-design.md`
 - `docs/data-model.md`
 - `docs/threat-model.md`
-- accepted decisions in ADRs 0003 through 0013, plus proposed ADR 0002, under `docs/adr`
+- accepted decisions in ADRs 0002 through 0013 under `docs/adr`
 
 ## Current state
 
-The repository contains the verified foundation and completed Create Order, payment/provider, ledger, outbox/Kafka, notification, resilience, security, abuse-remediation, public-workflow, and end-to-end observability slices from Milestones 1 through 7A:
+The repository contains the verified foundation, complete product/operational slices, and final release proof from Milestones 1 through 8:
 
 - `AGENTS.md` establishes Java 25, Spring Boot 4.1, Gradle Kotlin DSL, modular-monolith, PostgreSQL, Flyway, OpenAPI, money/time, idempotency, observability, scope, and quality rules.
 - `.agent/PLANS.md` defines ExecPlan structure and one-approved-milestone discipline.
@@ -59,7 +61,7 @@ The repository contains the verified foundation and completed Create Order, paym
 - `compose.yaml`, `.env.example`, `infra`, and `scripts/dev-*` provide the pinned nine-service local environment, safe placeholder defaults, provisioning, and lifecycle commands.
 - `build.gradle.kts` provides the stable formatting, static-analysis, unit, integration, architecture, OpenAPI, Compose, documentation, and aggregate `verify` tasks.
 - `docs/architecture.md`, `docs/development-workflow.md`, `README.md`, and this plan record the approved bootstrap choices and developer commands.
-- ADR 0001 establishes the ADR process; accepted ADRs 0003 through 0013 record the implemented business and operational boundaries. ADR 0002 remains proposed.
+- ADR 0001 establishes the ADR process; accepted ADRs 0002 through 0013 record the implemented business and operational boundaries.
 
 The maintainer's 2026-07-13 transactional-outbox and Kafka request approves the revised Milestone 5B below and accepts the outbox/Kafka decision in ADR 0006. It deliberately excludes public payment/order/operator endpoints and final order-state orchestration. ADR 0007 is accepted only for the Kafka propagation implemented by this milestone; operator recovery tracing remains proposed.
 
@@ -67,7 +69,7 @@ The maintainer's 2026-07-14 resilience request explicitly expands the still-in-p
 
 The maintainer's 2026-07-14 security request approves Milestone 5C below. It hardens the current order HTTP boundary, local Keycloak roles/scopes, existing privileged replay audit, request/resource limits, sensitive-data controls, and vulnerability scanning. It reserves future operator paths behind operator/admin roles and operation scopes but does not approve the operator recovery API, new privileged actions, public payment orchestration, or a new datastore.
 
-The 2026-07-14 abuse-case review and supporting design record at `.agent/plans/2026-07-14-abuse-case-remediation.md` verified five residual gaps. This canonical plan is the sole authority for their ordering, approval, progress, and completion. The maintainer's 2026-07-15 planning instruction approves Milestone 5D only: R1 management isolation/probe bounding and R2 semantic notification idempotency/malformed-DLT progress. The supporting record supplies finding evidence and detailed design, but its R1 through R5 labels are not independent implementation milestones. Quota/retention (supporting R3) and authenticated, bounded replay (supporting R4) remain separately proposed follow-ups.
+The 2026-07-14 abuse-case review and supporting design record at `.agent/plans/2026-07-14-abuse-case-remediation.md` verified five residual gaps. This canonical plan is the sole authority for their ordering, approval, progress, and completion. The maintainer's 2026-07-15 planning instruction approved Milestone 5D only: R1 management isolation/probe bounding and R2 semantic notification idempotency/malformed-DLT progress. The supporting record supplies finding evidence and detailed design, but its R1 through R5 labels are not independent implementation milestones. Quota/retention (supporting R3) remains a separately proposed follow-up; authenticated and bounded replay (supporting R4) was later approved and completed inside Milestone 7B.
 
 The maintainer explicitly requested this ExecPlan at `docs/plans/mvp-execplan.md`. This is a one-plan path exception to `.agent/PLANS.md`, which normally specifies `.agent/plans/YYYY-MM-DD-<name>.md`. Do not create a duplicate plan.
 
@@ -114,11 +116,13 @@ The active operations in `application/src/main/openapi/ledgerflow.yaml` define:
 - `POST /api/v1/orders` — required order-write scope, `Idempotency-Key`, INR amount, and opaque demonstration payment-method reference; returns an original or replayed `201`, a durable recoverable `202`, or a documented problem response.
 - `GET /api/v1/orders/{orderId}` — returns current owner-visible order/payment state without claiming asynchronous Kafka or notification completion.
 
-The following remain future operations and are not present in the active OpenAPI contract:
+The active secured operator contract also defines:
 
-- `GET /api/v1/operator/operations` — paginated/filterable sanitized failure list.
-- `GET /api/v1/operator/operations/{operationId}` — sanitized failure and retry history.
-- `POST /api/v1/operator/operations/{operationId}/retries` — required operator-retry scope, idempotency key, and audit reason; returns `202`.
+- `GET /api/v1/operator/operations` — bounded cursor-paginated sanitized failure list;
+- `GET /api/v1/operator/operations/{operationId}` — sanitized detail and bounded attempt history;
+- `POST /api/v1/operator/operations/{operationId}/retries` — retry-scope idempotent command with mandatory audit reason;
+- `GET /api/v1/operator/operations/{operationId}/retries/{retryId}` — sanitized command result; and
+- `POST /api/v1/operator/operations/{operationId}/break-glass-approvals` — separate admin-only approval evidence, not execution.
 
 Error responses use RFC 9457 `application/problem+json`. Exact headers, payloads, status codes, scopes, and stable error codes are fixed in `docs/api-design.md`.
 
@@ -130,23 +134,24 @@ The implemented `application/src/testFixtures/openapi/mock-payment-provider.yaml
 - `payments.api` exposes narrow initialization, advancement, read, accounting, and finalization operations needed by the approved orders/ledger coordinators; provider ports and state-machine internals remain private.
 - `ledger.api` exposes idempotent payment-capture posting and exact compensating correction operations.
 - `messaging.api` exposes typed payment-captured envelope types and `OutboxEventAppender`, which must join the caller's transaction.
-- `notifications.api` exposes only the narrow audited `DeadLetterReplay` command; Kafka processing remains module-internal.
-- `operations.api` accepts sanitized failure facts, resolution facts, and retry commands.
+- The notifications module keeps Kafka processing, semantic effects, DLT catalog, and its typed recovery handler internal; it exports no general mutation API.
+- `operations.api` exposes only work tracking, local/test fault hooks, and the typed recovery-handler contract. Operations internals own HTTP projection, authenticated command admission, leasing, and immutable audit.
 
 Cross-module callers depend only on these APIs. Payment domain and provider ports do not depend on Spring HTTP, JDBC, or Kafka adapters.
 
 ### Persistence
 
-Flyway migrations create the tables, checks, indexes, functions, triggers, and seed accounts specified by `docs/data-model.md`. The first eight are implemented:
+Flyway migrations create the tables, checks, indexes, functions, triggers, and seed accounts specified by `docs/data-model.md`. All nine MVP migrations are implemented:
 
 1. `V001__create_orders_and_idempotency.sql`
 2. `V002__create_payment_tables.sql`
 3. `V003__create_immutable_ledger.sql`
 4. `V004__create_transactional_outbox.sql`
 5. `V005__create_notification_inbox_and_dead_letters.sql`
-6. `V006__add_notification_semantic_identity.sql`
-7. `V007__catalog_terminal_dlt_records.sql`
+6. `V006__add_notification_semantic_effect_identity.sql`
+7. `V007__record_terminal_dlt_evidence.sql`
 8. `V008__finalize_public_order_workflow.sql`
+9. `V009__secure_operator_recovery.sql`
 
 Once merged, these migrations are immutable. Corrections use later versions.
 
@@ -178,9 +183,9 @@ Secrets come only from environment/secret injection. Local/test defaults contain
 
 ## Milestones
 
-Only the current milestone is approved or in progress. Later milestones remain `Proposed`; completing a milestone does not approve the next.
+At most one milestone may be approved for implementation or in progress at a time; completing one never approves an unapproved follow-up. All MVP milestones are now complete.
 
-The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, 7A, and 7B (`Complete`); and Milestone 8 (`Proposed`). R4 is complete within Milestone 7B; R3 remains a separately proposed follow-up.
+The required order is complete: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, 7A, 7B, and 8 are all `Complete`. R4 is complete within Milestone 7B; R3 remains a separately proposed follow-up.
 
 ### Milestone 1 — Scaffold the verified repository and application
 
@@ -535,7 +540,8 @@ The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, 7A, and 7B (`Co
 
 ### Milestone 8 — Prove the complete MVP and operational failure matrix
 
-- Status: Proposed
+- Status: Complete
+- Approval gate: Satisfied. The maintainer explicitly approved Milestone 8 on 2026-07-17. This milestone proves and documents the delivered MVP; quota/retention R3 and all non-goals remain outside scope.
 - Intended outcome: One reproducible demonstration and automated suite proves all product acceptance criteria and leaves implementation/operations documentation accurate.
 - Implementation work:
   - Add an end-to-end test and documented local demo for success, replay, conflict, decline, timeout/recovery, Kafka duplicate, poison/DLT, and operator retry.
@@ -544,8 +550,13 @@ The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, 7A, and 7B (`Co
   - Update architecture, API, data, threat, and development documentation to the delivered behavior and capture any changed decision in a new ADR.
   - Review production dependency inventory, licenses, vulnerability results, secret scan, configuration defaults, and absence of H2/real credentials.
 - Validation commands:
-  - `./gradlew integrationTest --tests '*LedgerFlowEndToEndTest'`
-  - `./gradlew clean verify`
+  - `scripts/smoke-test`
+  - `scripts/demo-mvp`
+  - `scripts/security-scan`
+  - `scripts/validate-observability`
+  - `docker compose --env-file .env.example --file compose.yaml config --quiet`
+  - `./gradlew --no-daemon clean verify --console=plain`
+  - `git diff --check`
 - Observable acceptance:
   - Every AC-001 through AC-016 in `docs/product-requirements.md` has automated or explicitly recorded manual evidence.
   - After any safe retries/duplicates, one successful order has one captured payment/provider capture, one balanced immutable ledger transaction, one logical outbox event, and one notification.
@@ -624,7 +635,7 @@ Provide documented explicit local/test/demo configuration with PostgreSQL 18.4 a
 | Process dies with idempotency in progress | Resumer uses the existing order/payment; a stale active provider stage is reconciled by lookup after its configured deadline |
 | Provider latency | Bounded client timeout; no open DB transaction |
 | Provider decline | Terminal decline; no retry, ledger, or outbox |
-| Provider temporary failure | One automatic retry; exhaustion becomes an owner-readable pending state while general operator recovery remains future work |
+| Provider temporary failure | One automatic retry; exhaustion becomes an owner-readable pending state that the secured operator boundary can inspect and retry under its cooldown/attempt limits |
 | Provider timeout or process loss after send | Persist/retain unknown state; lookup same operation key before resend |
 | Malformed/contradictory provider response | Durable order/payment `FAILED`; cached `502` and Location; safe non-retryable operation; no ledger/outbox |
 | Provider capture succeeds; local finalization fails | Local transaction rolls back; lookup confirms capture; repeat idempotent finalization |
@@ -706,6 +717,12 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 
 ## Progress
 
+- [x] `2026-07-17 12:31Z` — Completed the separate read-only release review across financial/state/transaction/provider/idempotency/concurrency/ledger/outbox/inbox/semantic-effect/DLT/security/operator/telemetry/migration/test/documentation concerns. No unresolved Critical, High, or material Medium defect remains in the delivered local MVP. Corrected stale current-state plan language; quota/retention, real-provider/platform controls, and local-only image exceptions remain explicit production gates rather than falsely delivered work.
+- [x] `2026-07-17 12:31Z` — Passed Java 25/Gradle 9.6.1 `./gradlew --no-daemon clean verify --console=plain`: all 67 formatting, static-analysis, unit, PostgreSQL/Kafka/Toxiproxy integration, architecture, Compose, OpenAPI, observability, and documentation actions succeeded in 2m 34s (31 executed, 33 from verified cache, 3 up-to-date). After recording the final outcome, the same clean lifecycle passed again in 34s (23 executed, 41 from the verified cache, 3 up-to-date). No required task was skipped.
+- [x] `2026-07-17 12:24Z` — Passed the complete focused demonstration (`scripts/smoke-test` and `scripts/demo-mvp`), Compose validation, live nine-service health checks, Prometheus/Grafana/Collector validation with five dashboards and sixteen alerts, and `scripts/security-scan`. Repository-secret and packaged-application gates were clean; every remaining Compose finding was printed and matched only an exact unexpired local-development record.
+- [x] `2026-07-17 12:05Z` — Added the public HTTP-to-notification MVP proof, parameterized PostgreSQL rollback proof at every capture-finalization mutation, and explicit Kafka tests for DLT publication failure and notification database-commit/offset-failure redelivery. The focused new PostgreSQL/Kafka Testcontainers suites passed without a migration or production dependency.
+- [x] `2026-07-17 12:20Z` — Added one-command smoke and focused demonstration scripts; architecture and sequence diagrams; AC/scenario evidence; failure-injection, dependency/license, migration, ADR, runbook, operational-limit, residual-risk, and whole-repository review documents; and interviewer-oriented README navigation. Corrected stale operator/V009/AC-009 planning and product documentation without expanding product scope.
+- [x] `2026-07-17 11:53Z` — Recorded explicit maintainer approval for Milestone 8, kept quota/retention R3 and every product non-goal Proposed, and marked only Milestone 8 In Progress before changing proof code or documentation.
 - [x] `2026-07-17 10:21Z` — Recorded explicit maintainer approval for Milestone 7B, incorporated replay-hardening R4 into that milestone, kept quota/retention R3 and Milestone 8 Proposed, and marked only Milestone 7B In Progress.
 - [x] `2026-07-17 11:35Z` — Delivered the contract-first sanitized operator list/detail/retry/status/break-glass APIs, JWT-derived actor identity, separate read/retry/break-glass authority, immutable audit, idempotent retry commands, transactional cooldown/limits, and PostgreSQL-leased multi-instance worker with stale-owner rejection and trace links. Added lookup-first same-ID payment recovery, one-cycle same-identity outbox recovery, and immutable-identity DLT replay without exposing a direct mutation path.
 - [x] `2026-07-17 11:35Z` — Added PostgreSQL/HTTP/concurrency/provider/Kafka regression coverage for authorization boundaries, projection sanitization, command idempotency and conflicts, dual claims, crash takeover, stale completion, provider unknown reconciliation, outbox reset, valid/malformed DLT handling, cooldown/attempt caps, separate break-glass approval/use, immutable audit, seeded sensitive markers, and trace links. The focused four-suite integration command and replay-client shell validation pass.
@@ -781,7 +798,7 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 
 - The repository has no Gradle lifecycle, so the first application milestone must establish every required check before later implementation can satisfy the Definition of Done.
 - The requested ExecPlan path conflicts with the default `.agent/plans/...` location. The maintainer's explicit path is treated as a one-plan exception; duplicating a living plan would create drift.
-- The accepted architecture originally deferred the base package, concrete feature modules, and Gradle project structure. The maintainer's Milestone 1 approval selected `com.ledgerflow`, six feature projects, and one deployable application project. ADRs 0003 through 0007 and 0009 through 0013 now record the accepted implemented boundaries; ADRs 0002 and 0008 remain proposed.
+- The accepted architecture originally deferred the base package, concrete feature modules, and Gradle project structure. The maintainer's Milestone 1 approval selected `com.ledgerflow`, six feature projects, and one deployable application project. ADRs 0002 through 0013 now record the accepted implemented boundaries; the ADR index records the narrow partial supersession of ADR 0003 by ADR 0013.
 - PostgreSQL row `CHECK` constraints cannot enforce a balance across multiple entries. A deferred constraint trigger on both parent and entry changes is necessary to reject even an empty ledger transaction.
 - Provider capture and the local database cannot be atomic. Stable provider operation keys, lookup, and idempotent local finalization are required; a database transaction held across HTTP would not solve this gap.
 - Bounded Kafka retries use container pausing rather than sleeping the consumer thread. The affected work waits while polling remains alive, preserving a smaller topic topology without risking long blocking backoffs; sustained failures still move to DLT.
@@ -868,26 +885,22 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - **2026-07-17 — Make retry acceptance and execution independently idempotent.** Authenticated issuer/subject plus hashed endpoint command key and canonical request fingerprint return the original retry even after the source failure resolves; a PostgreSQL advisory transaction lock serializes concurrent use before unique constraints enforce the durable identity. A partial unique index permits one active command per typed source. Workers claim one row at a time with `SKIP LOCKED`, and local mutation transactions lock and validate owner/token/version/expiry so takeover cannot race a stale commit.
 - **2026-07-17 — Preserve external identities across operator recovery.** Payment recovery always looks up the existing provider operation ID and permits only the accepted same-ID resend rule; outbox recovery reopens the same logical event for one bounded publisher cycle without resetting cumulative attempts; DLT recovery publishes the stored event ID, key, and canonical body while replacing only retry transport context. Provider/Kafka I/O remains outside PostgreSQL transactions, so duplicates at the I/O/acknowledgement boundary remain possible and are absorbed by provider, journal/outbox, event-ID, inbox, and semantic-effect idempotency.
 - **2026-07-17 — Complete replay hardening R4 inside Milestone 7B.** JWT issuer/subject/client claims are the audit identity; read, retry, and admin-only break-glass scopes are separate. Transactional cooldown, automatic and break-glass caps, one-use immutable approval evidence, separate approval/execution audit actions, protected request/audit rows, and bounded operational metrics replace the caller-asserted command path. Historical replay rows remain explicitly classified instead of being rewritten.
+- **2026-07-17 — Prove acknowledgement gaps with local/test checkpoints, not production retries.** `NOTIFICATION_OFFSET_COMMIT` runs after the notification transaction returns and before listener completion; `NOTIFICATION_DLT_PUBLISH` runs before the acknowledged DLT send. Their no-op production implementation changes no delivery policy, while profile-gated injection proves that redelivery is absorbed and source progress waits for a durable terminal outcome. This adds no migration or dependency.
+- **2026-07-17 — Close the implemented module decision and keep release claims local.** ADR 0002 is Accepted because all six stated module boundaries, dependency direction, orchestration ownership, and explicit-JDBC choice have been implemented and architecture-tested. Milestone 8 does not approve quota/retention R3 or any production topology; those remain explicit production gates rather than unsupported MVP claims.
 - **2026-07-11 — Validate OpenAPI without server code generation.** Contract tests enforce conformance without generated framework coupling.
 - **2026-07-11 — Contract the mock provider separately and exclude it from the main artifact.** Its external HTTP behavior is validated without exposing simulator controls in production.
 - **2026-07-11 — Separate Flyway owner and runtime database roles.** Migration authority does not grant the application DDL or mutation rights over immutable financial/audit data.
 
 ## Outcome and follow-up
 
-Current outcome: Milestones 1 through 7B are complete. The authenticated public create command now durably initializes one order/payment identity, authorizes and captures through stable provider operation IDs with lookup-first ambiguity recovery, atomically posts one balanced immutable journal plus one logical outbox event, and finalizes payment/order/idempotency in a separate guarded local transaction. It returns truthful completed, declined, pending, or provider-protocol outcomes without waiting for Kafka. At-least-once publication/consumption, event-ID transport idempotency, and versioned semantic-effect idempotency still create one notification effect under duplicate publication, delivery, or re-enveloping. W3C context, bounded metrics, structured redacted logs, provisioned Prometheus/Tempo/Loki/Grafana configuration, provisional SLIs/SLOs, and sixteen runbook-backed alerts make that journey and its recovery observable without entering the business transaction. V008 enforces terminal financial evidence while preserving historical Create Order rows and snapshots.
+Current outcome: Milestones 1 through 8 are complete. The authenticated public create command durably initializes one order/payment identity, authorizes and captures through stable provider operation IDs with lookup-first ambiguity recovery, atomically posts one balanced immutable journal plus one logical outbox event, and finalizes payment/order/idempotency in a separate guarded local transaction. It returns truthful completed, declined, pending, or provider-protocol outcomes without waiting for Kafka. At-least-once publication/consumption, event-ID transport idempotency, and versioned semantic-effect idempotency create one notification effect under duplicate publication, delivery, or re-enveloping. W3C context, bounded metrics, structured redacted logs, provisioned Prometheus/Tempo/Loki/Grafana configuration, provisional SLIs/SLOs, and sixteen runbook-backed alerts make that journey and its recovery observable without entering the business transaction. V008 enforces terminal financial evidence while preserving historical Create Order rows and snapshots.
 
 The secured operator boundary now lists only sanitized payment, outbox, and DLT failures; returns bounded attempt/status views; derives actor identity from validated JWT claims; and accepts independently authorized, idempotent recovery commands with immutable audit. PostgreSQL leases, takeover, cooldown, attempt caps, and separate break-glass approval bound multi-instance execution. Payment, outbox, and DLT handlers preserve their original external/logical identities, and asynchronous duplicates remain covered by the existing financial, transport, inbox, and semantic-effect constraints. No direct database or arbitrary Kafka recovery path is exposed.
 
-The repository secret scan and packaged application dependency scan remain clean with no exception mechanism; Kafka 4.3.1 and Prometheus 3.13.1 image scans remain clean. Other official local Compose findings remain visible under exact local-development-only records through 2026-08-13 or compatible fixed-image availability, whichever is earlier; this is not production acceptance. Milestone 7B and replay-hardening R4 are Complete; Milestone 8 and quota/retention R3 remain Proposed. R3 is still a production gate before sustained or multi-tenant public use. Local trace/dashboard/alert evidence is demonstration evidence rather than a production SLO guarantee; telemetry export is intentionally lossy and the alpha-versioned Logback bridge requires compatible upgrade and vulnerability review, but telemetry failure cannot change business outcomes. The mock provider is a validated integration fixture rather than a packaged local service or production provider. LedgerFlow does not claim a distributed transaction or end-to-end exactly-once delivery.
+The reproducible release proof is `scripts/smoke-test`; `scripts/demo-mvp` exercises the approved failure/recovery matrix, and `docs/mvp-evidence.md` maps every required scenario plus AC-001 through AC-016 to named evidence. The release run passed the focused proof, live local dependency health, observability validators, security scan, `git diff --check`, and the full clean Java 25 verification lifecycle. Accepted and partially superseded decisions are indexed in `docs/adr/README.md`; dependencies/licenses, migrations, runbooks, architecture diagrams, failure injection, security model, operational limits, and residual risks have version-controlled inventories.
 
-When all milestones are complete, update this section with:
+The repository secret scan and packaged application dependency scan are clean with no exception mechanism; Kafka 4.3.1 and Prometheus 3.13.1 image scans are clean. Other official local Compose findings remain visible under exact local-development-only records through 2026-08-13 or compatible fixed-image availability, whichever is earlier; this is not production acceptance. Replay-hardening R4 is complete, while quota/retention R3 is still a production gate before sustained or multi-tenant public use. Local trace/dashboard/alert evidence is demonstration evidence rather than a production SLO guarantee; telemetry export is intentionally lossy and the alpha-versioned Logback bridge requires compatible upgrade and vulnerability review, but telemetry failure cannot change business outcomes. The mock provider is a validated integration fixture rather than a packaged local service or production provider. LedgerFlow does not claim a distributed transaction, end-to-end exactly-once delivery, scale qualification, high availability, regulatory certification, backup/restore readiness, or a production deployment.
 
-- delivered behavior and any approved deviations;
-- `./gradlew clean verify` evidence;
-- AC-001 through AC-016 evidence;
-- accepted/superseded ADRs;
-- production dependency inventory;
-- operational limitations and residual risks; and
-- separately proposed follow-ups for real provider integration, notification delivery, refunds/reversals, multi-currency, data retention, deployment, backup/recovery, and performance targets.
+Separately proposed follow-ups include quota/retention, real provider integration, notification delivery, refunds/reversals, multi-currency, production identity/network/deployment controls, backup/recovery, and performance/soak targets.
 
 Follow-up work is not approved by completing this plan.

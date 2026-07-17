@@ -2,6 +2,35 @@
 
 LedgerFlow is a Java 25 and Spring Boot 4.1 modular-monolith portfolio project. Its contract-first, JWT-secured public workflow creates an order, safely authorizes/captures through an external mock provider, posts one immutable balanced journal and transactional outbox event, finalizes `CAPTURED`/`COMPLETED`, then publishes/consumes through Kafka asynchronously with transport and semantic notification idempotency. Secured operator APIs provide sanitized failure inspection and idempotent, leased, audited recovery without direct data mutation.
 
+## Technical interview quick start
+
+The fastest reproducible proof is:
+
+```bash
+make smoke-test
+```
+
+It uses PostgreSQL and Kafka Testcontainers to exercise authenticated HTTP, exact replay and
+conflict, provider authorization/capture, balanced ledger posting, transactional outbox,
+at-least-once publication/consumption, and exactly one semantic notification effect. No shared
+local data or credentials are required. `make demo-mvp` adds the focused decline, timeout, crash,
+rollback, DLT, operator-recovery, telemetry-outage, and shutdown matrix. The complete gate remains
+`./gradlew --no-daemon clean verify --console=plain`.
+
+| What to inspect | Why it matters |
+| --- | --- |
+| [MVP evidence](docs/mvp-evidence.md) | Maps every required scenario and AC-001–AC-016 to named automated proof. |
+| [Architecture](docs/architecture.md) | Shows module ownership, transaction boundaries, and the complete sequence. |
+| [OpenAPI contract](application/src/main/openapi/ledgerflow.yaml) | Defines customer and secured operator HTTP behavior before implementation. |
+| [Data model](docs/data-model.md) | Explains UUIDv7 identities, guarded states, immutable ledger, outbox/inbox, and audit constraints. |
+| [Threat model](docs/threat-model.md) | Covers BOLA, replay, strict input, secrets, Kafka, telemetry, and privileged recovery. |
+| [Whole-repository review](docs/mvp-review.md) | Records release findings, fixes, evidence reviewed, and deliberately limited claims. |
+
+This release is a production-engineering demonstration, not a production deployment. It does not
+claim scale, high availability, regulatory certification, real payment integration, or
+end-to-end exactly-once delivery. See [operational limitations](docs/operational-limitations.md)
+and the [residual-risk register](docs/security/mvp-residual-risk-register.md).
+
 ## Prerequisites
 
 - JDK 25
@@ -19,6 +48,13 @@ Do not install Gradle separately. The committed Gradle 9.6.1 Wrapper is the supp
 ```
 
 The lifecycle checks formatting, static analysis, unit tests, PostgreSQL Testcontainers repository/HTTP/concurrency tests, Spring Modulith and ArchUnit rules, OpenAPI, and documentation. The equivalent convenience command is `make verify`.
+
+Focused release proof commands are:
+
+```bash
+make smoke-test
+make demo-mvp
+```
 
 Security-sensitive, dependency, or container-image changes also run the separate Docker-backed supply-chain check:
 
@@ -197,4 +233,10 @@ The demonstration reports the durable business result first, prints its trace an
 
 Each feature is a Gradle library under `com.ledgerflow.<feature>`. Application code remains package-by-feature; repository-wide controller, service, repository, entity, and model packages are forbidden.
 
-See [development workflow](docs/development-workflow.md), [architecture](docs/architecture.md), [deployment security](docs/deployment-security.md), and the [MVP ExecPlan](docs/plans/mvp-execplan.md) for the governing details.
+See [development workflow](docs/development-workflow.md), [architecture](docs/architecture.md),
+[deployment security](docs/deployment-security.md), and the
+[MVP ExecPlan](docs/plans/mvp-execplan.md) for the governing details. Release inventories are
+available for [dependencies and licenses](docs/dependency-inventory.md),
+[Flyway migrations](docs/migration-inventory.md), [ADRs](docs/adr/README.md), and
+[runbooks](docs/runbook-index.md). Failure demonstrations are described in the
+[failure-injection guide](docs/failure-injection.md).

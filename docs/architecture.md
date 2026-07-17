@@ -20,6 +20,85 @@ LedgerFlow is a single deployable application built as a modular monolith. The d
 
 A modular monolith is a logical boundary model, not a commitment to Java Platform Module System modules or future microservices. The approved bootstrap uses Gradle subprojects for compile-time feature boundaries while producing one deployable application.
 
+## System and module view
+
+```mermaid
+flowchart LR
+    Customer[Customer client] -->|JWT + HTTPS| Orders[orders]
+    Operator[Operator client] -->|JWT + HTTPS| Operations[operations]
+    Orders -->|narrow API| Payments[payments]
+    Orders -->|narrow API| Ledger[ledger]
+    Ledger -->|narrow API| Payments
+    Ledger -->|mandatory local transaction| Messaging[messaging]
+    Payments -->|HTTP, stable operation ID| Provider[Mock provider fixture]
+    Orders --> PostgreSQL[(PostgreSQL)]
+    Payments --> PostgreSQL
+    Ledger --> PostgreSQL
+    Messaging --> PostgreSQL
+    Operations --> PostgreSQL
+    Messaging -->|at-least-once| Kafka[(Kafka)]
+    Kafka -->|at-least-once| Notifications[notifications]
+    Notifications --> PostgreSQL
+    Operations -. typed recovery port .-> Payments
+    Operations -. typed recovery port .-> Messaging
+    Operations -. typed recovery port .-> Notifications
+    App[Single Spring Boot process] -. contains .-> Orders
+    App -. contains .-> Payments
+    App -. contains .-> Ledger
+    App -. contains .-> Messaging
+    App -. contains .-> Notifications
+    App -. contains .-> Operations
+```
+
+The dashed recovery arrows are runtime port inversion: the operations module owns command leasing
+and invokes typed handlers supplied by the business modules; it does not import their internals or
+mutate their tables directly.
+
+## Successful order sequence
+
+```mermaid
+sequenceDiagram
+    actor C as Customer
+    participant O as orders
+    participant DB as PostgreSQL
+    participant P as payment provider
+    participant L as ledger/messaging
+    participant W as outbox worker
+    participant K as Kafka
+    participant N as notification worker
+
+    C->>O: POST /api/v1/orders + Idempotency-Key
+    O->>DB: TX: claim key, create order/payment + stable auth ID
+    DB-->>O: commit
+    O->>P: authorize(stable auth ID)
+    P-->>O: authorized
+    O->>DB: TX: persist authorization + stable capture ID
+    DB-->>O: commit
+    O->>P: capture(stable capture ID)
+    P-->>O: captured
+    O->>DB: TX: persist provider-confirmed capture
+    DB-->>O: commit
+    O->>L: post capture accounting
+    L->>DB: TX: lock payment, balanced journal, CAPTURE_ACCOUNTED, outbox
+    DB-->>L: commit
+    O->>DB: TX: CAPTURED, COMPLETED, original HTTP result
+    DB-->>O: commit
+    O-->>C: 201 COMPLETED (delivery remains asynchronous)
+    W->>DB: TX: lease pending outbox row
+    DB-->>W: commit
+    W->>K: publish event + trace headers
+    K-->>W: broker acknowledgement
+    W->>DB: TX: owner-guarded PUBLISHED marker
+    K->>N: at-least-once delivery
+    N->>DB: TX: inbox/hash + semantic identity + notification
+    DB-->>N: commit before offset progress
+```
+
+No database transaction crosses either provider or Kafka I/O. If provider outcome is unknown,
+recovery looks up the existing operation ID before a same-ID resend. If the publisher or consumer
+stops after the external/database acknowledgement boundary, the work can repeat and the durable
+identities absorb the duplicate.
+
 ## Code organization and module boundaries
 
 Application code is organized package-by-feature beneath the base package `com.ledgerflow`.
@@ -99,7 +178,8 @@ An HTTP change must:
 - include tests for affected status codes, media types, validation, and schemas; and
 - document compatibility and migration behavior for breaking changes.
 
-Whether server interfaces and models are generated from OpenAPI will be decided during bootstrap after confirming Spring Boot 4.1 and Java 25 tool compatibility. Generated files, if any, must never be edited manually.
+The MVP keeps server interfaces and models hand-written and validates the authoritative contract
+plus HTTP behavior in the build. Generated code is not part of the delivered repository.
 
 ## Persistence
 
@@ -116,7 +196,7 @@ Migration rules:
 - destructive or long-running migrations require an ExecPlan with compatibility, recovery, and rollout details; and
 - a module accesses only tables it owns unless an accepted ADR defines a controlled exception.
 
-The current local, production-design, and integration-test baseline is PostgreSQL 18. Migrations use ordered `VNNN__description.sql` names. V001–V007 own the previously described feature data; V008 adds resumable idempotency shape, final order/payment states, and deferred workflow-finalization invariants. No merged migration is edited.
+The current local, production-design, and integration-test baseline is PostgreSQL 18. Migrations use ordered `VNNN__description.sql` names. V001–V007 own the previously described feature data; V008 adds resumable idempotency shape, final order/payment states, and deferred workflow-finalization invariants; V009 adds secured operator retry, lease, cooldown, approval, and immutable audit state. No merged migration is edited. The release inventory is [migration inventory](migration-inventory.md).
 
 ### Capture-accounting transaction and isolation boundary
 
@@ -137,7 +217,7 @@ Posted ledger rows reject update and delete. Corrections append an exact reversi
 
 The dedicated publisher uses short owner-token lease transactions. Each instance claims due or expired rows with `SELECT ... FOR UPDATE SKIP LOCKED`, commits the claim, publishes outside PostgreSQL, waits for `acks=all`, and then marks the row `PUBLISHED` only through an owner-guarded update. Multiple instances can work concurrently. A send may therefore be duplicated if the process stops after broker acknowledgement but before the marker commits.
 
-Publication has at most 10 attempts per cycle with exponential backoff capped at 256 seconds and configurable jitter. Failed rows remain durable and inspectable; this milestone does not expose an outbox retry API. The default main topic is `ledgerflow.payment-captured.v1`, keyed by order ID.
+Publication has at most 10 attempts per cycle with exponential backoff capped at 256 seconds and configurable jitter. Failed rows remain durable and inspectable; the secured operator API can request one bounded recovery cycle without replacing the event identity or cumulative history. The default main topic is `ledgerflow.payment-captured.v1`, keyed by order ID.
 
 The notification listener validates the exact envelope, key, type, version, money, and identity relationships. Intake is bounded by configured listener concurrency and `max.poll.records`. It makes one initial attempt plus three bounded retries for transient failures; retry delays pause the affected container/partition while polling continues for consumer-group liveness. A poison record is published to `ledgerflow.payment-captured.v1.dlt` and acknowledged before the source offset advances. Inbox event-ID/hash deduplication makes a matching redelivery of the same envelope a transport no-op; the same event ID with different canonical content is an integrity failure.
 

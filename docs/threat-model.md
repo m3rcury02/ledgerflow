@@ -159,7 +159,7 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 - Direct PostgreSQL tests proving balance, immutability, unique source, and state constraints.
 - Concurrent HTTP/workflow and ledger-posting tests proving one order/payment, one provider mutation per stage, one journal, and one logical outbox event.
 - Database-role tests proving the runtime user cannot perform DDL or update/delete immutable ledger/audit rows while Flyway can migrate.
-- Kafka tests for malformed event, unknown version, duplicate delivery, re-enveloping and semantic conflicts, the publish/marker crash window, poison records, retry exhaustion, malformed DLT routing, terminal-evidence persistence failure/recovery, and partition progress.
+- Kafka tests for malformed event, unknown version, duplicate delivery, re-enveloping and semantic conflicts, the publish/marker crash window, database-commit/offset-failure redelivery, poison records, retry exhaustion, failed DLT publication, malformed DLT routing, terminal-evidence persistence failure/recovery, and partition progress.
 - Toxiproxy tests for provider latency/reset/timeout and temporary PostgreSQL/Kafka loss; recovery assertions restore each fault before completion.
 - Circuit open/half-open/close, bulkhead saturation, decline classification, retry exhaustion, and bounded graceful-drain tests.
 - DLT-catalog tests for safe evidence, idempotent original and actual DLT coordinates, immutable terminal evidence, replay eligibility, lease safety, and immutable audit. Provisioned alerts cover terminal intake and evidence-persistence failure; production routing remains a deployment responsibility.
@@ -177,9 +177,13 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 - Data retention for idempotency, audit, outbox, inbox, notification, DLT, logs, and traces must be approved before production launch.
 - Database-owner compromise can bypass trigger-based ledger protection; production role separation, privileged-access audit, and restore testing remain launch conditions.
 - Backup/restore, disaster recovery, key rotation, vulnerability management, and broker/database hardening require deployment runbooks outside this MVP implementation plan.
+- The release dispositions and explicit local-only acceptance boundaries are maintained in the
+  [MVP residual-risk register](security/mvp-residual-risk-register.md) and
+  [operational limitations](operational-limitations.md).
 
 ## References
 
 - [OWASP API Security Top 10 2023](https://owasp.org/API-Security/editions/2023/en/0x11-t10/)
 - [Spring Security OAuth 2.0 Resource Server JWT](https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/jwt.html)
 - [W3C Trace Context](https://www.w3.org/TR/trace-context/)
+- [MVP proof and acceptance evidence](mvp-evidence.md)

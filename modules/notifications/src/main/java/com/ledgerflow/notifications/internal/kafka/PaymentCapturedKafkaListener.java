@@ -78,6 +78,9 @@ final class PaymentCapturedKafkaListener {
                 record.offset(),
                 validated.processingCorrelationId(),
                 clock.instant());
+        // This checkpoint is deliberately after the database transaction and before listener
+        // return, which lets local/test proofs model a failed Kafka offset acknowledgement.
+        faultInjection.before(FaultPoint.NOTIFICATION_OFFSET_COMMIT);
         NotificationMetrics.ProcessingMetric processingMetric =
             NotificationMetrics.ProcessingMetric.valueOf(outcome.name());
         metrics.processing(processingMetric);

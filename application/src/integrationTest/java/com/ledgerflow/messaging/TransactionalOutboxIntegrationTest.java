@@ -11,6 +11,8 @@ import com.ledgerflow.payments.internal.domain.PaymentState;
 import com.ledgerflow.testing.ledger.LedgerIntegrationTestSupport;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 
 class TransactionalOutboxIntegrationTest extends LedgerIntegrationTestSupport {
@@ -39,14 +41,16 @@ class TransactionalOutboxIntegrationTest extends LedgerIntegrationTestSupport {
     assertThat(outboxCount()).isOne();
   }
 
-  @Test
-  void outboxInsertFailureRollsBackPaymentAndBalancedJournal() {
+  @ParameterizedTest(name = "failure at {0} rolls back financial finalization")
+  @ValueSource(strings = {"ledger_transactions", "ledger_entries", "payments", "outbox_events"})
+  void eachFinancialFinalizationMutationFailureRollsBackTheWholeTransaction(String table) {
     Payment confirmed = confirmedPayment();
-    installRejectingTrigger();
+    installRejectingTrigger(table);
     try {
-      assertThatThrownBy(() -> postCapture(confirmed)).hasMessageContaining("test outbox failure");
+      assertThatThrownBy(() -> postCapture(confirmed))
+          .hasMessageContaining("test financial finalization failure");
     } finally {
-      removeRejectingTrigger();
+      removeRejectingTrigger(table);
     }
 
     assertThat(paymentWorkflow.get(confirmed.paymentId()).state())
@@ -78,14 +82,15 @@ class TransactionalOutboxIntegrationTest extends LedgerIntegrationTestSupport {
     return jdbcClient.sql("SELECT count(*) FROM outbox_events").query(Long.class).single();
   }
 
-  private void installRejectingTrigger() {
+  private void installRejectingTrigger(String table) {
+    String targetTable = financialFinalizationTable(table);
     jdbcClient
         .sql(
             """
-            CREATE FUNCTION reject_test_outbox_insert() RETURNS trigger
+            CREATE FUNCTION reject_test_financial_finalization() RETURNS trigger
             LANGUAGE plpgsql AS $$
             BEGIN
-                RAISE EXCEPTION 'test outbox failure';
+                RAISE EXCEPTION 'test financial finalization failure';
             END;
             $$
             """)
@@ -93,16 +98,28 @@ class TransactionalOutboxIntegrationTest extends LedgerIntegrationTestSupport {
     jdbcClient
         .sql(
             """
-            CREATE TRIGGER reject_test_outbox_insert
-            BEFORE INSERT ON outbox_events
-            FOR EACH ROW EXECUTE FUNCTION reject_test_outbox_insert()
-            """)
+            CREATE TRIGGER reject_test_financial_finalization
+            BEFORE INSERT OR UPDATE ON %s
+            FOR EACH ROW EXECUTE FUNCTION reject_test_financial_finalization()
+            """
+                .formatted(targetTable))
         .update();
   }
 
-  private void removeRejectingTrigger() {
-    jdbcClient.sql("DROP TRIGGER IF EXISTS reject_test_outbox_insert ON outbox_events").update();
-    jdbcClient.sql("DROP FUNCTION IF EXISTS reject_test_outbox_insert()").update();
+  private void removeRejectingTrigger(String table) {
+    jdbcClient
+        .sql(
+            "DROP TRIGGER IF EXISTS reject_test_financial_finalization ON "
+                + financialFinalizationTable(table))
+        .update();
+    jdbcClient.sql("DROP FUNCTION IF EXISTS reject_test_financial_finalization()").update();
+  }
+
+  private String financialFinalizationTable(String table) {
+    return switch (table) {
+      case "ledger_transactions", "ledger_entries", "payments", "outbox_events" -> table;
+      default -> throw new IllegalArgumentException("unsupported finalization table");
+    };
   }
 
   private record StoredOutbox(String status, String payload, byte[] payloadHash) {}
