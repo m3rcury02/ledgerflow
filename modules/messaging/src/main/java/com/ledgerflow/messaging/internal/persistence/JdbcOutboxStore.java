@@ -207,24 +207,6 @@ public class JdbcOutboxStore {
         == 1;
   }
 
-  @Transactional(propagation = Propagation.REQUIRES_NEW)
-  public boolean operatorRetry(UUID eventId, Instant now) {
-    return jdbcClient
-            .sql(
-                """
-                UPDATE outbox_events
-                SET status = 'PENDING', available_at = :now,
-                    lease_owner = NULL, lease_until = NULL,
-                    cycle_attempt_count = 0,
-                    last_failure_code = NULL, last_failed_at = NULL
-                WHERE event_id = :eventId AND status = 'FAILED'
-                """)
-            .param("now", databaseTimestamp(now))
-            .param("eventId", eventId)
-            .update()
-        == 1;
-  }
-
   public Optional<OutboxRecord> find(UUID eventId) {
     return jdbcClient
         .sql(

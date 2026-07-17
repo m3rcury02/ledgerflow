@@ -2,43 +2,41 @@ openapi: 3.1.0
 info:
   title: LedgerFlow API
   version: 0.4.0
-  description: LedgerFlow's contract-first HTTP API. Creating an INR order synchronously
-    drives the mock payment authorization/capture and durable financial finalization.
-    Outbox publication and notification processing are asynchronous and are not prerequisites
-    for the HTTP result.
+  description: >-
+    LedgerFlow's contract-first HTTP API. Creating an INR order synchronously drives the mock
+    payment authorization/capture and durable financial finalization. Outbox publication and
+    notification processing are asynchronous and are not prerequisites for the HTTP result.
 servers:
-- url: http://localhost:8080
-  description: Local application
+  - url: http://localhost:8080
+    description: Local application
 tags:
-- name: Orders
-- name: Operator
+  - name: Orders
 paths:
   /api/v1/orders:
     post:
-      tags:
-      - Orders
+      tags: [Orders]
       operationId: createOrder
       summary: Create an order idempotently
-      description: Creates and advances one INR order for the authenticated subject.
-        Provider authorization and capture are synchronous, while outbox publication
-        and notification processing remain asynchronous. Reusing the same Idempotency-Key
-        with the same canonical request returns the original business result; reusing
-        it with a different request returns 409. An unknown provider outcome is looked
-        up using the original operation ID before any same-ID resend. The JWT must
-        have the ledgerflow.orders.write scope and customer or admin realm role. Query
-        parameters, compressed bodies, duplicate/unknown JSON properties, and request
-        bodies larger than 16 KiB are rejected.
+      description: >-
+        Creates and advances one INR order for the authenticated subject. Provider authorization
+        and capture are synchronous, while outbox publication and notification processing remain
+        asynchronous. Reusing the same Idempotency-Key with the same canonical request returns the
+        original business result; reusing it with a different request returns 409. An unknown
+        provider outcome is looked up using the original operation ID before any same-ID resend.
+        The JWT must have the ledgerflow.orders.write scope and customer or admin realm role. Query
+        parameters, compressed bodies, duplicate/unknown JSON properties, and request bodies larger
+        than 16 KiB are rejected.
       security:
-      - bearerAuth: []
+        - bearerAuth: []
       parameters:
-      - $ref: '#/components/parameters/IdempotencyKey'
-      - $ref: '#/components/parameters/CorrelationId'
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CorrelationId"
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateOrderRequest'
+              $ref: "#/components/schemas/CreateOrderRequest"
             examples:
               standardOrder:
                 summary: INR order
@@ -49,88 +47,85 @@ paths:
                     currency: INR
                   paymentMethodReference: pm_mock_success
       responses:
-        '201':
-          description: Original or replayed terminal order result. COMPLETED means
-            payment CAPTURED and the balanced journal plus durable outbox event committed;
-            it does not mean Kafka publication or notification processing completed.
-            PAYMENT_DECLINED is also a terminal created order.
+        "201":
+          description: >-
+            Original or replayed terminal order result. COMPLETED means payment CAPTURED and the
+            balanced journal plus durable outbox event committed; it does not mean Kafka publication
+            or notification processing completed. PAYMENT_DECLINED is also a terminal created order.
           headers:
             Location:
-              $ref: '#/components/headers/Location'
+              $ref: "#/components/headers/Location"
             X-Correlation-Id:
-              $ref: '#/components/headers/CorrelationId'
+              $ref: "#/components/headers/CorrelationId"
             Idempotency-Replayed:
-              $ref: '#/components/headers/IdempotencyReplayed'
+              $ref: "#/components/headers/IdempotencyReplayed"
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Order'
+                $ref: "#/components/schemas/Order"
               examples:
                 completed:
-                  $ref: '#/components/examples/CompletedOrder'
+                  $ref: "#/components/examples/CompletedOrder"
                 declined:
-                  $ref: '#/components/examples/DeclinedOrder'
-        '202':
-          description: The order and stable provider identities are durable, but a
-            bounded temporary or unknown provider outcome requires a later retry with
-            the same Idempotency-Key.
+                  $ref: "#/components/examples/DeclinedOrder"
+        "202":
+          description: >-
+            The order and stable provider identities are durable, but a bounded temporary or unknown
+            provider outcome requires a later retry with the same Idempotency-Key.
           headers:
             Location:
-              $ref: '#/components/headers/Location'
+              $ref: "#/components/headers/Location"
             X-Correlation-Id:
-              $ref: '#/components/headers/CorrelationId'
+              $ref: "#/components/headers/CorrelationId"
             Idempotency-Replayed:
-              $ref: '#/components/headers/IdempotencyReplayed'
+              $ref: "#/components/headers/IdempotencyReplayed"
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Order'
+                $ref: "#/components/schemas/Order"
               examples:
                 retryPending:
-                  $ref: '#/components/examples/RetryPendingOrder'
-        '400':
-          $ref: '#/components/responses/InvalidRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '406':
-          $ref: '#/components/responses/NotAcceptable'
-        '409':
-          description: The idempotency key was already used for a different canonical
-            request
+                  $ref: "#/components/examples/RetryPendingOrder"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "406":
+          $ref: "#/components/responses/NotAcceptable"
+        "409":
+          description: The idempotency key was already used for a different canonical request
           headers:
             X-Correlation-Id:
-              $ref: '#/components/headers/CorrelationId'
+              $ref: "#/components/headers/CorrelationId"
           content:
             application/problem+json:
               schema:
-                $ref: '#/components/schemas/Problem'
+                $ref: "#/components/schemas/Problem"
               examples:
                 keyReused:
                   value:
                     type: https://ledgerflow.example/problems/idempotency-key-reused
                     title: Idempotency key reused
                     status: 409
-                    detail: The idempotency key was already used with a different
-                      request.
+                    detail: The idempotency key was already used with a different request.
                     instance: /api/v1/orders
                     code: idempotency_key_reused
                     correlationId: order-conflict-001
-        '413':
-          $ref: '#/components/responses/PayloadTooLarge'
-        '415':
-          $ref: '#/components/responses/UnsupportedMediaType'
-        '422':
-          description: The request uses a well-formed currency that this MVP does
-            not support
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          description: The request uses a well-formed currency that this MVP does not support
           headers:
             X-Correlation-Id:
-              $ref: '#/components/headers/CorrelationId'
+              $ref: "#/components/headers/CorrelationId"
           content:
             application/problem+json:
               schema:
-                $ref: '#/components/schemas/Problem'
+                $ref: "#/components/schemas/Problem"
               examples:
                 unsupportedCurrency:
                   value:
@@ -141,23 +136,23 @@ paths:
                     instance: /api/v1/orders
                     code: unsupported_currency
                     correlationId: order-currency-001
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '502':
-          description: The provider returned malformed or contradictory data. The
-            failed order remains owner-readable at Location, and an identical idempotent
-            replay returns this outcome.
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          description: >-
+            The provider returned malformed or contradictory data. The failed order remains
+            owner-readable at Location, and an identical idempotent replay returns this outcome.
           headers:
             Location:
-              $ref: '#/components/headers/Location'
+              $ref: "#/components/headers/Location"
             X-Correlation-Id:
-              $ref: '#/components/headers/CorrelationId'
+              $ref: "#/components/headers/CorrelationId"
             Idempotency-Replayed:
-              $ref: '#/components/headers/IdempotencyReplayed'
+              $ref: "#/components/headers/IdempotencyReplayed"
           content:
             application/problem+json:
               schema:
-                $ref: '#/components/schemas/Problem'
+                $ref: "#/components/schemas/Problem"
               examples:
                 providerProtocol:
                   value:
@@ -168,60 +163,59 @@ paths:
                     instance: /api/v1/orders
                     code: provider_protocol_error
                     correlationId: order-provider-001
-        '503':
-          $ref: '#/components/responses/ServiceUnavailable'
-        '429':
-          $ref: '#/components/responses/RateLimited'
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/v1/orders/{orderId}:
     get:
-      tags:
-      - Orders
+      tags: [Orders]
       operationId: getOrder
       summary: Get the current owned order
-      description: Requires the ledgerflow.orders.read scope and customer or admin
-        realm role. Missing orders and orders owned by another JWT subject both return
-        the same 404 response.
+      description: >-
+        Requires the ledgerflow.orders.read scope and customer or admin realm role. Missing orders
+        and orders owned by another JWT subject both return the same 404 response.
       security:
-      - bearerAuth: []
+        - bearerAuth: []
       parameters:
-      - name: orderId
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-        example: 019535d9-3df7-79fb-b466-fa907fa17f9e
-      - $ref: '#/components/parameters/CorrelationId'
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          example: 019535d9-3df7-79fb-b466-fa907fa17f9e
+        - $ref: "#/components/parameters/CorrelationId"
       responses:
-        '200':
+        "200":
           description: Current order representation
           headers:
             X-Correlation-Id:
-              $ref: '#/components/headers/CorrelationId'
+              $ref: "#/components/headers/CorrelationId"
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Order'
+                $ref: "#/components/schemas/Order"
               examples:
                 current:
-                  $ref: '#/components/examples/CompletedOrder'
-        '400':
-          $ref: '#/components/responses/InvalidRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '406':
-          $ref: '#/components/responses/NotAcceptable'
-        '404':
+                  $ref: "#/components/examples/CompletedOrder"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "406":
+          $ref: "#/components/responses/NotAcceptable"
+        "404":
           description: Order absent or not owned by the authenticated subject
           headers:
             X-Correlation-Id:
-              $ref: '#/components/headers/CorrelationId'
+              $ref: "#/components/headers/CorrelationId"
           content:
             application/problem+json:
               schema:
-                $ref: '#/components/schemas/Problem'
+                $ref: "#/components/schemas/Problem"
               examples:
                 notFound:
                   value:
@@ -232,141 +226,31 @@ paths:
                     instance: /api/v1/orders/019535d9-3df7-79fb-b466-fa907fa17f9e
                     code: resource_not_found
                     correlationId: order-read-001
-        '500':
-          $ref: '#/components/responses/InternalError'
-  /api/v1/operator/failed-operations:
-    get:
-      tags:
-      - Operator
-      operationId: listFailedOperations
-      summary: List failed operations
-      security:
-      - bearerAuth: []
-      parameters:
-      - name: limit
-        in: query
-        schema:
-          type: integer
-          minimum: 1
-          maximum: 100
-          default: 20
-      - name: pageToken
-        in: query
-        schema:
-          type: string
-      - $ref: '#/components/parameters/CorrelationId'
-      responses:
-        '200':
-          description: Paginated failed operations
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/FailedOperationPage'
-  /api/v1/operator/failed-operations/{operationId}:
-    get:
-      tags:
-      - Operator
-      operationId: getFailedOperation
-      summary: Get failed operation detail and history
-      security:
-      - bearerAuth: []
-      parameters:
-      - name: operationId
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-      - $ref: '#/components/parameters/CorrelationId'
-      responses:
-        '200':
-          description: Failed operation detail
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/FailedOperationDetail'
-  /api/v1/operator/failed-operations/{operationId}/retry:
-    post:
-      tags:
-      - Operator
-      operationId: retryFailedOperation
-      summary: Retry failed operation
-      security:
-      - bearerAuth: []
-      parameters:
-      - name: operationId
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-      - $ref: '#/components/parameters/IdempotencyKey'
-      - $ref: '#/components/parameters/CorrelationId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RetryRequest'
-      responses:
-        '202':
-          description: Retry command accepted
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RetryResponse'
-  /api/v1/operator/failed-operations/{operationId}/break-glass-retry:
-    post:
-      tags:
-      - Operator
-      operationId: breakGlassRetryFailedOperation
-      summary: Break glass retry failed operation
-      security:
-      - bearerAuth: []
-      parameters:
-      - name: operationId
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-      - $ref: '#/components/parameters/IdempotencyKey'
-      - $ref: '#/components/parameters/CorrelationId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BreakGlassRetryRequest'
-      responses:
-        '202':
-          description: Break glass retry command accepted
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RetryResponse'
+        "500":
+          $ref: "#/components/responses/InternalError"
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: OAuth 2.0/OIDC JWT with the configured exact issuer and ledgerflow-api
-        audience, signed with RS256. POST requires ledgerflow.orders.write; GET requires
-        ledgerflow.orders.read. Active order routes also require the Keycloak customer
-        or admin realm role.
+      description: >-
+        OAuth 2.0/OIDC JWT with the configured exact issuer and ledgerflow-api audience, signed with
+        RS256. POST requires ledgerflow.orders.write; GET requires ledgerflow.orders.read. Active
+        order routes also require the Keycloak customer or admin realm role.
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
       in: header
       required: true
-      description: Case-sensitive client nonce. Validated before hashing; raw values
-        are never persisted or logged.
+      description: >-
+        Case-sensitive client nonce. Validated before hashing; raw values are never persisted or
+        logged.
       schema:
         type: string
         minLength: 8
         maxLength: 128
-        pattern: ^[A-Za-z0-9._:-]+$
+        pattern: "^[A-Za-z0-9._:-]+$"
       example: order-019535d9-3df7-79fb
     CorrelationId:
       name: X-Correlation-Id
@@ -377,7 +261,7 @@ components:
         type: string
         minLength: 1
         maxLength: 64
-        pattern: ^[A-Za-z0-9._-]+$
+        pattern: "^[A-Za-z0-9._-]+$"
       example: checkout-order-001
   headers:
     Location:
@@ -392,7 +276,7 @@ components:
         type: string
         minLength: 1
         maxLength: 64
-        pattern: ^[A-Za-z0-9._-]+$
+        pattern: "^[A-Za-z0-9._-]+$"
     IdempotencyReplayed:
       description: Present and true only when the original result is replayed
       required: false
@@ -402,33 +286,29 @@ components:
     CreateOrderRequest:
       type: object
       additionalProperties: false
-      required:
-      - amount
-      - paymentMethodReference
+      required: [amount, paymentMethodReference]
       properties:
         clientReference:
           type: string
           minLength: 1
           maxLength: 100
-          pattern: ^\S(?:.*\S)?$
+          pattern: "^\\S(?:.*\\S)?$"
           example: checkout-20260713-0001
         amount:
-          $ref: '#/components/schemas/Money'
+          $ref: "#/components/schemas/Money"
         paymentMethodReference:
           type: string
           minLength: 9
           maxLength: 128
-          pattern: ^pm_mock_[a-z_]+$
-          description: Opaque local/test mock-provider token. It is included in idempotency
-            hashing, is never returned or logged, and must never contain card data
-            or real payment credentials.
+          pattern: "^pm_mock_[a-z_]+$"
+          description: >-
+            Opaque local/test mock-provider token. It is included in idempotency hashing, is never
+            returned or logged, and must never contain card data or real payment credentials.
           example: pm_mock_success
     Money:
       type: object
       additionalProperties: false
-      required:
-      - amountMinor
-      - currency
+      required: [amountMinor, currency]
       properties:
         amountMinor:
           type: integer
@@ -439,19 +319,12 @@ components:
           type: string
           minLength: 3
           maxLength: 3
-          pattern: ^[A-Z]{3}$
-          enum:
-          - INR
+          pattern: "^[A-Z]{3}$"
+          enum: [INR]
     Order:
       type: object
       additionalProperties: false
-      required:
-      - orderId
-      - status
-      - amount
-      - payment
-      - createdAt
-      - updatedAt
+      required: [orderId, status, amount, payment, createdAt, updatedAt]
       properties:
         orderId:
           type: string
@@ -460,42 +333,40 @@ components:
           example: 019535d9-3df7-79fb-b466-fa907fa17f9e
         clientReference:
           type:
-          - string
-          - 'null'
+            - string
+            - "null"
           minLength: 1
           maxLength: 100
         status:
           type: string
           enum:
-          - CREATED
-          - PAYMENT_PROCESSING
-          - COMPLETED
-          - PAYMENT_DECLINED
-          - PAYMENT_RETRY_PENDING
-          - FAILED
+            - CREATED
+            - PAYMENT_PROCESSING
+            - COMPLETED
+            - PAYMENT_DECLINED
+            - PAYMENT_RETRY_PENDING
+            - FAILED
         amount:
-          $ref: '#/components/schemas/Money'
+          $ref: "#/components/schemas/Money"
         payment:
-          description: Payment workflow state for Milestone 6 orders. Null is retained
-            only so historical pre-Milestone-6 CREATED orders remain readable after
-            an in-place database upgrade.
+          description: >-
+            Payment workflow state for Milestone 6 orders. Null is retained only so historical
+            pre-Milestone-6 CREATED orders remain readable after an in-place database upgrade.
           oneOf:
-          - $ref: '#/components/schemas/PaymentSummary'
-          - type: 'null'
+            - $ref: "#/components/schemas/PaymentSummary"
+            - type: "null"
         createdAt:
           type: string
           format: date-time
-          example: 2026-07-13 09:42:00+00:00
+          example: 2026-07-13T09:42:00Z
         updatedAt:
           type: string
           format: date-time
-          example: 2026-07-13 09:42:01+00:00
+          example: 2026-07-13T09:42:01Z
     PaymentSummary:
       type: object
       additionalProperties: false
-      required:
-      - paymentId
-      - status
+      required: [paymentId, status]
       properties:
         paymentId:
           type: string
@@ -503,33 +374,31 @@ components:
         status:
           type: string
           enum:
-          - CREATED
-          - AUTHORIZING
-          - AUTHORIZED
-          - DECLINED
-          - AUTHORIZATION_RETRY_PENDING
-          - AUTHORIZATION_UNKNOWN
-          - CAPTURING
-          - CAPTURE_CONFIRMED
-          - CAPTURE_ACCOUNTED
-          - CAPTURED
-          - CAPTURE_DECLINED
-          - CAPTURE_RETRY_PENDING
-          - CAPTURE_UNKNOWN
-          - FAILED
+            - CREATED
+            - AUTHORIZING
+            - AUTHORIZED
+            - DECLINED
+            - AUTHORIZATION_RETRY_PENDING
+            - AUTHORIZATION_UNKNOWN
+            - CAPTURING
+            - CAPTURE_CONFIRMED
+            - CAPTURE_ACCOUNTED
+            - CAPTURED
+            - CAPTURE_DECLINED
+            - CAPTURE_RETRY_PENDING
+            - CAPTURE_UNKNOWN
+            - FAILED
         failureCode:
           type:
-          - string
-          - 'null'
+            - string
+            - "null"
           maxLength: 64
-          pattern: ^[A-Z0-9_]+$
+          pattern: "^[A-Z0-9_]+$"
           example: AUTHORIZATION_DECLINED
     ValidationError:
       type: object
       additionalProperties: false
-      required:
-      - field
-      - code
+      required: [field, code]
       properties:
         field:
           type: string
@@ -540,14 +409,7 @@ components:
     Problem:
       type: object
       additionalProperties: true
-      required:
-      - type
-      - title
-      - status
-      - detail
-      - instance
-      - code
-      - correlationId
+      required: [type, title, status, detail, instance, code, correlationId]
       properties:
         type:
           type: string
@@ -564,130 +426,23 @@ components:
           type: string
         code:
           type: string
-          pattern: ^[a-z0-9_]+$
+          pattern: "^[a-z0-9_]+$"
         correlationId:
           type: string
         errors:
           type: array
           items:
-            $ref: '#/components/schemas/ValidationError'
-    FailedOperationSummary:
-      type: object
-      required:
-      - operationId
-      - operationType
-      - status
-      - failedAt
-      properties:
-        operationId:
-          type: string
-          format: uuid
-        operationType:
-          type: string
-          enum:
-          - PAYMENT
-          - OUTBOX
-          - DEAD_LETTER
-        status:
-          type: string
-        failureCode:
-          type: string
-          nullable: true
-        failedAt:
-          type: string
-          format: date-time
-    FailedOperationPage:
-      type: object
-      required:
-      - items
-      properties:
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/FailedOperationSummary'
-        nextPageToken:
-          type: string
-          nullable: true
-    FailedOperationDetail:
-      type: object
-      required:
-      - summary
-      - attempts
-      properties:
-        summary:
-          $ref: '#/components/schemas/FailedOperationSummary'
-        attempts:
-          type: array
-          items:
-            type: object
-            required:
-            - attemptNumber
-            - recordedAt
-            - outcome
-            properties:
-              attemptNumber:
-                type: integer
-              recordedAt:
-                type: string
-                format: date-time
-              outcome:
-                type: string
-              failureCode:
-                type: string
-                nullable: true
-    RetryRequest:
-      type: object
-      required:
-      - reason
-      properties:
-        reason:
-          type: string
-          minLength: 10
-          maxLength: 500
-    BreakGlassRetryRequest:
-      type: object
-      required:
-      - reason
-      - approvalReference
-      properties:
-        reason:
-          type: string
-          minLength: 10
-          maxLength: 500
-        approvalReference:
-          type: string
-          minLength: 1
-          maxLength: 100
-    RetryResponse:
-      type: object
-      required:
-      - commandId
-      - status
-      - acceptedAt
-      properties:
-        commandId:
-          type: string
-          format: uuid
-        status:
-          type: string
-          enum:
-          - PENDING
-          - IN_PROGRESS
-          - COMPLETED
-          - FAILED
-        acceptedAt:
-          type: string
-          format: date-time
+            $ref: "#/components/schemas/ValidationError"
   responses:
     InvalidRequest:
       description: Request body, path, or required header is invalid
       headers:
         X-Correlation-Id:
-          $ref: '#/components/headers/CorrelationId'
+          $ref: "#/components/headers/CorrelationId"
       content:
         application/problem+json:
           schema:
-            $ref: '#/components/schemas/Problem'
+            $ref: "#/components/schemas/Problem"
           examples:
             invalidRequest:
               value:
@@ -699,62 +454,60 @@ components:
                 code: invalid_request
                 correlationId: generated-correlation-id
                 errors:
-                - field: /headers/Idempotency-Key
-                  code: invalid_format
+                  - field: /headers/Idempotency-Key
+                    code: invalid_format
     Unauthorized:
       description: Missing or invalid bearer token
       headers:
         X-Correlation-Id:
-          $ref: '#/components/headers/CorrelationId'
+          $ref: "#/components/headers/CorrelationId"
       content:
         application/problem+json:
           schema:
-            $ref: '#/components/schemas/Problem'
+            $ref: "#/components/schemas/Problem"
     Forbidden:
       description: Authenticated principal lacks the required scope or realm role
       headers:
         X-Correlation-Id:
-          $ref: '#/components/headers/CorrelationId'
+          $ref: "#/components/headers/CorrelationId"
       content:
         application/problem+json:
           schema:
-            $ref: '#/components/schemas/Problem'
+            $ref: "#/components/schemas/Problem"
     NotAcceptable:
       description: The requested response media type is not supported
       headers:
         X-Correlation-Id:
-          $ref: '#/components/headers/CorrelationId'
+          $ref: "#/components/headers/CorrelationId"
       content:
         application/problem+json:
           schema:
-            $ref: '#/components/schemas/Problem'
+            $ref: "#/components/schemas/Problem"
     PayloadTooLarge:
       description: The JSON request exceeds the configured 16 KiB limit
       headers:
         X-Correlation-Id:
-          $ref: '#/components/headers/CorrelationId'
+          $ref: "#/components/headers/CorrelationId"
       content:
         application/problem+json:
           schema:
-            $ref: '#/components/schemas/Problem'
+            $ref: "#/components/schemas/Problem"
     UnsupportedMediaType:
       description: The request is not uncompressed application/json
       headers:
         X-Correlation-Id:
-          $ref: '#/components/headers/CorrelationId'
+          $ref: "#/components/headers/CorrelationId"
       content:
         application/problem+json:
           schema:
-            $ref: '#/components/schemas/Problem'
+            $ref: "#/components/schemas/Problem"
     RateLimited:
-      description: The authenticated subject exceeded the configured per-instance
-        write limit
+      description: The authenticated subject exceeded the configured per-instance write limit
       headers:
         X-Correlation-Id:
-          $ref: '#/components/headers/CorrelationId'
+          $ref: "#/components/headers/CorrelationId"
         Retry-After:
-          description: Minimum whole seconds before this instance will admit another
-            write
+          description: Minimum whole seconds before this instance will admit another write
           required: true
           schema:
             type: integer
@@ -762,25 +515,25 @@ components:
       content:
         application/problem+json:
           schema:
-            $ref: '#/components/schemas/Problem'
+            $ref: "#/components/schemas/Problem"
     InternalError:
       description: Unexpected internal failure with no exposed internals
       headers:
         X-Correlation-Id:
-          $ref: '#/components/headers/CorrelationId'
+          $ref: "#/components/headers/CorrelationId"
       content:
         application/problem+json:
           schema:
-            $ref: '#/components/schemas/Problem'
+            $ref: "#/components/schemas/Problem"
     ServiceUnavailable:
       description: Required durable infrastructure is unavailable
       headers:
         X-Correlation-Id:
-          $ref: '#/components/headers/CorrelationId'
+          $ref: "#/components/headers/CorrelationId"
       content:
         application/problem+json:
           schema:
-            $ref: '#/components/schemas/Problem'
+            $ref: "#/components/schemas/Problem"
   examples:
     CompletedOrder:
       value:
@@ -794,8 +547,8 @@ components:
           paymentId: 019535d9-4a20-7e29-9d35-a6e4aeab9e07
           status: CAPTURED
           failureCode: null
-        createdAt: 2026-07-13 09:42:00+00:00
-        updatedAt: 2026-07-13 09:42:01+00:00
+        createdAt: 2026-07-13T09:42:00Z
+        updatedAt: 2026-07-13T09:42:01Z
     DeclinedOrder:
       value:
         orderId: 019535d9-3df7-79fb-b466-fa907fa17f9e
@@ -808,8 +561,8 @@ components:
           paymentId: 019535d9-4a20-7e29-9d35-a6e4aeab9e08
           status: DECLINED
           failureCode: AUTHORIZATION_DECLINED
-        createdAt: 2026-07-13 09:42:00+00:00
-        updatedAt: 2026-07-13 09:42:01+00:00
+        createdAt: 2026-07-13T09:42:00Z
+        updatedAt: 2026-07-13T09:42:01Z
     RetryPendingOrder:
       value:
         orderId: 019535d9-3df7-79fb-b466-fa907fa17f9e
@@ -822,5 +575,5 @@ components:
           paymentId: 019535d9-4a20-7e29-9d35-a6e4aeab9e09
           status: AUTHORIZATION_RETRY_PENDING
           failureCode: PROVIDER_TEMPORARY_FAILURE
-        createdAt: 2026-07-13 09:42:00+00:00
-        updatedAt: 2026-07-13 09:42:01+00:00
+        createdAt: 2026-07-13T09:42:00Z
+        updatedAt: 2026-07-13T09:42:01Z

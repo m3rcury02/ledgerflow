@@ -8,7 +8,6 @@ import com.ledgerflow.notifications.internal.kafka.NotificationEventValidator;
 import com.ledgerflow.notifications.internal.kafka.ValidatedNotificationEvent;
 import com.ledgerflow.notifications.internal.persistence.JdbcNotificationStore;
 import com.ledgerflow.notifications.internal.persistence.ReplayClaim;
-import com.ledgerflow.operations.api.OperationRetryHandler;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanKind;
@@ -25,7 +24,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.header.Headers;
 import org.springframework.kafka.core.KafkaTemplate;
 
-public class DeadLetterReplayService implements DeadLetterReplay, OperationRetryHandler {
+public class DeadLetterReplayService implements DeadLetterReplay {
 
   private static final String ACTOR_PATTERN = "[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}";
   private static final String FAILURE_SUMMARY =
@@ -191,16 +190,5 @@ public class DeadLetterReplayService implements DeadLetterReplay, OperationRetry
       scope.close();
       span.end();
     }
-  }
-
-  @Override
-  public String getSupportedOperationType() {
-    return "DEAD_LETTER";
-  }
-
-  @Override
-  public void handleRetry(
-      UUID commandId, UUID operationId, String idempotencyKeyHash, boolean isBreakGlass) {
-    replay(operationId, "operator-recovery", "Operator retry via " + commandId);
   }
 }
