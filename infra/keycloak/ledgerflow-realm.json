@@ -60,6 +60,15 @@
       }
     },
     {
+      "name": "ledgerflow.operations.break-glass",
+      "description": "Approve exceptional LedgerFlow recovery attempts",
+      "protocol": "openid-connect",
+      "attributes": {
+        "display.on.consent.screen": "true",
+        "include.in.token.scope": "true"
+      }
+    },
+    {
       "name": "ledgerflow-api-audience",
       "description": "Add the LedgerFlow resource-server audience",
       "protocol": "openid-connect",
@@ -102,7 +111,8 @@
         "ledgerflow.orders.read",
         "ledgerflow.orders.write",
         "ledgerflow.operations.read",
-        "ledgerflow.operations.retry"
+        "ledgerflow.operations.retry",
+        "ledgerflow.operations.break-glass"
       ]
     }
   ]

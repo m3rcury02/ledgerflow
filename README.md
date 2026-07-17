@@ -1,6 +1,6 @@
 # LedgerFlow
 
-LedgerFlow is a Java 25 and Spring Boot 4.1 modular-monolith portfolio project. Its contract-first, JWT-secured public workflow creates an order, safely authorizes/captures through an external mock provider, posts one immutable balanced journal and transactional outbox event, finalizes `CAPTURED`/`COMPLETED`, then publishes/consumes through Kafka asynchronously with transport and semantic notification idempotency. Terminal malformed-DLT evidence and audited CLI replay are implemented; the secured operator HTTP workflow remains later work.
+LedgerFlow is a Java 25 and Spring Boot 4.1 modular-monolith portfolio project. Its contract-first, JWT-secured public workflow creates an order, safely authorizes/captures through an external mock provider, posts one immutable balanced journal and transactional outbox event, finalizes `CAPTURED`/`COMPLETED`, then publishes/consumes through Kafka asynchronously with transport and semantic notification idempotency. Secured operator APIs provide sanitized failure inspection and idempotent, leased, audited recovery without direct data mutation.
 
 ## Prerequisites
 
@@ -101,7 +101,7 @@ export LEDGERFLOW_OTLP_LOGS_ENDPOINT=http://localhost:4318/v1/logs
 ./gradlew :application:bootRun
 ```
 
-Flyway applies V001 through `V008__finalize_public_order_workflow.sql` at startup. The Kafka publisher and notification/DLT consumers are disabled by default; enable them explicitly with `LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED`, `LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED`, and `LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED`. No cache integration or direct public payment/ledger route exists.
+Flyway applies V001 through `V009__secure_operator_recovery.sql` at startup. The Kafka publisher and notification/DLT consumers are disabled by default; enable them explicitly with `LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED`, `LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED`, and `LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED`. The database-backed recovery worker defaults on and can be disabled with `LEDGERFLOW_RECOVERY_WORKER_ENABLED=false`. No cache integration or direct public payment/ledger route exists.
 
 Actuator is not served on application port `8080`. With the local override above, status-only liveness/readiness and Prometheus are available on management port `8082`; aggregate health, details, components, and `info` are unavailable. The management listener must never be public. Production ingress, network-policy, and Kafka ACL requirements are defined in [deployment security](docs/deployment-security.md).
 
@@ -154,10 +154,14 @@ A dedicated publisher leases rows with `SELECT ... FOR UPDATE SKIP LOCKED`, send
 The default topics are `ledgerflow.payment-captured.v1` and `ledgerflow.payment-captured.v1.dlt`. With the normal database/Kafka environment configured, replay one validated catalog row with:
 
 ```bash
-scripts/replay-dead-letter '<dead-letter-uuid>' '<actor>' '<specific reason of at least 10 characters>'
+export LEDGERFLOW_OPERATOR_ACCESS_TOKEN='<operator-token-from-local-keycloak>'
+scripts/replay-dead-letter \
+  '<dead-letter-uuid>' \
+  '<unique-idempotency-key>' \
+  '<specific reason of at least 10 characters>'
 ```
 
-The narrow command runs the application in non-web mode with listeners and the outbox publisher disabled. It preserves the original envelope and Kafka key while creating new transport correlation and trace context; see [the runbook](docs/runbook.md). It remains development-only pending replay hardening and adds no operator HTTP API. Use [the read-only ledger SQL](docs/sql/ledger-queries.sql) for balances and payment history.
+The script calls the secured operator API. Actor identity comes from the validated JWT, inspection and retry scopes remain separate, and the durable worker preserves the original envelope, event identity, and Kafka key while replacing retry-only transport metadata. See [the runbook](docs/runbook.md). Use [the read-only ledger SQL](docs/sql/ledger-queries.sql) for balances and payment history.
 
 ## Observability demonstration
 
@@ -189,7 +193,7 @@ The demonstration reports the durable business result first, prints its trace an
 - `modules/ledger` — ledger feature boundary.
 - `modules/messaging` — messaging feature boundary.
 - `modules/notifications` — notification feature boundary.
-- `modules/operations` — operational health, dependency validation, graceful drain, and future operator-recovery boundary.
+- `modules/operations` — operational health, dependency validation, graceful drain, and secured recovery coordination.
 
 Each feature is a Gradle library under `com.ledgerflow.<feature>`. Application code remains package-by-feature; repository-wide controller, service, repository, entity, and model packages are forbidden.
 

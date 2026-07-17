@@ -1,7 +1,7 @@
 # LedgerFlow Observability Alert Runbook
 
 - Status: Provisional Milestone 7A operations guidance
-- Last updated: 2026-07-15
+- Last updated: 2026-07-17
 
 These thresholds are demonstration defaults, not production paging policy. Use the provisioned
 dashboard named in each entry. Never paste tokens, request bodies, payment references, raw Kafka
@@ -119,3 +119,19 @@ PostgreSQL financial/audit rows, provider operation IDs, outbox rows, and Kafka 
 - **Safe immediate actions:** Restore the telemetry backend or network and protect Collector capacity. Do not make business success depend on exporter recovery.
 - **Escalation:** Engage the observability-platform owner after ten minutes; escalate separately if missing evidence affects incident response.
 - **Recovery verification:** Export-failure rates remain zero, new trace IDs appear in Tempo/Loki, and order outcomes are unchanged throughout the outage.
+
+## LedgerFlowOperatorRetryStuck
+
+- **Diagnosis:** Inspect `ledgerflow_operator_commands` and oldest-active age, then correlate the retry-worker span with its linked request/origin traces. Check lease expiry, worker readiness, and the relevant payment/outbox/DLT state using sanitized operator detail.
+- **Impact:** An approved recovery is delayed; an expired lease may be taken over, but a stuck dependency can prevent convergence.
+- **Safe immediate actions:** Restore the failing dependency and verify a healthy worker instance is accepting work. Preserve command, lease, audit, provider, outbox, and DLT identities; never complete the command or mutate source rows manually.
+- **Escalation:** Page the application owner after five minutes and the dependency owner when provider, PostgreSQL, or Kafka is causal. Escalate immediately for unresolved provider success or financial inconsistency.
+- **Recovery verification:** The command reaches `COMPLETED` or bounded `FAILED`, oldest-active age returns below 120 seconds, a takeover (if any) is audited, and no duplicate journal/outbox/notification effect exists.
+
+## LedgerFlowOperatorRetryRepeatedFailure
+
+- **Diagnosis:** Group bounded retry outcomes by operation type, inspect sanitized attempt history and cooldown state, and use linked traces without copying raw payloads or reasons.
+- **Impact:** Operators may exhaust the automatic limit; repeated manual activity can amplify dependency load.
+- **Safe immediate actions:** Stop submitting new commands, correct the dependency/root cause, and wait for the transactional cooldown. Use separate admin break-glass approval only after documented review and only within the configured cap.
+- **Escalation:** Engage the owning module and security/incident commander before break-glass. Payment unknown outcomes also require the provider owner.
+- **Recovery verification:** Failure growth stops, the next approved command converges with original identities, audit evidence remains immutable, and attempts beyond the cap are rejected.

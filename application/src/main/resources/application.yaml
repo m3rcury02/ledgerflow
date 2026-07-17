@@ -201,6 +201,14 @@ ledgerflow:
     dependency-timeout: ${LEDGERFLOW_DEPENDENCY_TIMEOUT:3s}
     health-probe-cache-ttl: ${LEDGERFLOW_HEALTH_PROBE_CACHE_TTL:2s}
     startup-validation-enabled: ${LEDGERFLOW_STARTUP_VALIDATION_ENABLED:true}
+    recovery-worker-enabled: ${LEDGERFLOW_RECOVERY_WORKER_ENABLED:true}
+    recovery-batch-size: ${LEDGERFLOW_RECOVERY_BATCH_SIZE:10}
+    recovery-poll-interval: ${LEDGERFLOW_RECOVERY_POLL_INTERVAL:1s}
+    recovery-lease-duration: ${LEDGERFLOW_RECOVERY_LEASE_DURATION:30s}
+    recovery-recheck-delay: ${LEDGERFLOW_RECOVERY_RECHECK_DELAY:2s}
+    retry-cooldown: ${LEDGERFLOW_RECOVERY_COOLDOWN:5m}
+    max-automatic-attempts: ${LEDGERFLOW_RECOVERY_MAX_AUTOMATIC_ATTEMPTS:3}
+    max-break-glass-attempts: ${LEDGERFLOW_RECOVERY_MAX_BREAK_GLASS_ATTEMPTS:2}
   fault-injection:
     enabled: false
     point: PAYMENT_PROVIDER

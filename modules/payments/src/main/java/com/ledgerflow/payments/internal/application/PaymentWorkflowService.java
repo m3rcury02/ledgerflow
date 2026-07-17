@@ -93,6 +93,7 @@ public class PaymentWorkflowService {
     validateCorrelationId(correlationId);
     Payment current = get(paymentId);
     PaymentStage stage = recoveryStage(current.state());
+    current = resumeRetryPending(current, stage);
     int attemptNumber = Math.max(1, current.attemptCount(stage));
     paymentStore.appendHistory(
         current.paymentId(),
@@ -201,7 +202,7 @@ public class PaymentWorkflowService {
               "PROVIDER_OPERATION_NOT_FOUND",
               correlationId));
       Payment active = resumeIfUnknown(current, stage);
-      return execute(active, stage, correlationId);
+      return executeRecoveryAttempt(active, stage, correlationId);
     }
     if (lookup instanceof ProviderLookupResult.TemporarilyUnavailable unavailable) {
       AttemptHistory history =
@@ -266,6 +267,43 @@ public class PaymentWorkflowService {
                   payment.providerAuthorizationId(),
                   correlationId));
     };
+  }
+
+  private Payment executeRecoveryAttempt(
+      Payment current, PaymentStage stage, String correlationId) {
+    StartedAttempt started =
+        paymentStore.startAttempt(current, stage, correlationId, clock.instant());
+    Payment active = started.payment();
+    ProviderResult result = callProvider(active, stage, correlationId);
+    if (result instanceof ProviderResult.Success success) {
+      return persistSuccess(
+          active, stage, started.attemptNumber(), success.providerReference(), correlationId);
+    }
+    if (result instanceof ProviderResult.Declined declined) {
+      return persistDecline(
+          active, stage, started.attemptNumber(), declined.failureCode(), correlationId);
+    }
+    if (result instanceof ProviderResult.Unknown unknown) {
+      return persistUnknown(
+          active, stage, started.attemptNumber(), unknown.failureCode(), correlationId);
+    }
+    if (result instanceof ProviderResult.InvalidResponse invalid) {
+      return persistInvalid(
+          active, stage, started.attemptNumber(), invalid.failureCode(), correlationId);
+    }
+    ProviderResult.TemporaryFailure temporary = (ProviderResult.TemporaryFailure) result;
+    paymentStore.appendHistory(
+        active.paymentId(),
+        history(
+            active,
+            stage,
+            AttemptActivity.CALL,
+            started.attemptNumber(),
+            AttemptOutcome.TEMPORARY_FAILURE,
+            null,
+            temporary.failureCode(),
+            correlationId));
+    return persistRetryPending(active, stage, temporary.failureCode());
   }
 
   private Payment persistSuccess(
@@ -431,6 +469,20 @@ public class PaymentWorkflowService {
     };
   }
 
+  private Payment resumeRetryPending(Payment payment, PaymentStage stage) {
+    return switch (stage) {
+      case AUTHORIZATION ->
+          payment.state() == PaymentState.AUTHORIZATION_RETRY_PENDING
+              ? recordResumed(
+                  paymentStore.save(payment, payment.resumeAuthorization(clock.instant())))
+              : payment;
+      case CAPTURE ->
+          payment.state() == PaymentState.CAPTURE_RETRY_PENDING
+              ? recordResumed(paymentStore.save(payment, payment.resumeCapture(clock.instant())))
+              : payment;
+    };
+  }
+
   private Payment recordResumed(Payment payment) {
     metrics.recordStateAfterCommit(payment.state());
     return payment;
@@ -459,8 +511,9 @@ public class PaymentWorkflowService {
 
   private PaymentStage recoveryStage(PaymentState state) {
     return switch (state) {
-      case AUTHORIZING, AUTHORIZATION_UNKNOWN -> PaymentStage.AUTHORIZATION;
-      case CAPTURING, CAPTURE_UNKNOWN -> PaymentStage.CAPTURE;
+      case AUTHORIZING, AUTHORIZATION_RETRY_PENDING, AUTHORIZATION_UNKNOWN ->
+          PaymentStage.AUTHORIZATION;
+      case CAPTURING, CAPTURE_RETRY_PENDING, CAPTURE_UNKNOWN -> PaymentStage.CAPTURE;
       default -> throw new IllegalPaymentTransitionException(state, state);
     };
   }

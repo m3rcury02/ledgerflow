@@ -38,10 +38,10 @@ done
 mapfile -t alert_names < <(
   awk '$1 == "-" && $2 == "alert:" {print $3}' infra/prometheus/rules/*.yaml
 )
-test "${#alert_names[@]}" -eq 14
-test "$(grep -h -c '^[[:space:]]*severity:' infra/prometheus/rules/*.yaml | awk '{sum += $1} END {print sum}')" -eq 14
-test "$(grep -h -c '^[[:space:]]*service:' infra/prometheus/rules/*.yaml | awk '{sum += $1} END {print sum}')" -eq 14
-test "$(grep -h -c '^[[:space:]]*runbook_url:' infra/prometheus/rules/*.yaml | awk '{sum += $1} END {print sum}')" -eq 14
+test "${#alert_names[@]}" -eq 16
+test "$(grep -h -c '^[[:space:]]*severity:' infra/prometheus/rules/*.yaml | awk '{sum += $1} END {print sum}')" -eq 16
+test "$(grep -h -c '^[[:space:]]*service:' infra/prometheus/rules/*.yaml | awk '{sum += $1} END {print sum}')" -eq 16
+test "$(grep -h -c '^[[:space:]]*runbook_url:' infra/prometheus/rules/*.yaml | awk '{sum += $1} END {print sum}')" -eq 16
 for alert in "${alert_names[@]}"; do
   grep -Fq "## ${alert}" docs/observability-runbook.md
   anchor="$(printf '%s' "${alert}" | tr '[:upper:]' '[:lower:]')"

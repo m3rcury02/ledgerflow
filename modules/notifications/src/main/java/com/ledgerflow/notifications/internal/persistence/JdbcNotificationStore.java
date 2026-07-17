@@ -7,6 +7,7 @@ import com.ledgerflow.notifications.internal.application.NotificationIntegrityEx
 import com.ledgerflow.notifications.internal.application.NotificationSemanticConflictException;
 import com.ledgerflow.notifications.internal.application.ReplayNotAvailableException;
 import com.ledgerflow.notifications.internal.application.ReplayOwnershipLostException;
+import com.ledgerflow.operations.api.RecoveryLeaseGuard;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
@@ -278,11 +279,11 @@ public class JdbcNotificationStore {
       UUID deadLetterRecordId,
       UUID replayRequestId,
       String leaseOwner,
-      String actor,
-      String reason,
       String correlationId,
       Instant now,
-      Duration leaseDuration) {
+      Duration leaseDuration,
+      RecoveryLeaseGuard recoveryLeaseGuard) {
+    recoveryLeaseGuard.requireCurrent();
     ReplayClaim claim =
         jdbcClient
             .sql(
@@ -321,8 +322,8 @@ public class JdbcNotificationStore {
                         resultSet.getString("event_key"),
                         resultSet.getString("payload"),
                         leaseOwner,
-                        actor,
-                        reason,
+                        "operator-recovery-worker",
+                        "Executed an authenticated operator recovery command.",
                         correlationId))
             .optional()
             .orElseThrow(ReplayNotAvailableException::new);
@@ -331,7 +332,9 @@ public class JdbcNotificationStore {
   }
 
   @Transactional(propagation = Propagation.REQUIRES_NEW)
-  public void markReplayPublished(ReplayClaim claim, Instant now) {
+  public void markReplayPublished(
+      ReplayClaim claim, Instant now, RecoveryLeaseGuard recoveryLeaseGuard) {
+    recoveryLeaseGuard.requireCurrent();
     int updated =
         jdbcClient
             .sql(
@@ -354,7 +357,12 @@ public class JdbcNotificationStore {
 
   @Transactional(propagation = Propagation.REQUIRES_NEW)
   public void markReplayFailed(
-      ReplayClaim claim, String failureCode, String failureSummary, Instant now) {
+      ReplayClaim claim,
+      String failureCode,
+      String failureSummary,
+      Instant now,
+      RecoveryLeaseGuard recoveryLeaseGuard) {
+    recoveryLeaseGuard.requireCurrent();
     int updated =
         jdbcClient
             .sql(
@@ -385,10 +393,10 @@ public class JdbcNotificationStore {
             """
             INSERT INTO message_replay_audit (
                 replay_request_id, dead_letter_record_id, actor, reason, action,
-                correlation_id, failure_code, failure_summary, occurred_at
+                correlation_id, failure_code, failure_summary, occurred_at, identity_source
             ) VALUES (
                 :requestId, :recordId, :actor, :reason, :action,
-                :correlationId, :failureCode, :failureSummary, :now
+                :correlationId, :failureCode, :failureSummary, :now, 'TRUSTED_WORKLOAD'
             )
             """)
         .param("requestId", claim.replayRequestId())

@@ -1,7 +1,7 @@
 # LedgerFlow MVP Domain Model
 
-- Status: Partially implemented
-- Last updated: 2026-07-15
+- Status: Implemented through secured operator recovery
+- Last updated: 2026-07-17
 
 ## Bounded modules
 
@@ -12,7 +12,7 @@
 | `ledger` | Accounts, ledger transactions, entries, balance invariant | Post a payment-capture transaction idempotently |
 | `messaging` | Transactional outbox and Kafka publisher | Append an event in the caller's transaction |
 | `notifications` | Kafka inbox and notification records | Idempotent payment-captured event handling |
-| `operations` | Dependency health/startup validation, graceful drain, profile-gated fault hooks; future failure projection/retry coordination | Current bounded operational controls; future authorized inspection/retry commands |
+| `operations` | Dependency health/startup validation, graceful drain, profile-gated fault hooks, sanitized failure projection, retry acceptance/audit, and leased dispatch | Operational controls and authorized recovery coordination; domain handlers remain in owning modules |
 
 The modules are packages in one deployable application. Cross-module calls use each module's `api` package. `orders` coordinates through narrow `payments.api` and `ledger.api` interfaces. Capture accounting deliberately spans `ledger.api`, `payments.api`, and `messaging.api` inside one local PostgreSQL transaction; application code in none of those modules queries another module's tables directly. ADR 0005 permits the ledger validator's narrow payment-state/money read, and ADR 0013 permits V008's deferred terminal-workflow validator across order, payment, capture-journal, and outbox identity. Provider and Kafka I/O never occur in either transaction.
 
@@ -66,7 +66,7 @@ stateDiagram-v2
 | `PAYMENT_PROCESSING` | Provider decline | `PAYMENT_DECLINED` | Payment is a decline state; no ledger or outbox |
 | `PAYMENT_PROCESSING` | Retryable outcome exhausted | `PAYMENT_RETRY_PENDING` | Failed operation is open; no ledger or outbox |
 | `PAYMENT_PROCESSING` | Non-retryable internal failure | `FAILED` | Failure is recorded and requires investigation |
-| `PAYMENT_RETRY_PENDING` | Accepted future operator retry | `PAYMENT_PROCESSING` | Requires the separately approved secured operator recovery milestone |
+| `PAYMENT_RETRY_PENDING` | Accepted operator retry | `PAYMENT_PROCESSING` | Leased recovery resumes the persisted provider stage and original operation ID |
 | `PAYMENT_RETRY_PENDING` | Reconciliation proves non-retryable | `FAILED` | Safe failure evidence is recorded; no financial/event effect |
 
 Terminal order states are immutable in the MVP. Refunds and corrective order transitions require a future design.
@@ -172,7 +172,7 @@ stateDiagram-v2
     IN_FLIGHT --> PUBLISHED: broker acknowledges and row is marked
     IN_FLIGHT --> PENDING: retryable failure or expired lease
     IN_FLIGHT --> FAILED: attempt limit exhausted
-    FAILED --> PENDING: separately authorized future outbox retry
+    FAILED --> PENDING: authorized outbox retry
     PUBLISHED --> [*]
 ```
 
@@ -191,9 +191,13 @@ The `PaymentCaptured` handler validates the envelope, type, and version, compute
 
 Transient failures receive one initial processing attempt plus three bounded pause-based retries. The listener continues polling while the affected work is paused, and configured concurrency, poll count, and fetch bytes bound intake. Invalid type/version/integrity input goes directly to DLT; repeatedly failing transient input reaches it after that retry budget. The source record is acknowledged only after the DLT publication is acknowledged. Replaying the same valid event ID remains safe because of the inbox hash and notification unique constraints.
 
-The DLT catalog stores bounded, sanitized source coordinates, hash/size, safe headers, and a validated replay envelope/key only when parsing succeeds. A replayable record can be claimed by the narrow command-line tool with an actor and reason; the tool generates new transport correlation/trace context. Replay preserves the event envelope and key and appends immutable replay audit rows. It never edits the inbox, notification, outbox, or Kafka offsets directly.
+The DLT catalog stores bounded, sanitized source coordinates, hash/size, safe headers, and a
+validated replay envelope/key only when parsing succeeds. A replayable record can be claimed only
+by the leased secured-recovery worker after an authenticated, audited command. Replay preserves
+the event envelope and key, creates new transport correlation/trace context, and appends immutable
+audit evidence. It never edits the inbox, notification, outbox, or Kafka offsets directly.
 
-## Planned failed-operation lifecycle
+## Failed-operation lifecycle
 
 ```mermaid
 stateDiagram-v2
@@ -205,7 +209,12 @@ stateDiagram-v2
     RESOLVED --> [*]
 ```
 
-This general operator model is not implemented. A future HTTP operations workflow may use the lifecycle above. The current Kafka milestone provides only a narrow audited CLI for replayable DLT catalog rows; it does not create `failed_operations`, expose operator endpoints, or provide outbox/payment retry commands.
+The operator API exposes sanitized projections of payment, outbox, and DLT source rows rather than
+copying raw failures into a new table. An accepted retry creates one durable command and immutable
+audit evidence. Workers claim commands using an expiring owner/token/version lease, dispatch to a
+narrow handler in the owning module, and reject stale execution or completion. The
+token-authenticated DLT script is only an API client; it cannot assert actor identity or alter
+event content.
 
 ## Transaction boundaries and crash recovery
 
@@ -218,7 +227,7 @@ This general operator model is not implemented. A future HTTP operations workflo
 | Complete order/payment | Payment `CAPTURED`, order terminal state, original HTTP result | Row locks/guards and deferred V008 checks require the existing journal/outbox; replay returns the same result |
 | Publish outbox | Lease claim, then broker send, then owner-guarded published marker | Duplicate publication is possible after acknowledgement; lease recovery republishes the same event ID |
 | Consume event | Inbox and notification | Same ID/hash redelivery is a successful no-op; different content is an integrity failure |
-| Accept operator retry (future) | Retry request, operation status, audit | Duplicate command does not schedule duplicate work |
+| Accept operator retry | Recovery state, retry command, audit, optional approval use | Duplicate command does not schedule duplicate work; one active command per operation |
 
 Provider capture and PostgreSQL cannot be one transaction. If capture succeeds but local persistence fails, recovery waits until the in-flight deadline, looks up the stable capture operation key, and restores `CAPTURE_CONFIRMED`; only lookup `NOT_FOUND` permits a same-ID resend. Capture accounting then atomically creates or verifies the journal, `CAPTURE_ACCOUNTED`, and outbox event. If the process stops after that commit, the next identical request verifies those identities and completes `CAPTURED`/`COMPLETED` without another provider, ledger, or logical event effect.
 

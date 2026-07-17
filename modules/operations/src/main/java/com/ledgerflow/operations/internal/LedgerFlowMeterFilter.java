@@ -32,8 +32,13 @@ final class LedgerFlowMeterFilter implements MeterFilter {
                   "captured",
                   "capture_declined",
                   "capture_retry_pending",
-                  "capture_unknown"),
-          "executor", Set.of("outbox", "notification_retry"),
+                  "capture_unknown",
+                  "pending",
+                  "in_progress",
+                  "waiting",
+                  "completed"),
+          "executor", Set.of("outbox", "notification_retry", "operator_recovery"),
+          "operation", Set.of("payment", "outbox", "dead_letter"),
           "outcome",
               Set.of(
                   "created",
@@ -69,7 +74,16 @@ final class LedgerFlowMeterFilter implements MeterFilter {
                   "ready",
                   "not_ready",
                   "timed_out",
-                  "interrupted"));
+                  "interrupted",
+                  "accepted",
+                  "idempotent_replay",
+                  "already_active",
+                  "cooldown",
+                  "limit",
+                  "waiting",
+                  "approved",
+                  "used",
+                  "rejected"));
 
   @Override
   public Meter.Id map(Meter.Id id) {

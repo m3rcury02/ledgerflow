@@ -1,7 +1,7 @@
 # LedgerFlow Deployment Security Boundaries
 
 - Status: Required production deployment contract
-- Last updated: 2026-07-15
+- Last updated: 2026-07-17
 
 ## Scope
 
@@ -13,7 +13,7 @@ LedgerFlow has two listeners:
 
 | Listener | Default | Intended callers | Public routing |
 | --- | ---: | --- | --- |
-| Application | `8080` | Customer/operator API ingress | Allowed only through the authenticated API ingress |
+| Application | `8080` | Customer API ingress and restricted operator ingress | Allowed only through authenticated ingress; operator paths must not be exposed by public customer routing |
 | Management | `8081` | Kubelet or equivalent health probes and protected monitoring | Prohibited |
 
 `LEDGERFLOW_MANAGEMENT_PORT` configures the management listener. It must differ from `server.port` outside tests. The local dependency stack already uses host port `8081` for Keycloak, so local application examples use `8082`; this local override does not change the production default or trust model.
@@ -35,6 +35,9 @@ Production review must verify all of the following:
 5. Prometheus uses the management address, not the application address. Scrape transport and authentication between the monitoring plane and workload follow platform policy.
 6. Deployment validation fails if both listeners are mapped through one public service or if the management listener is bound to the same port as the application listener.
 7. Network controls are tested from both an allowed monitoring source and a denied untrusted workload before production traffic is enabled.
+8. `/api/v1/operator/**` is routed only from the approved workforce/VPN or trusted workload ingress;
+   customer-facing ingress does not publish that path. JWT authorization remains mandatory even
+   on the restricted network.
 
 The following Kubernetes `NetworkPolicy` is illustrative. Namespace labels, ingress-controller selectors, node-originated probe behavior, and CNI enforcement differ by platform and must be verified rather than copied blindly.
 
@@ -92,7 +95,7 @@ If one deployable process temporarily shares a Kafka principal, its ACL is the u
 
 ## Secrets and production prerequisites
 
-Credentials, trust material, and tokens come from environment-variable injection or an approved secret store, never committed files. Production also requires TLS policy, separate Flyway-owner and non-owner runtime database roles, backup/restore testing, retention decisions, broker/database hardening, and the unresolved quota/idempotency-retention and authenticated replay controls tracked in the MVP ExecPlan.
+Credentials, trust material, and tokens come from environment-variable injection or an approved secret store, never committed files. Production also requires TLS policy, separate Flyway-owner and non-owner runtime database roles, backup/restore testing, retention decisions, broker/database hardening, and the unresolved quota/idempotency-retention control tracked in the MVP ExecPlan.
 
 The Milestone 6 payment adapter is a deterministic demonstration provider, not a production payment integration. If it is enabled, `LEDGERFLOW_PAYMENT_PROVIDER_BASE_URL` must name an allowlisted trusted origin and egress policy must permit only that origin. A production provider requires an approved authentication, TLS, credential-rotation, reconciliation, and data-handling design. Do not place the opaque payment-method reference, idempotency key, bearer token, provider body, or payment credentials in logs or traces.
 

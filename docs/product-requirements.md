@@ -1,7 +1,7 @@
 # LedgerFlow MVP Product Requirements
 
-- Status: Partially implemented
-- Last updated: 2026-07-15
+- Status: MVP workflow, observability, and secured operator recovery implemented
+- Last updated: 2026-07-17
 - Related plan: `docs/plans/mvp-execplan.md`
 
 ## Purpose
@@ -31,15 +31,16 @@ outside PostgreSQL transactions. Capture accounting atomically commits payment
 `CAPTURE_ACCOUNTED`, the journal, and outbox event; a following short local transaction finalizes
 payment `CAPTURED`, order `COMPLETED`, and the idempotency snapshot. Kafka publication and
 notification remain asynchronous and at least once. Transport and semantic idempotency still
-produce one logical notification effect. Invalid DLT evidence and the narrow audited replay CLI are
-implemented. End-to-end tracing, bounded business/runtime metrics, structured correlated logs,
-provisioned dashboards, provisional SLOs, and alert runbooks are implemented; the secured operator
-HTTP workflow remains planned.
+produce one logical notification effect. Invalid DLT evidence and secured, audited recovery for
+payment, outbox, and replayable DLT operations are implemented. End-to-end tracing, bounded
+business/runtime metrics, structured correlated logs, provisioned dashboards, provisional SLOs,
+and alert runbooks are implemented.
 
 ## Actors
 
 - **API client** creates and reads its orders using an OAuth 2.0 bearer token.
-- **Operator (planned Milestone 7B)** inspects failed operations and requests controlled retries using a token with operator scopes.
+- **Operator** inspects sanitized failures and requests controlled retries using a token with separate read and retry scopes.
+- **Administrator** records separately authorized break-glass approval evidence after automatic retry limits are exhausted.
 - **Mock payment provider** exposes an external HTTP boundary for authorization, capture, lookup, latency, timeout, decline, and temporary-failure scenarios.
 - **Outbox publisher** relays committed domain events from PostgreSQL to Kafka.
 - **Notification consumer** consumes payment-captured events and creates notification records idempotently.
@@ -52,7 +53,7 @@ HTTP workflow remains planned.
 - Atomically account a provider-confirmed capture by committing payment `CAPTURE_ACCOUNTED`, balanced ledger entries, and an outbox event in one PostgreSQL transaction, then finalize `CAPTURED`/`COMPLETED` in a separate guarded local transaction.
 - Publish and consume with at-least-once delivery while preventing duplicate business effects.
 - Preserve correlation and distributed trace context across HTTP, asynchronous publication, Kafka retries, and consumption.
-- Preserve the identities and immutable evidence needed for a later sanitized, auditable operator recovery path without direct database or Kafka manipulation.
+- Recover supported failures through sanitized, idempotent, audited commands without direct database or Kafka manipulation.
 
 ## Non-goals
 
@@ -67,7 +68,7 @@ HTTP workflow remains planned.
 
 ## Target end-to-end behavior
 
-Steps 1–12 are implemented. Steps 1–9 form the synchronous public command and durable local result; steps 10–12 remain asynchronous. The general operator API in step 13 requires a later milestone.
+Steps 1–13 are implemented. Steps 1–9 form the synchronous public command and durable local result; steps 10–12 remain asynchronous.
 
 1. The client sends `POST /api/v1/orders` with a bearer token, `Idempotency-Key`, optional `X-Correlation-Id`, and a valid order request.
 2. LedgerFlow validates authentication, payload, supported currency, idempotency-key syntax, and request ownership before creating data.
@@ -81,7 +82,10 @@ Steps 1–12 are implemented. Steps 1–9 form the synchronous public command an
 10. The outbox publisher claims due rows with a lease, publishes to Kafka, waits for broker acknowledgement, and marks them published. A crash can cause duplicate publication but not event loss.
 11. The notification consumer inserts an inbox record and notification in one PostgreSQL transaction. An existing event ID and matching hash is a transport no-op. A new event ID for the same versioned capture effect records a semantic-duplicate inbox outcome without another notification; conflicting content is an integrity failure.
 12. A transient consumer failure receives three bounded pause-based retries after the initial attempt and is then sent to a dead-letter topic. Polling continues during the delay and intake is bounded. A non-retryable schema, version, or integrity failure goes there without transient retries. A dead-letter listener catalogs validated safe evidence; terminal invalid DLT input advances only after sanitized evidence using actual DLT coordinates is durable.
-13. The current narrow CLI can replay a validated catalog row with an actor, reason, and new transport correlation/trace while preserving the envelope and key. A secured operator inspection/retry HTTP workflow remains future work.
+13. The secured operator API lists sanitized failures and accepts idempotent, audited retries.
+    Payment recovery reconciles by the original provider operation ID, outbox recovery reuses the
+    logical event, and DLT recovery preserves the immutable event ID, key, and body. The CLI is a
+    token-authenticated client of this API and never accepts caller-asserted identity.
 
 ## Functional requirements
 
@@ -103,7 +107,7 @@ Steps 1–12 are implemented. Steps 1–9 form the synchronous public command an
 - **FR-011:** The local/test mock provider supports success, bounded latency, timeout after confirmed processing, timeout with lookup `NOT_FOUND` and safe same-ID resend, authorization/capture decline, one-shot temporary failure, and temporary failure that exhausts the automatic retry budget.
 - **FR-012:** Provider requests carry stable authorization or capture operation keys. A timeout or unknown outcome is reconciled through provider lookup before any resend.
 - **FR-013:** Declines are terminal and are not automatically retried.
-- **FR-014:** Temporary failures receive at most one automatic retry after the initial attempt. Exhaustion creates an authorization/capture retry-pending state; the general failed-operation projection remains Milestone 7B work. An unresolved timeout uses the corresponding explicit unknown state.
+- **FR-014:** Temporary failures receive at most one automatic retry after the initial attempt. Exhaustion creates an authorization/capture retry-pending state visible through the sanitized operations API. An unresolved timeout uses the corresponding explicit unknown state.
 - **FR-015:** Every payment transition is checked against the state machine and guarded by optimistic concurrency. Invalid or stale transitions make no database change.
 - **FR-016:** The application never holds a database transaction open across a provider HTTP call.
 
@@ -127,7 +131,7 @@ Steps 1–12 are implemented. Steps 1–9 form the synchronous public command an
 ### Correlation, tracing, and recovery
 
 - **FR-028:** Every HTTP request, provider attempt, outbox attempt, Kafka record, consumer attempt, and operator retry has a valid correlation ID.
-- **FR-029:** OpenTelemetry context propagates over inbound and outbound HTTP and through Kafka headers. Durable asynchronous work restores a trustworthy stored causal parent; independent future recovery starts a new trace and links to the stored origin rather than asserting false parentage.
+- **FR-029:** OpenTelemetry context propagates over inbound and outbound HTTP and through Kafka headers. Durable asynchronous work restores a trustworthy stored causal parent; independent operator recovery starts a new trace and links to the accepted command and stored origin rather than asserting false parentage.
 - **FR-030:** Structured logs include safe correlation and trace identifiers plus stable event, action, outcome, and error codes. They omit customer/resource identifiers unless an approved diagnostic need and bounded retention justify them.
 - **FR-031:** Operators can list and inspect payment, outbox, and notification-consumption failures with an explicit retryable flag, without receiving stack traces, tokens, raw provider bodies, or secrets.
 - **FR-032:** `POST /api/v1/operator/operations/{operationId}/retries` requires operator retry scope, an idempotency key, and an audit reason.
@@ -154,7 +158,7 @@ Steps 1–12 are implemented. Steps 1–9 form the synchronous public command an
 
 ## Delivered milestone acceptance criteria
 
-The `AC-M3` criteria record the historical Create Order slice, `AC-M5B` records messaging, `AC-M5C` records security hardening, `AC-M5D` records abuse-case remediation, `AC-M6` records the complete public workflow, and `AC-M7A` records end-to-end observability. Historical scope exclusions are not claims that those capabilities are still absent.
+The `AC-M3` criteria record the historical Create Order slice, `AC-M5B` records messaging, `AC-M5C` records security hardening, `AC-M5D` records abuse-case remediation, `AC-M6` records the complete public workflow, `AC-M7A` records end-to-end observability, and `AC-M7B` records secured operator recovery. Historical scope exclusions are not claims that those capabilities are still absent.
 
 - **AC-M3-001:** A valid scoped request returns `201`, a UUIDv7 `CREATED` order, positive INR minor units, UTC timestamps, `Location`, and a correlation ID.
 - **AC-M3-002:** The same subject, key, and canonical payload returns the byte-equivalent original body and location with `Idempotency-Replayed: true`, without another order.
@@ -203,6 +207,13 @@ The `AC-M3` criteria record the historical Create Order slice, `AC-M5B` records 
 - **AC-M7A-005:** Every version-controlled alert uses a real exported metric, bounded time window/threshold, severity/service labels, and a matching runbook. Provisional SLOs explicitly separate declines from failures and local evidence from production guarantees.
 - **AC-M7A-006:** In-memory, HTTP/Kafka propagation, redaction, cardinality, configuration, and failing-exporter tests pass; telemetry backend failure leaves the completed order, balanced journal, and durable outbox unchanged.
 
+- **AC-M7B-001:** Read and retry routes enforce distinct scopes plus operator/admin roles; break-glass approval additionally requires its dedicated scope and admin role, while customer tokens cannot cross the boundary.
+- **AC-M7B-002:** Lists, details, attempts, and status resources are bounded and sanitized; seeded secrets, customer identity, provider payloads, poison bytes, key hashes, lease tokens, and audit reasons are absent.
+- **AC-M7B-003:** Retry and approval writes are idempotent, one active command exists per operation, and immutable JWT-derived actor/audit evidence records every privileged action.
+- **AC-M7B-004:** Multiple workers use expiring owner/token/version leases; safe takeover succeeds and stale workers cannot execute or complete work.
+- **AC-M7B-005:** Payment, outbox, and DLT handlers retain their original provider/event identities and existing financial, transport, and semantic idempotency protections.
+- **AC-M7B-006:** Cooldown and automatic retry caps are transactional; separate immutable admin approval is required and consumed once for bounded break-glass execution.
+
 ## Full-flow acceptance criteria
 
 Milestones 6 and 7A deliver AC-001 through AC-011, AC-013, AC-014, and AC-016. Operator AC-012 remains Milestone 7B, and AC-015 is rerun for every milestone.
@@ -217,7 +228,7 @@ Milestones 6 and 7A deliver AC-001 through AC-011, AC-013, AC-014, and AC-016. O
 - **AC-008:** Direct attempts to commit unbalanced, incomplete, non-positive, or mixed-currency ledger rows fail at the database boundary.
 - **AC-009:** Fault injection at every capture-accounting statement proves payment `CAPTURE_ACCOUNTED`, ledger entries, and outbox event are all committed or all rolled back. Later order/payment finalization must not recreate those effects.
 - **AC-010:** A publisher crash after Kafka acknowledgement but before marking the outbox row can produce a duplicate event, and event-ID plus versioned semantic-effect idempotency still creates one notification.
-- **AC-011:** A transient consumer failure receives one initial attempt plus exactly three bounded pause-based retries before DLT; polling continues with bounded intake, and non-retryable schema, version, or integrity failures go to DLT without transient retries. The catalog is inspectable now; operator HTTP visibility remains future work.
+- **AC-011:** A transient consumer failure receives one initial attempt plus exactly three bounded pause-based retries before DLT; polling continues with bounded intake, and non-retryable schema, version, or integrity failures go to DLT without transient retries. The catalog is visible through the sanitized operator API.
 - **AC-012:** Repeating an operator retry command does not schedule duplicate work; a successful retry resolves the failed operation and preserves the original business/event identifier.
 - **AC-013:** Trace tests show connected HTTP client/server spans, provider spans, Kafka producer spans, and Kafka consumer processing spans. Correlation IDs appear in responses, event headers, and structured logs.
 - **AC-014:** Customer tokens cannot read another subject's order, and customer tokens cannot call operator endpoints.

@@ -2,7 +2,10 @@
 
 ## Status
 
-This document defines the architectural constraints for LedgerFlow. Milestones 1–5D established the verified modular monolith, local infrastructure, order/payment/ledger/outbox/Kafka/notification slices, resilience/security controls, management isolation, and semantic/DLT abuse controls. Milestone 6 connects them through the public order workflow and final `CAPTURED`/`COMPLETED` states. End-to-end observability and secured operator HTTP recovery remain later milestones.
+This document defines the architectural constraints for LedgerFlow. The implemented MVP includes
+the verified modular monolith, local infrastructure, complete public financial workflow,
+resilience/security controls, management isolation, semantic/DLT abuse controls, end-to-end
+observability, and secured operator recovery.
 
 ## Architectural goals
 
@@ -71,7 +74,13 @@ The directed feature graph is `orders -> ledger.api`, `orders -> payments.api`, 
 
 The `messaging.api.OutboxEventAppender` is deliberately narrow: it appends one typed payment-captured event only when a caller already owns a PostgreSQL transaction. The messaging module owns canonical envelope serialization, outbox persistence, leases, retry timing, Kafka publication, and W3C trace-header injection. The notifications module owns validation, inbox deduplication, notification persistence, bounded consumer retry, the DLT catalog, and audited replay. Neither consumer nor replay path may call ledger or mutate financial state.
 
-The `operations.api` package exposes only in-flight work registration and allowlisted fault hooks. Provider, publisher, and consumer adapters depend on that API so shutdown can stop admission and drain known work within a bounded phase. Operations internals own dependency probes, readiness contribution, startup validation, and the production fault-injection guard. They do not own business recovery or bypass feature APIs.
+The `operations.api` package exposes in-flight work registration, allowlisted fault hooks, and a
+narrow typed recovery-handler contract. Provider, publisher, and consumer adapters depend on the
+operational controls so shutdown can stop admission and drain known work within a bounded phase.
+Operations internals own dependency probes, readiness, startup validation, sanitized recovery
+projection/acceptance/audit, and leased dispatch. Domain recovery remains in handlers owned by
+orders, messaging, and notifications; operations never accepts replacement provider/event data or
+bypasses their idempotency rules.
 
 ADR 0004 accepts one narrow database-boundary exception: the payment-owned `V002` constraint trigger reads only an order's ID, amount, and currency to reject a payment whose copied money differs from its referenced order. Application code still cannot query another module's tables, and a PostgreSQL integration test verifies this invariant. This exception does not authorize general cross-module SQL.
 
@@ -134,7 +143,14 @@ The notification listener validates the exact envelope, key, type, version, mone
 
 A separate database-unique semantic-effect identity prevents re-enveloping from repeating a business side effect. Payment-captured notification identity version 1 uses the immutable capture ledger transaction ID, not only payment ID or event ID. A new event ID with the same semantic identity and compared order/payment/causation/money/capture-time content records a `SEMANTIC_DUPLICATE` inbox outcome without a second notification. Conflicting content for that identity rolls back the new inbox row and becomes a non-replayable integrity failure. Concurrent envelopes converge on the same unique constraint.
 
-The DLT listener catalogs validated, bounded safe evidence in `dead_letter_records`. Missing, repeated, malformed, or unsupported original-routing headers and empty, oversized, or invalid event data instead produce one immutable `terminal_dlt_records` row keyed by the actual DLT topic, partition, and offset. It contains bounded hashes, sizes, allowlisted headers, and a stable code, never raw poison bytes or invented original coordinates. The DLT offset advances only after this evidence commits; a database failure retains the record for redelivery. The narrow command-line replay accepts only catalog rows already marked replayable. There is no general Kafka resend command and no operator HTTP workflow in this milestone.
+The DLT listener catalogs validated, bounded safe evidence in `dead_letter_records`. Missing,
+repeated, malformed, or unsupported original-routing headers and empty, oversized, or invalid event
+data instead produce one immutable `terminal_dlt_records` row keyed by the actual DLT topic,
+partition, and offset. It contains bounded hashes, sizes, allowlisted headers, and a stable code,
+never raw poison bytes or invented original coordinates. The DLT offset advances only after this
+evidence commits; a database failure retains the record for redelivery. Secured recovery accepts
+only catalog rows already marked replayable and preserves their stored event identity, key, and
+canonical body. There is no general Kafka resend or direct mutation path.
 
 These boundaries provide atomic PostgreSQL business data plus outbox, at-least-once publication, and at-least-once consumption. Transport idempotency and semantic-effect idempotency prevent duplicate notification rows for the covered capture effect, including re-enveloping, but duplicate delivery remains observable and other future effects need their own identities. LedgerFlow does not claim end-to-end exactly-once delivery.
 
@@ -181,8 +197,8 @@ LedgerFlow is a stateless OAuth 2.0/OIDC JWT resource server; it never issues to
 cookie authentication. Production JWT trust requires the configured exact issuer and
 `ledgerflow-api` audience, RS256 signatures, valid expiry/not-before claims, a route-specific
 scope, and an allowlisted Keycloak realm role. Active order routes require `customer` or `admin`;
-future operator paths are denied unless the caller has `operator` or `admin` plus the appropriate
-read/retry scope. No operator HTTP behavior is implemented merely by reserving that path.
+operator reads require `operator` or `admin` plus the read scope; retry writes require the retry
+scope; and break-glass approval requires its separate scope plus `admin`.
 
 Object authorization belongs in the owning query boundary. Order reads constrain both order ID
 and JWT subject and return the same `404` for absent and differently owned resources. HTTP route
@@ -199,7 +215,7 @@ responses, with HSTS emitted only for HTTPS.
 
 Production logs are ECS JSON records with stable event, action, outcome, and error codes rather than free-form concatenated input. Every inbound request accepts a validated `X-Correlation-Id` or creates one, returns it in the response, and places only the safe value in log context. Invalid correlation and W3C headers are discarded and replaced; they are never echoed or parsed into telemetry labels.
 
-Spring HTTP server observations consume and produce W3C trace context. The provider adapter creates client spans and injects the current context. The order coordinator, capture-accounting boundary, outbox append, and notification persistence add bounded spans around the PostgreSQL work without recording SQL parameters. Outbox rows persist the originating `traceparent`/`tracestate`; the publisher restores that parent, creates a Kafka producer span, and Kafka listener observations extract it before notification work. These implemented boundaries retain causal continuity, so direct parentage is accurate. Independent future operator recovery cannot claim that continuity and must use a span link to the stored origin instead.
+Spring HTTP server observations consume and produce W3C trace context. The provider adapter creates client spans and injects the current context. The order coordinator, capture-accounting boundary, outbox append, and notification persistence add bounded spans around the PostgreSQL work without recording SQL parameters. Outbox rows persist the originating `traceparent`/`tracestate`; the publisher restores that parent, creates a Kafka producer span, and Kafka listener observations extract it before notification work. These implemented boundaries retain causal continuity, so direct parentage is accurate. Independent operator worker spans start new roots and link to the authenticated retry request and trustworthy stored origin rather than asserting false parentage.
 
 Micrometer publishes HTTP, JVM, thread, executor, HikariCP, Kafka-client, readiness/drain, and business metrics through Prometheus on the isolated management listener only. Every `ledgerflow.*` label key and value is code-allowlisted. IDs, subjects, coordinates, hashes, URLs containing identifiers, exception text, and personal/security values are forbidden labels. Outbox backlog uses a fixed-rate cached aggregate rather than a database query per scrape.
 

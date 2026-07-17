@@ -20,6 +20,7 @@ import tools.jackson.databind.ObjectMapper;
 final class ApiProtectionFilter extends OncePerRequestFilter {
 
   private static final String ORDER_COLLECTION_PATH = "/api/v1/orders";
+  private static final String OPERATOR_PREFIX = "/api/v1/operator/operations/";
 
   private final long maximumPayloadBytes;
   private final WriteRateLimiter writeRateLimiter;
@@ -39,7 +40,7 @@ final class ApiProtectionFilter extends OncePerRequestFilter {
 
   @Override
   protected boolean shouldNotFilter(HttpServletRequest request) {
-    return !isCreateOrder(request) && !isReadOrder(request);
+    return !isCreateOrder(request) && !isReadOrder(request) && !isOperatorWrite(request);
   }
 
   @Override
@@ -58,7 +59,7 @@ final class ApiProtectionFilter extends OncePerRequestFilter {
               request));
       return;
     }
-    if (!isCreateOrder(request)) {
+    if (!isCreateOrder(request) && !isOperatorWrite(request)) {
       filterChain.doFilter(request, response);
       return;
     }
@@ -117,6 +118,13 @@ final class ApiProtectionFilter extends OncePerRequestFilter {
     return HttpMethod.GET.matches(request.getMethod())
         && uri.startsWith(itemPrefix)
         && uri.indexOf('/', itemPrefix.length()) == -1;
+  }
+
+  private boolean isOperatorWrite(HttpServletRequest request) {
+    String uri = request.getRequestURI();
+    return HttpMethod.POST.matches(request.getMethod())
+        && uri.startsWith(OPERATOR_PREFIX)
+        && (uri.endsWith("/retries") || uri.endsWith("/break-glass-approvals"));
   }
 
   private String rateLimitKey(HttpServletRequest request) {

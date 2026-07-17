@@ -1,11 +1,15 @@
 # Public Workflow, Payment, Ledger, and Messaging Recovery Runbook
 
-- Status: Milestone 6 development runbook
-- Last updated: 2026-07-15
+- Status: MVP workflow and secured recovery runbook
+- Last updated: 2026-07-17
 
 ## Scope and current limitation
 
-This runbook covers the public create-order workflow, authorization/capture failures, crash recovery, capture accounting and finalization, outbox publication, transport and semantic notification idempotency, terminal malformed-DLT evidence, DLT inspection, management health, and narrow audited replay. The public API exposes order creation and owned-order reads; it does not expose payment mutation or operator recovery endpoints. The secured general operations API remains Milestone 7B work.
+This runbook covers the public create-order workflow, authorization/capture failures, crash
+recovery, capture accounting and finalization, outbox publication, transport and semantic
+notification idempotency, terminal malformed-DLT evidence, management health, and secured audited
+operator recovery. The public API exposes order creation and owned-order reads; operator routes
+expose sanitized inspection and constrained commands, never direct payment/database/Kafka mutation.
 
 In a deployed environment, support staff may perform the read-only inspection below and escalate with the payment ID and correlation ID. They must not invoke the test fixture, update payment rows, delete attempt history, or resend a provider request with a new request ID.
 
@@ -147,11 +151,21 @@ Only a row with `replayable = true` and eligible `OPEN` state may be replayed. C
 ```bash
 scripts/replay-dead-letter \
   '<dead-letter-uuid>' \
-  '<actor>' \
+  '<unique-idempotency-key>' \
   '<specific reason of at least 10 characters>'
 ```
 
-The script runs the application in non-web mode with Kafka listeners and the outbox publisher disabled. It claims the row with a lease, preserves the canonical envelope and order-ID Kafka key, removes old exception/delivery headers, generates a new replay request and transport correlation, injects a new W3C trace, waits for broker acknowledgement, and appends immutable `message_replay_audit` evidence. `REPLAYED` proves broker acknowledgement only; inbox deduplication may make consumption a successful no-op.
+Set `LEDGERFLOW_OPERATOR_ACCESS_TOKEN` to a short-lived token carrying the
+`ledgerflow.operations.retry` scope and the `operator` or `admin` role. The script calls the
+secured operator API; it never accepts a caller-asserted actor. The durable worker claims the row
+with owner/version guards, preserves the canonical envelope, event identity, and order-ID Kafka
+key, replaces retry-only delivery and trace metadata, waits for broker acknowledgement, and
+appends immutable audit evidence. `REPLAYED` proves broker acknowledgement only; inbox and
+semantic-effect deduplication may make consumption a successful no-op.
+
+Payment commands always look up the persisted provider operation ID first and make at most one
+same-ID call only after `NOT_FOUND`. An outbox command opens one new bounded publication cycle; if
+that cycle exhausts, the command fails and cooldown applies instead of resetting indefinitely.
 
 Relevant defaults and environment overrides are:
 
@@ -163,6 +177,7 @@ Relevant defaults and environment overrides are:
 | Notification / DLT consumers | `LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED` / `LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED` | `false` / `false` |
 | Consumer retry sequence | `LEDGERFLOW_NOTIFICATION_FIRST_RETRY_BACKOFF` / `LEDGERFLOW_NOTIFICATION_SECOND_RETRY_BACKOFF` / `LEDGERFLOW_NOTIFICATION_THIRD_RETRY_BACKOFF` | `1s` / `5s` / `30s` |
 | Broker acknowledgement / replay lease | `LEDGERFLOW_KAFKA_ACK_TIMEOUT` / `LEDGERFLOW_REPLAY_LEASE_DURATION` | `10s` / `30s` |
+| Recovery cooldown / automatic / break-glass caps | `LEDGERFLOW_RECOVERY_COOLDOWN` / `LEDGERFLOW_RECOVERY_MAX_AUTOMATIC_ATTEMPTS` / `LEDGERFLOW_RECOVERY_MAX_BREAK_GLASS_ATTEMPTS` | `5m` / `3` / `2` |
 | Consumer concurrency / poll records / shutdown | `LEDGERFLOW_NOTIFICATION_CONCURRENCY` / `LEDGERFLOW_NOTIFICATION_MAX_POLL_RECORDS` / `LEDGERFLOW_NOTIFICATION_SHUTDOWN_TIMEOUT` | `2` / `25` / `20s` |
 
 Never edit outbox/inbox/DLT/audit rows, change consumer offsets, copy malformed payloads out of Kafka, or use an ad hoc producer to resend a message. If a catalog row is non-replayable or the audited command rejects it, contain and escalate rather than bypassing the guard.
@@ -224,7 +239,7 @@ Order routes require a valid JWT with the configured exact issuer, `ledgerflow-a
 signature, valid time claims, the route scope, and `customer` or `admin` realm role. A safe `401`
 indicates missing or invalid authentication. A safe `403` indicates insufficient scope/role. Do not
 log, paste, or persist the bearer token while diagnosing either result. `operator` alone cannot read
-customer orders, and the reserved operator path does not mean an operator HTTP API exists.
+customer orders; operator inspection and retry require their distinct operation scopes.
 
 Create Order returns `413` for an oversized payload, `415` for unsupported media type or content
 encoding, and `429` with `Retry-After` when the per-instance subject window is exhausted. Relevant

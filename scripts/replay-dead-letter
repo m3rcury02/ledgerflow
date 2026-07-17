@@ -2,18 +2,31 @@
 set -euo pipefail
 
 if [[ $# -ne 3 ]]; then
-  echo "Usage: scripts/replay-dead-letter <dead-letter-uuid> <actor> <reason>" >&2
+  echo "Usage: scripts/replay-dead-letter <dead-letter-uuid> <idempotency-key> <reason>" >&2
   exit 2
 fi
 
-ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+: "${LEDGERFLOW_OPERATOR_ACCESS_TOKEN:?Set LEDGERFLOW_OPERATOR_ACCESS_TOKEN to an operator token}"
+token=${LEDGERFLOW_OPERATOR_ACCESS_TOKEN}
+unset LEDGERFLOW_OPERATOR_ACCESS_TOKEN
+if [[ ! ${token} =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]]; then
+  echo "LEDGERFLOW_OPERATOR_ACCESS_TOKEN must be a compact signed JWT" >&2
+  exit 2
+fi
 
-export LEDGERFLOW_REPLAY_COMMAND_ENABLED=true
-export LEDGERFLOW_REPLAY_DEAD_LETTER_ID=$1
-export LEDGERFLOW_REPLAY_ACTOR=$2
-export LEDGERFLOW_REPLAY_REASON=$3
+base_url=${LEDGERFLOW_API_BASE_URL:-http://localhost:8080}
+record_id=$1
+idempotency_key=$2
+reason=$3
+body=$(jq -cn --arg reason "$reason" '{reason: $reason}')
+curl_config=$(printf 'header = "Authorization: Bearer %s"\nheader = "Idempotency-Key: %s"\n' \
+  "$token" "$idempotency_key")
+exec 3<<<"$curl_config"
+unset token idempotency_key curl_config
 
-exec "$ROOT_DIR/gradlew" \
-  --no-daemon \
-  :application:bootRun \
-  --args='--spring.main.web-application-type=none --spring.kafka.listener.auto-startup=false --ledgerflow.notifications.enabled=true --ledgerflow.notifications.dlt-enabled=false --ledgerflow.messaging.publisher-enabled=false'
+exec curl --fail-with-body --silent --show-error \
+  --config /dev/fd/3 \
+  --request POST \
+  --url "${base_url}/api/v1/operator/operations/dead-letter_${record_id}/retries" \
+  --header 'Content-Type: application/json' \
+  --data-binary @- <<<"$body"

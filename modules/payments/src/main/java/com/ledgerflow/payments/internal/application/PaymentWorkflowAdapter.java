@@ -77,8 +77,18 @@ public class PaymentWorkflowAdapter implements PaymentWorkflow {
   }
 
   @Override
+  public PaymentView recover(UUID paymentId, String correlationId) {
+    return view(workflow().recover(paymentId, correlationId));
+  }
+
+  @Override
   public Optional<PaymentView> findByOrderId(UUID orderId) {
     return paymentStore.findByOrderId(orderId).map(this::view);
+  }
+
+  @Override
+  public Optional<PaymentView> find(UUID paymentId) {
+    return paymentStore.find(paymentId).map(this::view);
   }
 
   @Override

@@ -2,6 +2,7 @@ package com.ledgerflow.messaging.internal.persistence;
 
 import com.ledgerflow.messaging.api.PaymentCapturedEventV1;
 import com.ledgerflow.messaging.internal.application.OutboxIntegrityException;
+import com.ledgerflow.operations.api.RecoveryLeaseGuard;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
@@ -219,6 +220,34 @@ public class JdbcOutboxStore {
             """)
         .param("eventId", eventId)
         .query(this::mapRecord)
+        .optional();
+  }
+
+  @Transactional(propagation = Propagation.REQUIRES_NEW)
+  public boolean resetFailedForOperator(
+      UUID eventId, Instant now, RecoveryLeaseGuard recoveryLeaseGuard) {
+    recoveryLeaseGuard.requireCurrent();
+    return jdbcClient
+            .sql(
+                """
+                UPDATE outbox_events
+                SET status = 'PENDING', available_at = :now,
+                    lease_owner = NULL, lease_until = NULL,
+                    cycle_attempt_count = 0,
+                    last_failure_code = NULL, last_failed_at = NULL
+                WHERE event_id = :eventId AND status = 'FAILED'
+                """)
+            .param("eventId", eventId)
+            .param("now", databaseTimestamp(now))
+            .update()
+        == 1;
+  }
+
+  public Optional<String> status(UUID eventId) {
+    return jdbcClient
+        .sql("SELECT status FROM outbox_events WHERE event_id = :eventId")
+        .param("eventId", eventId)
+        .query(String.class)
         .optional();
   }
 

@@ -1,13 +1,13 @@
 package com.ledgerflow.notifications.internal.kafka;
 
 import com.ledgerflow.messaging.api.EventEnvelopeCodec;
-import com.ledgerflow.notifications.api.DeadLetterReplay;
 import com.ledgerflow.notifications.internal.application.DeadLetterReplayService;
 import com.ledgerflow.notifications.internal.application.NotificationIntegrityException;
 import com.ledgerflow.notifications.internal.application.NotificationValidationException;
 import com.ledgerflow.notifications.internal.application.NotificationsProperties;
 import com.ledgerflow.notifications.internal.persistence.JdbcNotificationStore;
 import com.ledgerflow.operations.api.FaultInjection;
+import com.ledgerflow.operations.api.OperationRecoveryHandler;
 import com.ledgerflow.operations.api.WorkTracker;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.opentelemetry.api.GlobalOpenTelemetry;
@@ -83,7 +83,7 @@ public class NotificationsConfiguration {
   }
 
   @Bean
-  DeadLetterReplay deadLetterReplayService(
+  OperationRecoveryHandler deadLetterReplayService(
       JdbcNotificationStore store,
       NotificationEventValidator validator,
       KafkaTemplate<String, String> kafkaTemplate,

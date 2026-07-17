@@ -5,16 +5,18 @@
 - Status: In Progress
 - Owner: Codex
 - Created: 2026-07-11
-- Last updated: 2026-07-15
+- Last updated: 2026-07-17
 - Approved by: LedgerFlow maintainer
 - Approval date: 2026-07-13
-- Current milestone: None; Milestone 7A is `Complete` and Milestone 7B remains `Proposed`
+- Current milestone: None (Milestone 7B `Complete`; Milestone 8 `Proposed`)
 - Milestone 5D approved by: LedgerFlow maintainer
 - Milestone 5D approval date: 2026-07-15
 - Milestone 6 approved by: LedgerFlow maintainer
 - Milestone 6 approval date: 2026-07-15
 - Milestone 7A approved by: LedgerFlow maintainer
 - Milestone 7A approval date: 2026-07-15
+- Milestone 7B approved by: LedgerFlow maintainer
+- Milestone 7B approval date: 2026-07-17
 - Canonical plan path: `docs/plans/mvp-execplan.md` by explicit maintainer request
 
 ## Purpose and outcome
@@ -40,7 +42,7 @@ The normative requirements and designs are:
 - `docs/api-design.md`
 - `docs/data-model.md`
 - `docs/threat-model.md`
-- accepted decisions in ADRs 0003 through 0007 and 0009 through 0013, plus proposed ADRs 0002 and 0008, under `docs/adr`
+- accepted decisions in ADRs 0003 through 0013, plus proposed ADR 0002, under `docs/adr`
 
 ## Current state
 
@@ -51,13 +53,13 @@ The repository contains the verified foundation and completed Create Order, paym
 - `settings.gradle.kts`, the root build, and the Gradle 9.6.1 Wrapper define one deployable `application` project and six feature-library projects under `modules`.
 - `application/src/main/java/com/ledgerflow/LedgerFlowApplication.java` is the Spring Boot 4.1 entry point; `modules/orders`, `modules/payments`, and `modules/ledger` contain implemented business behavior.
 - `application/src/main/openapi/ledgerflow.yaml` defines the authenticated complete-workflow create/read order contracts and RFC 9457-style problems.
-- Flyway V001 through V008 create the implemented order, HTTP-idempotency, payment/attempt, ledger, outbox, notification/DLT, semantic-effect, terminal-evidence, and public-finalization schemas.
+- Flyway V001 through V009 create the implemented order, HTTP-idempotency, payment/attempt, ledger, outbox, notification/DLT, semantic-effect, terminal-evidence, public-finalization, and secured-recovery schemas.
 - `application/src/integrationTest` proves context loading, Flyway startup/upgrades, repository constraints, HTTP idempotency/authorization, provider recovery, payment/workflow concurrency, ledger/outbox atomicity, and Kafka/notification idempotency against PostgreSQL and Kafka Testcontainers.
 - `application/src/architectureTest` verifies exactly six Spring Modulith modules and complementary ArchUnit package rules.
 - `compose.yaml`, `.env.example`, `infra`, and `scripts/dev-*` provide the pinned nine-service local environment, safe placeholder defaults, provisioning, and lifecycle commands.
 - `build.gradle.kts` provides the stable formatting, static-analysis, unit, integration, architecture, OpenAPI, Compose, documentation, and aggregate `verify` tasks.
 - `docs/architecture.md`, `docs/development-workflow.md`, `README.md`, and this plan record the approved bootstrap choices and developer commands.
-- ADR 0001 establishes the ADR process; accepted ADRs 0003 through 0007 and 0009 through 0013 record the implemented business and operational boundaries. ADRs 0002 and 0008 remain proposed.
+- ADR 0001 establishes the ADR process; accepted ADRs 0003 through 0013 record the implemented business and operational boundaries. ADR 0002 remains proposed.
 
 The maintainer's 2026-07-13 transactional-outbox and Kafka request approves the revised Milestone 5B below and accepts the outbox/Kafka decision in ADR 0006. It deliberately excludes public payment/order/operator endpoints and final order-state orchestration. ADR 0007 is accepted only for the Kafka propagation implemented by this milestone; operator recovery tracing remains proposed.
 
@@ -178,7 +180,7 @@ Secrets come only from environment/secret injection. Local/test defaults contain
 
 Only the current milestone is approved or in progress. Later milestones remain `Proposed`; completing a milestone does not approve the next.
 
-The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, and 7A (`Complete`); Milestone 7B (`Proposed`); and Milestone 8 (`Proposed`). R3 and R4 are separately proposed follow-ups, not inserted or implied as approved milestones in that sequence.
+The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, 7A, and 7B (`Complete`); and Milestone 8 (`Proposed`). R4 is complete within Milestone 7B; R3 remains a separately proposed follow-up.
 
 ### Milestone 1 — Scaffold the verified repository and application
 
@@ -468,7 +470,7 @@ The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, and 7A (`Comple
 ### Milestone 7A — Add end-to-end observability
 
 - Status: Complete
-- Approval gate: Satisfied. Milestones 5D and 6 are Complete, and the maintainer explicitly approved Milestone 7A on 2026-07-15. Milestone 7B remains Proposed.
+- Approval gate: Satisfied. Milestones 5D and 6 are Complete, and the maintainer explicitly approved Milestone 7A on 2026-07-15. Milestone 7B was still Proposed at that approval and was approved separately on 2026-07-17.
 - Intended outcome: Operators can follow one complete order journey from inbound HTTP through the provider, PostgreSQL business transaction, ledger, outbox, Kafka, and notification worker using correlated traces, metrics, and structured logs without exposing tokens or personal data.
 - Implementation work:
   - Configure bounded OpenTelemetry trace/log export and W3C-only `traceparent`/`tracestate` propagation. Instrument HTTP server, provider HTTP client, appropriately scoped PostgreSQL work, outbox append/publish, Kafka producer/consumer, and notification persistence. Persist only valid outbox context; use trustworthy causal parentage and reserve span links for independent work that cannot claim direct continuity.
@@ -501,8 +503,8 @@ The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, and 7A (`Comple
 
 ### Milestone 7B — Add secured operator recovery
 
-- Status: Proposed
-- Approval gate: Authenticated/bounded replay follow-up R4 must either be completed separately or explicitly incorporated into an approved revision of 7B. Approval of 5D or 7A does not approve operator recovery.
+- Status: Complete
+- Approval gate: Satisfied. The maintainer explicitly approved Milestone 7B on 2026-07-17 and incorporated authenticated/bounded replay follow-up R4, including cooldown, automatic-attempt limits, separate break-glass approval, and immutable audit. R3 remains Proposed and out of scope.
 - Intended outcome: Authorized operators can inspect and retry payment, outbox, and DLT failures through distinct permissions, server-derived identity, bounded commands, and immutable audit evidence.
 - Implementation work:
   - Complete operator OpenAPI schemas, separate read/retry scopes, pagination, safe projections, and internal-ingress guidance.
@@ -511,10 +513,13 @@ The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, and 7A (`Comple
   - Derive actor identity from authenticated credentials, enforce cooldown/attempt limits and documented break-glass approval, and keep inspection permission distinct from replay permission as required by separately tracked abuse follow-up R4.
   - Add operator-request spans and links to stored originating context without changing the business-event envelope. Preserve secure mock/provider/JWT startup defaults.
 - Validation commands:
-  - `./gradlew :application:integrationTest --tests '*OperatorApiIntegrationTest'`
-  - `./gradlew :application:integrationTest --tests '*OperatorRetryIntegrationTest'`
-  - `./gradlew :application:integrationTest --tests '*OperatorReplayIntegrationTest'`
-  - `./gradlew clean verify`
+  - `./gradlew --no-daemon :application:integrationTest --tests '*OperatorApiIntegrationTest' --tests '*OperatorRetryIntegrationTest' --tests '*OperatorPaymentRecoveryIntegrationTest' --tests '*KafkaRetryAndDltIntegrationTest' --console=plain`
+  - `bash -n scripts/replay-dead-letter`
+  - `scripts/validate-observability`
+  - `docker compose --env-file .env.example --file compose.yaml config --quiet`
+  - `scripts/security-scan`
+  - `git diff --check`
+  - `./gradlew --no-daemon clean verify --console=plain`
 - Observable acceptance:
   - Customer tokens cannot access operator routes; operator read and retry scopes are distinct, and caller input cannot assert audit identity.
   - Concurrent or repeated retry commands schedule one server-selected action, respect cooldown/attempt/break-glass limits, and create immutable audit evidence.
@@ -526,7 +531,7 @@ The required order is: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, and 7A (`Comple
 ### Separately tracked abuse-case follow-ups
 
 - **R3 — Quota and idempotency retention (`Proposed`).** The detailed design remains Finding 4/R3 in `.agent/plans/2026-07-14-abuse-case-remediation.md`. It requires separate maintainer approval and is a production gate before sustained or multi-tenant public use. It is not part of Milestone 5D, Milestone 6, or Milestone 7A.
-- **R4 — Authenticated and bounded replay (`Proposed`).** The detailed design remains Finding 5/R4 in `.agent/plans/2026-07-14-abuse-case-remediation.md`. It requires separate maintainer approval and is a production gate before replay or secured operator recovery is enabled. It may be completed before 7B or incorporated only through an explicitly approved 7B plan revision; it is not part of Milestone 5D or Milestone 7A.
+- **R4 — Authenticated and bounded replay (`Complete within Milestone 7B`).** The detailed design remains Finding 5/R4 in `.agent/plans/2026-07-14-abuse-case-remediation.md`. The maintainer's 2026-07-17 approval explicitly incorporated it into Milestone 7B; it was not a second concurrent milestone.
 
 ### Milestone 8 — Prove the complete MVP and operational failure matrix
 
@@ -696,11 +701,16 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - Do not automatically roll back or delete captured/ledger data. Resolve inconsistent local state through provider lookup and idempotent forward finalization; financial corrections require new ledger records.
 - A failed deployment may return to the previous application only if the schema and event contract remain backward compatible. Otherwise deploy a forward fix.
 - Outbox and inbox records are durable recovery evidence. Do not purge or manually mark them to recover an incident.
-- After Milestone 7B, operator recovery uses the secured API, stable provider/event identity, current-state guards, and audit. Until then, replay remains development-only and is a production blocker unless disabled with its producer authority revoked; direct database/Kafka manipulation is emergency-only and requires a separately approved runbook.
+- During and after Milestone 7B, operator recovery uses only the secured API, stable provider/event identity, current-state guards, and immutable audit. Direct database/Kafka manipulation is not a normal recovery path and remains emergency-only under a separately approved runbook.
 - If Kafka topics or OpenTelemetry configuration are wrong, stop/reconfigure the affected adapters while leaving PostgreSQL business/outbox data intact.
 
 ## Progress
 
+- [x] `2026-07-17 10:21Z` — Recorded explicit maintainer approval for Milestone 7B, incorporated replay-hardening R4 into that milestone, kept quota/retention R3 and Milestone 8 Proposed, and marked only Milestone 7B In Progress.
+- [x] `2026-07-17 11:35Z` — Delivered the contract-first sanitized operator list/detail/retry/status/break-glass APIs, JWT-derived actor identity, separate read/retry/break-glass authority, immutable audit, idempotent retry commands, transactional cooldown/limits, and PostgreSQL-leased multi-instance worker with stale-owner rejection and trace links. Added lookup-first same-ID payment recovery, one-cycle same-identity outbox recovery, and immutable-identity DLT replay without exposing a direct mutation path.
+- [x] `2026-07-17 11:35Z` — Added PostgreSQL/HTTP/concurrency/provider/Kafka regression coverage for authorization boundaries, projection sanitization, command idempotency and conflicts, dual claims, crash takeover, stale completion, provider unknown reconciliation, outbox reset, valid/malformed DLT handling, cooldown/attempt caps, separate break-glass approval/use, immutable audit, seeded sensitive markers, and trace links. The focused four-suite integration command and replay-client shell validation pass.
+- [x] `2026-07-17 11:48Z` — Performed the separate read-only recovery/security review of the complete diff. Fixed a stale-lease check/mutation gap by locking the owner/token/version row inside local mutation transactions, preserved external-I/O transaction separation, and fixed retry idempotency so an identical command still returns its original resource after the failed source resolves. Corrected the recovery-worker default documentation and operator-metric catalog. No material false atomicity, unsafe replay, authorization, duplicate financial/event effect, sensitive-data, or unbounded-cardinality finding remains.
+- [x] `2026-07-17 11:48Z` — Passed the focused operator API/worker/payment/Kafka integration suites, replay-client shell validation, Compose validation, Prometheus/Grafana validation with five dashboards and sixteen alerts, `scripts/security-scan`, and `git diff --check`. The repository-secret and packaged-application gates are clean; every visible local Compose image finding remains governed only by an exact unexpired development risk record. Java 25/Gradle 9.6.1 `./gradlew --no-daemon clean verify --console=plain` passed all 67 formatting, static-analysis, unit, PostgreSQL/Kafka integration, architecture, Compose, OpenAPI, observability, and documentation actions in 2m 18s (55 executed, 10 from cache, 2 up-to-date). Milestone 7B and R4 are Complete; no required test was skipped.
 - [x] `2026-07-15 18:08Z` — Recorded explicit maintainer approval for Milestone 7A, confirmed Milestones 5D and 6 are Complete, retained the existing 7A/7B split, marked only 7A In Progress, and kept operator HTTP inspection/recovery and replay hardening outside the approved scope.
 - [x] `2026-07-15 18:08Z` — Inspected repository governance, the canonical plan, normative product/domain/API/data/threat/architecture documents, ADRs 0003 through 0013, the existing management-port and local telemetry stack, observability dependencies/configuration, module APIs, and the complete integration-test inventory before implementation.
 - [x] `2026-07-15 18:56Z` — Implemented W3C HTTP/provider/outbox/Kafka propagation, commit-aware order/payment/ledger/outbox metrics, bounded OTLP trace/log export, ECS code-based logging, correlation replacement, exact metric-label filtering, cached outbox growth signals, readiness/drain/executor metrics, and provider circuit/bulkhead instrumentation without changing business transactions or adding operator HTTP recovery.
@@ -851,18 +861,24 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 - **2026-07-15 — Keep the deterministic provider implementation outside the production artifact.** The existing validated integration fixture supplies success, decline, latency, temporary, timeout, lookup, and malformed-response behavior over real HTTP. Production code contains only the provider client/port, fails closed when no trusted base URL is configured, and adds no simulator endpoint, card field, credential, or production dependency.
 - **2026-07-15 — Reuse the existing Spring Boot OpenTelemetry and Micrometer platform.** Feature modules declare only the Boot-managed OpenTelemetry API and Micrometer core APIs they compile against; the deployable application retains the existing starter/exporter/Prometheus capabilities. Manual spans are limited to provider, durable workflow, ledger, outbox, and notification boundaries where current auto-instrumentation cannot express the persisted causal context. No agent, vendor SDK, or new telemetry backend is added; the one necessary Logback bridge and its BOM are recorded separately below.
 - **2026-07-15 — Add the OpenTelemetry Logback bridge through its instrumentation BOM.** Live validation found that Spring Boot's OpenTelemetry log SDK/exporter does not by itself receive SLF4J/Logback events. Add only `opentelemetry-logback-appender-1.0` at BOM-managed 2.28.1-alpha, install it against the Boot-managed SDK, retain ECS JSON on stdout, export INFO-and-above, capture only the validated `correlation_id` MDC field and code-controlled key/value attributes, and cap pre-install buffering at 100 records. This dependency is necessary for the required Loki/Tempo correlation; its alpha compatibility and security posture are covered by the normal application-artifact scan and upgrade review.
-- **2026-07-15 — Preserve trustworthy outbox parentage and enforce telemetry bounds in code.** The committed outbox stores the append span's valid W3C context, the asynchronous publisher restores it, and Kafka observation continues the trace; independent future operator recovery must link instead of posing as a direct child. A closed custom-metric label allowlist and fixed cached outbox aggregate prevent identifier/cardinality growth, while bounded export queues and timeouts keep telemetry failure outside business outcomes. This implements existing observability requirements and does not require a new architecture decision.
+- **2026-07-15 — Preserve trustworthy outbox parentage and enforce telemetry bounds in code.** The committed outbox stores the append span's valid W3C context, the asynchronous publisher restores it, and Kafka observation continues the trace; independent operator recovery links instead of posing as a direct child. A closed custom-metric label allowlist and fixed cached outbox aggregate prevent identifier/cardinality growth, while bounded export queues and timeouts keep telemetry failure outside business outcomes. This implements existing observability requirements and does not require a new architecture decision.
 - **2026-07-15 — Keep observability provisioning local and version controlled.** Prometheus scrapes the already isolated management port, Collector self-metrics expose sustained export failure, and five Grafana dashboards plus Prometheus/Tempo/Loki links and fourteen alerts/runbooks load from repository files. The host-gateway scrape is explicitly a local demonstration topology, not production ingress or network policy.
 - **2026-07-15 — Keep the Logback bridge in deployable application wiring.** The bridge connects the Boot-managed telemetry SDK to the application logging backend and is not a domain feature. Placing it in a new direct subpackage would make Spring Modulith treat observability as an accidental seventh business module; root application configuration preserves the accepted six feature boundaries while architecture verification remains exact.
+- **2026-07-17 — Use typed opaque operation references and narrow module-owned recovery handlers.** The `operations` module owns only sanitized projections, command coordination, leases, audit, and dispatch. Orders, messaging, and notifications implement one typed handler each and receive only server-selected source/command/correlation/lease context; no generic workflow framework, arbitrary payload, destination, provider key, or database mutation endpoint is introduced. ADR 0008 records this accepted boundary.
+- **2026-07-17 — Make retry acceptance and execution independently idempotent.** Authenticated issuer/subject plus hashed endpoint command key and canonical request fingerprint return the original retry even after the source failure resolves; a PostgreSQL advisory transaction lock serializes concurrent use before unique constraints enforce the durable identity. A partial unique index permits one active command per typed source. Workers claim one row at a time with `SKIP LOCKED`, and local mutation transactions lock and validate owner/token/version/expiry so takeover cannot race a stale commit.
+- **2026-07-17 — Preserve external identities across operator recovery.** Payment recovery always looks up the existing provider operation ID and permits only the accepted same-ID resend rule; outbox recovery reopens the same logical event for one bounded publisher cycle without resetting cumulative attempts; DLT recovery publishes the stored event ID, key, and canonical body while replacing only retry transport context. Provider/Kafka I/O remains outside PostgreSQL transactions, so duplicates at the I/O/acknowledgement boundary remain possible and are absorbed by provider, journal/outbox, event-ID, inbox, and semantic-effect idempotency.
+- **2026-07-17 — Complete replay hardening R4 inside Milestone 7B.** JWT issuer/subject/client claims are the audit identity; read, retry, and admin-only break-glass scopes are separate. Transactional cooldown, automatic and break-glass caps, one-use immutable approval evidence, separate approval/execution audit actions, protected request/audit rows, and bounded operational metrics replace the caller-asserted command path. Historical replay rows remain explicitly classified instead of being rewritten.
 - **2026-07-11 — Validate OpenAPI without server code generation.** Contract tests enforce conformance without generated framework coupling.
 - **2026-07-11 — Contract the mock provider separately and exclude it from the main artifact.** Its external HTTP behavior is validated without exposing simulator controls in production.
 - **2026-07-11 — Separate Flyway owner and runtime database roles.** Migration authority does not grant the application DDL or mutation rights over immutable financial/audit data.
 
 ## Outcome and follow-up
 
-Current outcome: Milestones 1 through 7A are complete. The authenticated public create command now durably initializes one order/payment identity, authorizes and captures through stable provider operation IDs with lookup-first ambiguity recovery, atomically posts one balanced immutable journal plus one logical outbox event, and finalizes payment/order/idempotency in a separate guarded local transaction. It returns truthful completed, declined, pending, or provider-protocol outcomes without waiting for Kafka. At-least-once publication/consumption, event-ID transport idempotency, and versioned semantic-effect idempotency still create one notification effect under duplicate publication, delivery, or re-enveloping. W3C context, bounded metrics, structured redacted logs, provisioned Prometheus/Tempo/Loki/Grafana configuration, provisional SLIs/SLOs, and fourteen runbook-backed alerts now make that journey observable without entering the business transaction. V008 enforces terminal financial evidence while preserving historical Create Order rows and snapshots.
+Current outcome: Milestones 1 through 7B are complete. The authenticated public create command now durably initializes one order/payment identity, authorizes and captures through stable provider operation IDs with lookup-first ambiguity recovery, atomically posts one balanced immutable journal plus one logical outbox event, and finalizes payment/order/idempotency in a separate guarded local transaction. It returns truthful completed, declined, pending, or provider-protocol outcomes without waiting for Kafka. At-least-once publication/consumption, event-ID transport idempotency, and versioned semantic-effect idempotency still create one notification effect under duplicate publication, delivery, or re-enveloping. W3C context, bounded metrics, structured redacted logs, provisioned Prometheus/Tempo/Loki/Grafana configuration, provisional SLIs/SLOs, and sixteen runbook-backed alerts make that journey and its recovery observable without entering the business transaction. V008 enforces terminal financial evidence while preserving historical Create Order rows and snapshots.
 
-The repository secret scan and packaged application dependency scan remain clean with no exception mechanism; Kafka 4.3.1 and Prometheus 3.13.1 image scans remain clean. Other official local Compose findings remain visible under exact local-development-only records through 2026-08-13 or compatible fixed-image availability, whichever is earlier; this is not production acceptance. Milestone 7A is Complete; Milestones 7B and 8 remain Proposed. Local trace/dashboard/alert evidence is demonstration evidence rather than a production SLO guarantee; telemetry export is intentionally lossy and the alpha-versioned Logback bridge requires compatible upgrade and vulnerability review, but telemetry failure cannot change business outcomes. Quota/retention R3 and authenticated/bounded replay R4 remain separately Proposed production gates. The mock provider is a validated integration fixture rather than a packaged local service or production provider. General payment/outbox/operator recovery is not exposed, so a durable `202`, failed outbox cycle, or replay request still follows the documented inspection/escalation limits. LedgerFlow does not claim a distributed transaction or end-to-end exactly-once delivery.
+The secured operator boundary now lists only sanitized payment, outbox, and DLT failures; returns bounded attempt/status views; derives actor identity from validated JWT claims; and accepts independently authorized, idempotent recovery commands with immutable audit. PostgreSQL leases, takeover, cooldown, attempt caps, and separate break-glass approval bound multi-instance execution. Payment, outbox, and DLT handlers preserve their original external/logical identities, and asynchronous duplicates remain covered by the existing financial, transport, inbox, and semantic-effect constraints. No direct database or arbitrary Kafka recovery path is exposed.
+
+The repository secret scan and packaged application dependency scan remain clean with no exception mechanism; Kafka 4.3.1 and Prometheus 3.13.1 image scans remain clean. Other official local Compose findings remain visible under exact local-development-only records through 2026-08-13 or compatible fixed-image availability, whichever is earlier; this is not production acceptance. Milestone 7B and replay-hardening R4 are Complete; Milestone 8 and quota/retention R3 remain Proposed. R3 is still a production gate before sustained or multi-tenant public use. Local trace/dashboard/alert evidence is demonstration evidence rather than a production SLO guarantee; telemetry export is intentionally lossy and the alpha-versioned Logback bridge requires compatible upgrade and vulnerability review, but telemetry failure cannot change business outcomes. The mock provider is a validated integration fixture rather than a packaged local service or production provider. LedgerFlow does not claim a distributed transaction or end-to-end exactly-once delivery.
 
 When all milestones are complete, update this section with:
 

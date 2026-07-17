@@ -49,6 +49,9 @@ public class OrderSecurityConfiguration {
                     .access(requires("ledgerflow.orders.read", "customer", "admin"))
                     .requestMatchers(HttpMethod.GET, "/api/v1/operator/**")
                     .access(requires("ledgerflow.operations.read", "operator", "admin"))
+                    .requestMatchers(
+                        HttpMethod.POST, "/api/v1/operator/operations/*/break-glass-approvals")
+                    .access(requires("ledgerflow.operations.break-glass", "admin"))
                     .requestMatchers("/api/v1/operator/**")
                     .access(requires("ledgerflow.operations.retry", "operator", "admin"))
                     .anyRequest()

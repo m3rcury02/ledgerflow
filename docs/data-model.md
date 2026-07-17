@@ -1,9 +1,9 @@
 # LedgerFlow MVP Data Model
 
-- Status: Partially implemented
-- Last updated: 2026-07-15
+- Status: Implemented through secured operator recovery
+- Last updated: 2026-07-17
 
-PostgreSQL is the source of truth. Flyway creates all structures, constraints, indexes, and trigger functions. Integration tests apply every migration to an empty PostgreSQL Testcontainer. `V001` creates orders and HTTP idempotency; `V002` creates payments and attempt history; `V003` creates the immutable ledger and `CAPTURE_ACCOUNTED`; `V004` creates the transactional outbox; `V005` creates notification/DLT/replay records; `V006` adds semantic-effect identity; `V007` creates terminal malformed-DLT evidence; and `V008` adds resumable public workflow/final states plus deferred finalization invariants. General operator workflow tables remain proposed.
+PostgreSQL is the source of truth. Flyway creates all structures, constraints, indexes, and trigger functions. Integration tests apply every migration to an empty PostgreSQL Testcontainer. `V001` creates orders and HTTP idempotency; `V002` creates payments and attempt history; `V003` creates the immutable ledger and `CAPTURE_ACCOUNTED`; `V004` creates the transactional outbox; `V005` creates notification/DLT/replay records; `V006` adds semantic-effect identity; `V007` creates terminal malformed-DLT evidence; `V008` adds resumable public workflow/final states plus deferred finalization invariants; and `V009` adds secured operator recovery state, commands, approvals, attempts, and immutable audit evidence.
 
 ## General conventions
 
@@ -68,6 +68,31 @@ Constraints and indexes:
 Rows are retained indefinitely in the MVP. Raw keys and raw request bodies are not stored.
 
 The public workflow intentionally commits an in-progress row together with its order/payment identities before provider I/O. Its composite primary key and `INSERT ... ON CONFLICT DO NOTHING` serialize initial same-key claims. Matching contenders use the resource ID and guarded states to resume or replay; a conflicting request hash returns `409`. No provider lease is stored: recent `AUTHORIZING`/`CAPTURING` timestamps suppress concurrent recovery until the configured active-call deadline, after which lookup-first recovery is safe.
+
+### Operator recovery tables
+
+`operator_recovery_state` is keyed by `(operation_type, source_id)` and stores monotonic automatic
+and break-glass attempt counters, transactional `retry_available_at`, last command, and version.
+The row is locked before command acceptance, preventing cooldown/cap races. Counters cannot
+decrease and rows cannot be deleted.
+
+`operator_retry_commands` stores typed source identity, SHA-256 key/request hashes, attempt kind
+and number, optional approval, immutable reason and authenticated issuer/subject/client evidence,
+safe correlation/trace links, state, next-check time, and owner/token/version lease fields. A unique
+actor-scoped key enforces retry-command idempotency; a partial unique index permits one
+`PENDING`/`IN_PROGRESS`/`WAITING` command per operation. Claim indexes support due, waiting, and
+expired commands with `FOR UPDATE SKIP LOCKED`. State-shape and timestamp checks reject partial
+leases or contradictory terminal results. A trigger prevents deletion or changes to request
+identity/evidence while allowing guarded lifecycle fields.
+
+`operator_break_glass_approvals` stores separately authorized, actor-derived immutable approval
+evidence and hashed idempotency. `operator_break_glass_uses` provides one-to-one approval
+consumption, so approval and execution are separate actions. `operator_retry_attempts` records
+claim, takeover, waiting, completion, failure, and stale-rejection events. `operator_audit_records`
+records accepted, completed, failed, approval, use, and stale-completion actions. Update/delete
+triggers make approval, use, attempt, and audit rows append-only. The legacy
+`message_replay_audit.identity_source` distinguishes earlier caller-asserted records from new
+trusted-worker DLT execution; the authenticated human identity remains in operator audit.
 
 ### `payments`
 
@@ -205,7 +230,7 @@ PostgreSQL `CHECK` constraints cannot safely enforce an aggregate across other r
 
 For payment capture, `deduplication_key` is `payment-captured:{paymentId}`, aggregate type is `PAYMENT`, aggregate ID is payment ID, and the Kafka key is order ID. A duplicate append verifies the persisted immutable identity and payload hash; changed content is an integrity failure. A trigger rejects deletion or mutation of event identity, envelope, causation, correlation, trace origin, and creation time.
 
-Partial indexes support due `PENDING` rows and expired `IN_FLIGHT` leases. The publisher selects with `FOR UPDATE SKIP LOCKED`, assigns an owner token and lease in a short transaction, and sends outside PostgreSQL. Publish/requeue/failed-marker updates require that owner. There are 10 total attempts per cycle; exponential base delays start at one second and cap at 256 seconds with configurable jitter. Exhaustion leaves the durable row `FAILED`. A general outbox retry command is future work.
+Partial indexes support due `PENDING` rows and expired `IN_FLIGHT` leases. The publisher selects with `FOR UPDATE SKIP LOCKED`, assigns an owner token and lease in a short transaction, and sends outside PostgreSQL. Publish/requeue/failed-marker updates require that owner. There are 10 total attempts per cycle; exponential base delays start at one second and cap at 256 seconds with configurable jitter. Exhaustion leaves the durable row `FAILED`. Secured operator recovery can reset that same immutable logical row to a new bounded publication cycle; it does not create a replacement event.
 
 ### `notification_inbox`
 
@@ -303,7 +328,7 @@ The DLT listener inserts or verifies this catalog row before acknowledging a val
 | Column | Type | Rules |
 | --- | --- | --- |
 | `id` | `uuid` | Primary key, UUIDv7 |
-| `replay_request_id` | `uuid` | Stable identity for one CLI invocation |
+| `replay_request_id` | `uuid` | Stable identity for one secured recovery command |
 | `dead_letter_record_id` | `uuid` | Not null FK to catalog row |
 | `actor` | `varchar(200)` | Validated operator/service identity |
 | `reason` | `varchar(500)` | Required, 10–500 characters |
@@ -312,9 +337,10 @@ The DLT listener inserts or verifies this catalog row before acknowledging a val
 | `failure_code`, `failure_summary` | `varchar(64)`, `varchar(500)` | Required only for `FAILED` |
 | `occurred_at` | `timestamptz` | Not null UTC instant |
 
-Rows are append-only through an update/delete rejection trigger. The current replay path records request/publication/failure evidence; additional lifecycle actions are reserved by the schema.
-
-General `failed_operations`, operator retry-request tables, and an operator HTTP audit model are future work and are not created by `V005`.
+Rows are append-only through an update/delete rejection trigger. New worker-created rows use
+`TRUSTED_WORKLOAD` identity source; pre-V009 caller-asserted evidence remains visibly classified as
+legacy rather than being rewritten. General retry commands and authenticated audit evidence live
+in the V009 operator tables described above; V005 is unchanged.
 
 ## Capture accounting transaction
 
@@ -387,13 +413,17 @@ Kafka headers carry `event_id`, `event_type`, `schema_version`, `x-correlation-i
 | Kafka unavailable | Completed business state and durable outbox remain; outbox is pending/leased with attempts | HTTP result is unchanged; publisher retries with bounded backoff and eventually records `FAILED` for inspection |
 | Publish succeeds; mark fails | Outbox lease eventually expires | Publish duplicate; consumer inbox prevents duplicate notification |
 | Consumer DB commit succeeds; offset commit fails | Inbox and notification exist | Redelivery is a no-op and offset can commit |
-| Consumer repeatedly fails | Message reaches DLT after initial plus three retries | DLT listener catalogs safe evidence; audited CLI can replay a validated record |
+| Consumer repeatedly fails | Message reaches DLT after initial plus three retries | DLT listener catalogs safe evidence; secured recovery can replay a validated record |
 | DLT publication fails | Source offset remains uncommitted | Kafka redelivers and recovery retries DLT publication |
 
 ## Migration and retention rules
 
 - Initial schema is delivered through ordered Flyway migrations and never edited after merge.
 - V008 is forward compatible with historical `CREATED` orders and completed `201` snapshots; rollback to code that assumes only `CREATED` is unsafe after new workflow rows exist, so application rollback requires a forward-compatible release or forward fix.
+- V009 is additive and preserves all earlier rows. Older code ignores its new recovery tables and
+  the defaulted replay identity-source column, but rolling the application back would restore the
+  caller-asserted replay path and bypass cooldown/caps. Disable replay Kafka authority before such
+  a rollback and deploy a forward security fix; never drop V009 evidence tables.
 - Financial and idempotency records have no automatic deletion in the MVP.
 - Published outbox, inbox, notification, dead-letter, and replay-audit retention must be set before production launch through an operations/data-retention ADR.
 - Schema rollback uses forward corrective migrations. Application rollback is allowed only while the deployed schema remains backward compatible.

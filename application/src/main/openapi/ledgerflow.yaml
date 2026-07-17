@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: LedgerFlow API
-  version: 0.4.0
+  version: 0.5.0
   description: >-
     LedgerFlow's contract-first HTTP API. Creating an INR order synchronously drives the mock
     payment authorization/capture and durable financial finalization. Outbox publication and
@@ -11,6 +11,7 @@ servers:
     description: Local application
 tags:
   - name: Orders
+  - name: Operator recovery
 paths:
   /api/v1/orders:
     post:
@@ -228,6 +229,203 @@ paths:
                     correlationId: order-read-001
         "500":
           $ref: "#/components/responses/InternalError"
+  /api/v1/operator/operations:
+    get:
+      tags: [Operator recovery]
+      operationId: listFailedOperations
+      summary: List sanitized recoverable failures
+      description: >-
+        Requires ledgerflow.operations.read plus an operator or admin realm role. Results contain
+        bounded operational metadata only; customer identity and source payloads are never exposed.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: cursor
+          in: query
+          schema:
+            type: string
+            maxLength: 256
+        - name: type
+          in: query
+          schema:
+            $ref: "#/components/schemas/OperationType"
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: Sanitized keyset-paginated failure page
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FailedOperationPage"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/operator/operations/{operationId}:
+    get:
+      tags: [Operator recovery]
+      operationId: getFailedOperation
+      summary: Get sanitized operation details and attempt history
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OperationId"
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: Sanitized failure details
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FailedOperationDetail"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/OperationNotFound"
+  /api/v1/operator/operations/{operationId}/retries:
+    post:
+      tags: [Operator recovery]
+      operationId: requestOperationRetry
+      summary: Idempotently request a guarded recovery attempt
+      description: >-
+        Requires ledgerflow.operations.retry plus an operator or admin realm role. One active command
+        is permitted per operation. After the automatic-attempt limit, a separate unused break-glass
+        approval must be supplied. The reason becomes immutable audit evidence.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OperationId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CorrelationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetryRequest"
+            example:
+              reason: Provider incident resolved; reconcile the original operation.
+      responses:
+        "202":
+          description: Original or replayed retry command
+          headers:
+            Location:
+              description: Retry-status resource
+              schema:
+                type: string
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetryStatus"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/OperationNotFound"
+        "409":
+          $ref: "#/components/responses/OperationConflict"
+  /api/v1/operator/operations/{operationId}/retries/{retryId}:
+    get:
+      tags: [Operator recovery]
+      operationId: getOperationRetry
+      summary: Get sanitized retry status
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OperationId"
+        - name: retryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: Current retry status
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetryStatus"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/OperationNotFound"
+  /api/v1/operator/operations/{operationId}/break-glass-approvals:
+    post:
+      tags: [Operator recovery]
+      operationId: approveBreakGlassRecovery
+      summary: Record separate immutable break-glass approval evidence
+      description: >-
+        Requires ledgerflow.operations.break-glass plus the admin role. Approval does not execute a
+        retry and can be consumed once by a later retry request for the same operation.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OperationId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CorrelationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BreakGlassApprovalRequest"
+      responses:
+        "201":
+          description: Original or replayed immutable approval evidence
+          headers:
+            X-Correlation-Id:
+              $ref: "#/components/headers/CorrelationId"
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BreakGlassApproval"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/OperationNotFound"
+        "409":
+          $ref: "#/components/responses/OperationConflict"
 components:
   securitySchemes:
     bearerAuth:
@@ -236,8 +434,9 @@ components:
       bearerFormat: JWT
       description: >-
         OAuth 2.0/OIDC JWT with the configured exact issuer and ledgerflow-api audience, signed with
-        RS256. POST requires ledgerflow.orders.write; GET requires ledgerflow.orders.read. Active
-        order routes also require the Keycloak customer or admin realm role.
+        RS256. Order routes require their order scope plus customer/admin role. Operator routes
+        require their distinct read, retry, or break-glass scope plus the documented operator/admin
+        role.
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -263,6 +462,17 @@ components:
         maxLength: 64
         pattern: "^[A-Za-z0-9._-]+$"
       example: checkout-order-001
+    OperationId:
+      name: operationId
+      in: path
+      required: true
+      description: Opaque typed identifier returned by the failed-operation listing.
+      schema:
+        type: string
+        minLength: 43
+        maxLength: 48
+        pattern: "^(payment|outbox|dead-letter)_[0-9a-f-]{36}$"
+      example: payment_019535d9-4a20-7e29-9d35-a6e4aeab9e09
   headers:
     Location:
       description: Canonical path of the created order
@@ -395,6 +605,165 @@ components:
           maxLength: 64
           pattern: "^[A-Z0-9_]+$"
           example: AUTHORIZATION_DECLINED
+    OperationType:
+      type: string
+      enum: [PAYMENT, OUTBOX, DEAD_LETTER]
+    FailedOperationSummary:
+      type: object
+      additionalProperties: false
+      required: [operationId, operationType, status, summary, attemptCount, failedAt, updatedAt, retryable]
+      properties:
+        operationId:
+          type: string
+        operationType:
+          $ref: "#/components/schemas/OperationType"
+        status:
+          type: string
+          maxLength: 64
+        failureCode:
+          type: [string, "null"]
+          maxLength: 64
+        summary:
+          type: string
+          maxLength: 200
+        attemptCount:
+          type: integer
+          format: int64
+          minimum: 0
+        failedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        retryable:
+          type: boolean
+    FailedOperationPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/FailedOperationSummary"
+        nextCursor:
+          type: [string, "null"]
+          maxLength: 256
+    FailedOperationDetail:
+      type: object
+      additionalProperties: false
+      required: [operation, attempts]
+      properties:
+        operation:
+          $ref: "#/components/schemas/FailedOperationSummary"
+        attempts:
+          type: array
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/OperationAttempt"
+    OperationAttempt:
+      type: object
+      additionalProperties: false
+      required: [source, action, attemptNumber, outcome, recordedAt]
+      properties:
+        source:
+          type: string
+          maxLength: 32
+        action:
+          type: string
+          maxLength: 64
+        attemptNumber:
+          type: integer
+          minimum: 0
+        outcome:
+          type: string
+          maxLength: 64
+        failureCode:
+          type: [string, "null"]
+          maxLength: 64
+        recordedAt:
+          type: string
+          format: date-time
+    RetryRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 10
+          maxLength: 500
+          pattern: "^[^\\r\\n\\p{Cc}]+$"
+        approvalId:
+          type: [string, "null"]
+          format: uuid
+    RetryStatus:
+      type: object
+      additionalProperties: false
+      required: [retryId, operationId, status, attemptKind, attemptNumber, acceptedAt, replayed]
+      properties:
+        retryId:
+          type: string
+          format: uuid
+        operationId:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, IN_PROGRESS, WAITING, COMPLETED, FAILED]
+        attemptKind:
+          type: string
+          enum: [AUTOMATIC, BREAK_GLASS]
+        attemptNumber:
+          type: integer
+          minimum: 1
+        resultCode:
+          type: [string, "null"]
+          maxLength: 64
+        failureCode:
+          type: [string, "null"]
+          maxLength: 64
+        acceptedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: [string, "null"]
+          format: date-time
+        replayed:
+          type: boolean
+          description: True only when the original retry-command result was returned.
+    BreakGlassApprovalRequest:
+      type: object
+      additionalProperties: false
+      required: [approvalReference, reason]
+      properties:
+        approvalReference:
+          type: string
+          minLength: 10
+          maxLength: 100
+          pattern: "^[A-Za-z0-9][A-Za-z0-9._:/#-]{9,99}$"
+        reason:
+          type: string
+          minLength: 10
+          maxLength: 500
+          pattern: "^[^\\r\\n\\p{Cc}]+$"
+    BreakGlassApproval:
+      type: object
+      additionalProperties: false
+      required: [approvalId, operationId, createdAt, replayed]
+      properties:
+        approvalId:
+          type: string
+          format: uuid
+        operationId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        replayed:
+          type: boolean
+          description: True only when the original approval result was returned.
     ValidationError:
       type: object
       additionalProperties: false
@@ -434,6 +803,24 @@ components:
           items:
             $ref: "#/components/schemas/ValidationError"
   responses:
+    OperationNotFound:
+      description: The typed operation or retry resource does not exist
+      headers:
+        X-Correlation-Id:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    OperationConflict:
+      description: The recovery command conflicts with current state, cooldown, limits, or idempotency
+      headers:
+        X-Correlation-Id:
+          $ref: "#/components/headers/CorrelationId"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
     InvalidRequest:
       description: Request body, path, or required header is invalid
       headers:

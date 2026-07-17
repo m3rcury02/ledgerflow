@@ -1,7 +1,7 @@
 # LedgerFlow MVP API Design
 
-- Status: Implemented for the public order workflow
-- Last updated: 2026-07-15
+- Status: Implemented for public orders and secured operator recovery
+- Last updated: 2026-07-17
 - Authoritative contract: `application/src/main/openapi/ledgerflow.yaml`
 
 The OpenAPI document is authoritative for request/response schemas and examples. This document
@@ -23,8 +23,10 @@ Tokens must be RS256 JWTs with the configured exact issuer, `ledgerflow-api` aud
 claims, route scope, and `customer` or `admin` realm role. POST requires
 `ledgerflow.orders.write`; GET requires `ledgerflow.orders.read`. JWT `sub` owns the resource. No
 caller-supplied customer ID is accepted. Missing and differently owned orders return the same
-`404`. Reserved operator routes require operations scope plus `operator`/`admin`, but no operator
-HTTP operation is active yet.
+`404`. Operator reads require `ledgerflow.operations.read` plus `operator` or `admin`; retry writes
+require `ledgerflow.operations.retry` plus `operator` or `admin`; break-glass approval requires
+`ledgerflow.operations.break-glass` plus `admin`. A customer role cannot cross this boundary even
+if its token contains an operation scope.
 
 `X-Correlation-Id` is optional and must match `[A-Za-z0-9._-]{1,64}`. Invalid/absent values are
 replaced. Every response contains the selected ID. The API uses no-store, content/type/frame,
@@ -134,6 +136,43 @@ can show `PAYMENT_PROCESSING` during a durable in-progress recovery window, but 
 responses are `COMPLETED`, `PAYMENT_DECLINED`, `PAYMENT_RETRY_PENDING`, or `FAILED`. It does not
 include payment-method/provider references or notification-delivery status.
 
+## Secured operator recovery
+
+`GET /api/v1/operator/operations` returns a bounded keyset page of sanitized payment, outbox, and
+DLT failures. Optional `type`, `limit` (1–100), and opaque `cursor` parameters do not expose source
+payloads or customer identity. IDs are typed opaque values such as `payment_<uuid>`,
+`outbox_<uuid>`, and `dead-letter_<uuid>`; changing the prefix cannot reveal another operation
+domain. `GET /api/v1/operator/operations/{operationId}` adds at most 200 sanitized provider,
+publisher, legacy replay, and operator attempt entries.
+
+`POST /api/v1/operator/operations/{operationId}/retries` requires the normal 8–128 character
+`Idempotency-Key` and a 10–500 character control-free audit reason. An optional `approvalId`
+consumes separate break-glass evidence. The transactional scope is authenticated issuer/subject,
+hashed key, typed operation identity, reason, and approval ID. Matching reuse returns the original
+command; changed reuse returns `409`. Database uniqueness permits one active command per
+operation. Accepted commands return `202`, `Location`, and a sanitized status representation;
+status is readable at `GET .../retries/{retryId}` without returning actor, reason, hashes, lease
+tokens, source bodies, or provider data.
+
+Failures establish a five-minute default cooldown. The default automatic command limit is three.
+After that limit, an admin records immutable evidence through
+`POST .../{operationId}/break-glass-approvals`; this does not execute recovery. A later retry-scope
+request may consume the approval once. Approval and use are distinct audit events, and the default
+break-glass execution limit is two. Malformed/non-replayable DLT evidence and operations that have
+already converged return `409` rather than exposing a direct mutation path.
+
+Payment recovery uses persisted provider operation IDs, looks up first, and permits one same-ID
+attempt only after `NOT_FOUND`. Outbox recovery resets only the existing logical event for one new
+bounded publisher cycle and lets the normal publisher work asynchronously.
+DLT recovery preserves stored event ID, key, and canonical body while replacing only retry
+transport metadata. A completed retry means the type-specific durable condition was met; it does
+not create an end-to-end exactly-once claim.
+
+These operator routes are additive to API version 1. The local `scripts/replay-dead-letter`
+arguments intentionally changed from caller-supplied actor identity to idempotency key because
+caller-asserted audit identity was unsafe; automation must now supply a short-lived bearer token.
+This is a security-breaking development-tool change, not a change to the public customer contract.
+
 ## Problem details
 
 Every problem uses `type`, `title`, `status`, `detail`, and `instance`, plus stable `code` and the
@@ -144,9 +183,9 @@ current `correlationId`. Validation can add bounded field/code entries.
 | `400` | Invalid body/path/header/query or idempotency-key syntax |
 | `401` | Missing or invalid bearer authentication |
 | `403` | Required scope or realm role absent |
-| `404` | Order absent or not owned by subject |
+| `404` | Order absent/not owned, or typed operator resource absent |
 | `406` | Response media type unsupported |
-| `409` | Idempotency key bound to a different canonical request |
+| `409` | Idempotency mismatch or recovery state/cooldown/limit/approval conflict |
 | `413` | Payload exceeds configured bound |
 | `415` | Media type/content encoding unsupported |
 | `422` | Currency is well formed but not INR |

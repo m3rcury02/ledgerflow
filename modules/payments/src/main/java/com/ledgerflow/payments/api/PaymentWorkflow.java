@@ -10,7 +10,11 @@ public interface PaymentWorkflow {
 
   PaymentView advance(UUID paymentId, String correlationId);
 
+  PaymentView recover(UUID paymentId, String correlationId);
+
   Optional<PaymentView> findByOrderId(UUID orderId);
+
+  Optional<PaymentView> find(UUID paymentId);
 
   PaymentView finalizeCapture(UUID paymentId, Instant finalizedAt);
 }

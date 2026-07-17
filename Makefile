@@ -40,7 +40,7 @@ dev-status:
 	./scripts/dev-status
 
 replay-dead-letter:
-	./scripts/replay-dead-letter "$(DLT_ID)" "$(ACTOR)" "$(REASON)"
+	./scripts/replay-dead-letter "$(DLT_ID)" "$(RETRY_KEY)" "$(REASON)"
 
 security-scan:
 	./scripts/security-scan

@@ -1,13 +1,14 @@
 package com.ledgerflow.notifications.internal.application;
 
 import com.ledgerflow.messaging.api.PaymentCapturedEventV1;
-import com.ledgerflow.notifications.api.DeadLetterReplay;
-import com.ledgerflow.notifications.api.ReplayOutcome;
-import com.ledgerflow.notifications.api.ReplayResult;
 import com.ledgerflow.notifications.internal.kafka.NotificationEventValidator;
 import com.ledgerflow.notifications.internal.kafka.ValidatedNotificationEvent;
 import com.ledgerflow.notifications.internal.persistence.JdbcNotificationStore;
 import com.ledgerflow.notifications.internal.persistence.ReplayClaim;
+import com.ledgerflow.operations.api.OperationRecoveryContext;
+import com.ledgerflow.operations.api.OperationRecoveryHandler;
+import com.ledgerflow.operations.api.OperationRecoveryResult;
+import com.ledgerflow.operations.api.OperationType;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanKind;
@@ -24,9 +25,8 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.header.Headers;
 import org.springframework.kafka.core.KafkaTemplate;
 
-public class DeadLetterReplayService implements DeadLetterReplay {
+public class DeadLetterReplayService implements OperationRecoveryHandler {
 
-  private static final String ACTOR_PATTERN = "[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}";
   private static final String FAILURE_SUMMARY =
       "Replay publication did not receive a broker acknowledgement.";
   private static final TextMapSetter<Headers> KAFKA_HEADER_SETTER =
@@ -60,21 +60,23 @@ public class DeadLetterReplayService implements DeadLetterReplay {
   }
 
   @Override
-  public ReplayResult replay(UUID deadLetterRecordId, String actor, String reason) {
-    validateRequest(deadLetterRecordId, actor, reason);
-    UUID replayRequestId = UUID.randomUUID();
-    String correlationId = "replay-" + UUID.randomUUID();
+  public OperationType operationType() {
+    return OperationType.DEAD_LETTER;
+  }
+
+  @Override
+  public OperationRecoveryResult recover(OperationRecoveryContext context) {
+    context.leaseGuard().requireCurrent();
     String leaseOwner = "replay:" + UUID.randomUUID();
     ReplayClaim claim =
         store.claimReplay(
-            deadLetterRecordId,
-            replayRequestId,
+            context.sourceId(),
+            context.commandId(),
             leaseOwner,
-            actor,
-            reason,
-            correlationId,
+            context.correlationId(),
             clock.instant(),
-            properties.replayLeaseDuration());
+            properties.replayLeaseDuration(),
+            context.leaseGuard());
 
     ValidatedNotificationEvent validated;
     try {
@@ -84,18 +86,21 @@ public class DeadLetterReplayService implements DeadLetterReplay {
             "Catalog event identity does not match its validated payload");
       }
     } catch (RuntimeException exception) {
+      context.leaseGuard().requireCurrent();
       store.markReplayFailed(
           claim,
           "REPLAY_PAYLOAD_INVALID",
           "Cataloged replay payload failed validation.",
-          clock.instant());
-      return new ReplayResult(replayRequestId, ReplayOutcome.FAILED, correlationId);
+          clock.instant(),
+          context.leaseGuard());
+      return OperationRecoveryResult.failed("REPLAY_PAYLOAD_INVALID");
     }
 
     ProducerRecord<String, String> record =
         new ProducerRecord<>(
             properties.topic(), validated.eventKey(), validated.canonicalPayload());
-    addFreshHeaders(record, validated.event(), replayRequestId, correlationId);
+    addFreshHeaders(record, validated.event(), context.commandId(), context.correlationId());
+    context.leaseGuard().requireCurrent();
     try (ReplayPublishSpan span = startPublishSpan(validated.event(), record.headers())) {
       try {
         kafkaTemplate
@@ -104,36 +109,28 @@ public class DeadLetterReplayService implements DeadLetterReplay {
       } catch (InterruptedException exception) {
         Thread.currentThread().interrupt();
         span.failed("replay_interrupted");
-        store.markReplayFailed(claim, "REPLAY_INTERRUPTED", FAILURE_SUMMARY, clock.instant());
-        return new ReplayResult(replayRequestId, ReplayOutcome.FAILED, correlationId);
+        context.leaseGuard().requireCurrent();
+        store.markReplayFailed(
+            claim, "REPLAY_INTERRUPTED", FAILURE_SUMMARY, clock.instant(), context.leaseGuard());
+        return OperationRecoveryResult.failed("REPLAY_INTERRUPTED");
       } catch (ExecutionException | TimeoutException exception) {
         span.failed("replay_publish_failed");
-        store.markReplayFailed(claim, "REPLAY_PUBLISH_FAILED", FAILURE_SUMMARY, clock.instant());
-        return new ReplayResult(replayRequestId, ReplayOutcome.FAILED, correlationId);
+        context.leaseGuard().requireCurrent();
+        store.markReplayFailed(
+            claim, "REPLAY_PUBLISH_FAILED", FAILURE_SUMMARY, clock.instant(), context.leaseGuard());
+        return OperationRecoveryResult.failed("REPLAY_PUBLISH_FAILED");
       } catch (RuntimeException exception) {
         span.failed("replay_publish_failed");
-        store.markReplayFailed(claim, "REPLAY_PUBLISH_FAILED", FAILURE_SUMMARY, clock.instant());
-        return new ReplayResult(replayRequestId, ReplayOutcome.FAILED, correlationId);
+        context.leaseGuard().requireCurrent();
+        store.markReplayFailed(
+            claim, "REPLAY_PUBLISH_FAILED", FAILURE_SUMMARY, clock.instant(), context.leaseGuard());
+        return OperationRecoveryResult.failed("REPLAY_PUBLISH_FAILED");
       }
     }
 
-    store.markReplayPublished(claim, clock.instant());
-    return new ReplayResult(replayRequestId, ReplayOutcome.PUBLISHED, correlationId);
-  }
-
-  private void validateRequest(UUID deadLetterRecordId, String actor, String reason) {
-    if (deadLetterRecordId == null) {
-      throw new IllegalArgumentException("deadLetterRecordId must not be null");
-    }
-    if (actor == null || !actor.matches(ACTOR_PATTERN)) {
-      throw new IllegalArgumentException("actor has an invalid format");
-    }
-    if (reason == null
-        || reason.length() < 10
-        || reason.length() > 500
-        || reason.chars().anyMatch(Character::isISOControl)) {
-      throw new IllegalArgumentException("reason must contain 10 to 500 safe characters");
-    }
+    context.leaseGuard().requireCurrent();
+    store.markReplayPublished(claim, clock.instant(), context.leaseGuard());
+    return OperationRecoveryResult.completed("DEAD_LETTER_REPLAYED");
   }
 
   private void addFreshHeaders(
@@ -161,7 +158,7 @@ public class DeadLetterReplayService implements DeadLetterReplay {
             .getTracer("com.ledgerflow.notifications")
             .spanBuilder("deadletter.replay.publish")
             .setSpanKind(SpanKind.PRODUCER)
-            .setNoParent()
+            .setParent(Context.current())
             .startSpan();
     Context context = Context.root().with(span);
     openTelemetry

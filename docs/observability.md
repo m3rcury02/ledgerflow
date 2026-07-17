@@ -59,9 +59,9 @@ The outbox persists the valid originating `traceparent` and optional `tracestate
 publisher restores that context and creates the producer span, so a normal outbox delay remains a
 causally connected child rather than an unrelated trace. Kafka observations inject/extract W3C
 headers and the notification persistence span is a child of consumer processing. These boundaries
-retain a trustworthy causal parent, so 7A does not need a span link. A later independent recovery
-command cannot safely pretend to be an immediate child; operator-request links to stored origin
-remain Milestone 7B work.
+retain a trustworthy causal parent. A later independent recovery command cannot safely pretend to
+be an immediate child, so operator requests and retry-worker spans link to the stored valid origin
+context instead of adopting false parentage.
 
 The automated full-flow trace test uses an in-memory exporter and a fixed sampled trace ID. The
 test verifies provider injection, persisted outbox context, connected producer/consumer work, and
@@ -102,14 +102,20 @@ metrics:
 | `ledgerflow.graceful.drain.active` / `.accepting` | Gauge | None | Drain admission and in-flight work |
 | `ledgerflow.graceful.drain.results` | Counter | `outcome` | Completed, timed-out, or interrupted drains |
 | `ledgerflow.executor.active` / `.pool.size` | Gauge | `executor` | Bounded outbox and notification-retry executors |
+| `ledgerflow.operator.commands` | Gauge | `state` | Pending, in-progress, waiting, and failed retry commands |
+| `ledgerflow.operator.oldest.active.age.seconds` | Gauge | None | Age of the oldest active retry command |
+| `ledgerflow.operator.retries` | Counter | `operation`, `outcome` | Bounded retry-command acceptance and execution outcomes |
+| `ledgerflow.operator.lease.takeovers` | Counter | `operation` | Expired retry leases safely claimed by another worker |
+| `ledgerflow.operator.breakglass` | Counter | `outcome` | Break-glass approval and use outcomes |
 
 Prometheus converts Micrometer dots to underscores, adds `_total` to counters, and adds `_seconds`
 to timers and second-based gauges where applicable. Alert and dashboard expressions use those
 exported Prometheus names.
 
 For every `ledgerflow.*` meter, the only permitted label keys are `stage`, `activity`, `state`,
-`executor`, and `outcome`. Payment lifecycle states, outbox/circuit states, executor names, and all
-result values are explicitly declared in the code allowlist. A registry filter rejects a
+`executor`, `operation`, and `outcome`. Payment lifecycle states, outbox/circuit/recovery states,
+operation types, executor names, and all result values are explicitly declared in the code
+allowlist. A registry filter rejects a
 new label key/value at registration and a regression test inspects the complete meter set. HTTP
 metrics use normalized route templates rather than raw URLs. No metric label may contain a
 customer subject, correlation ID, order/payment/event/provider ID, idempotency key, Kafka

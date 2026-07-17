@@ -116,3 +116,24 @@ groups:
         annotations:
           summary: OpenTelemetry export has failed continuously
           runbook_url: https://github.com/m3rcury02/ledgerflow/blob/main/docs/observability-runbook.md#ledgerflowtelemetryexportfailure
+
+      - alert: LedgerFlowOperatorRetryStuck
+        expr: max(ledgerflow_operator_oldest_active_age_seconds) > 120
+        for: 5m
+        labels:
+          severity: critical
+          service: ledgerflow
+        annotations:
+          summary: An operator recovery command has remained active too long
+          runbook_url: https://github.com/m3rcury02/ledgerflow/blob/main/docs/observability-runbook.md#ledgerflowoperatorretrystuck
+
+      - alert: LedgerFlowOperatorRetryRepeatedFailure
+        expr: >-
+          sum(increase(ledgerflow_operator_retries_total{outcome="failed"}[15m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: ledgerflow
+        annotations:
+          summary: Operator recovery commands are failing repeatedly
+          runbook_url: https://github.com/m3rcury02/ledgerflow/blob/main/docs/observability-runbook.md#ledgerflowoperatorretryrepeatedfailure

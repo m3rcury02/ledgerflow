@@ -1,15 +1,17 @@
 # ADR 0007: Propagate Correlation and OpenTelemetry Context Through Kafka
 
-- Status: Accepted for implemented Kafka propagation; operator linking remains proposed
+- Status: Accepted
 - Date: 2026-07-11
-- Accepted: 2026-07-13
+- Accepted: 2026-07-13; operator-recovery extension accepted 2026-07-17
 - Decision owners: LedgerFlow maintainers
 
 ## Context
 
 Inbound HTTP, provider HTTP, delayed outbox publication, Kafka consumption, DLT handling, and replay do not share a thread or lifetime. A business correlation identifier is useful for operator search, while W3C trace context provides distributed-tracing semantics. Neither is an authorization credential.
 
-The repository already validates and propagates HTTP correlation IDs. This ADR accepts the implemented Kafka propagation only. A secured operator HTTP recovery workflow and trace links from an operator request remain future work.
+The repository validates and propagates HTTP correlation IDs and Kafka trace context. Secured
+operator recovery adds a later, independently scheduled operation whose causal relationship must
+remain observable without pretending that the original trace stayed active.
 
 ## Decision
 
@@ -17,7 +19,12 @@ The outbox row stores the validated business correlation ID plus the originating
 
 The notification and DLT listeners extract Kafka W3C headers before processing. Invalid or absent context cannot become trusted application state. The event envelope retains the original business correlation independently of delivery headers.
 
-DLT replay preserves the canonical envelope and Kafka key but removes prior exception, DLT-routing, and delivery metadata. It creates a new replay request ID, transport correlation ID, and independent producer trace. Thus the replay is observable as a later operation rather than a misleading immediate child of the original send. Linking a future operator HTTP request to stored origin context remains proposed.
+DLT replay preserves the canonical envelope and Kafka key but removes prior exception, DLT-routing, and delivery metadata. It creates a new replay request ID, transport correlation ID, and independent producer trace. Thus the replay is observable as a later operation rather than a misleading immediate child of the original send.
+
+An operator worker starts a new root span and adds links to valid persisted context from the
+authenticated retry-request span and original failed work. Invalid context is ignored. This
+records causality across an independently scheduled command without false parentage. Operation,
+payment, event, retry, actor, and idempotency identifiers are never span attributes.
 
 Structured logs use bounded fields such as `correlation_id`, `trace_id`, `span_id`, `operation`, `payment_id`, `event_id`, `attempt`, `outcome`, and stable error code. Kafka headers, spans, logs, DLT rows, and replay audit must not contain bearer tokens, payment-method references, idempotency keys, raw payloads/provider responses, secrets, or stack traces. IDs are not metric labels, and telemetry export failure cannot roll back business processing.
 
@@ -25,7 +32,8 @@ Structured logs use bounded fields such as `correlation_id`, `trace_id`, `span_i
 
 Outbox delay and replay preserve observable causality without conflating business and trace identifiers. The costs are persisted operational metadata, explicit header allowlists, retention requirements, and tests for propagation/redaction. Sampling may still omit successful traces.
 
-Operator-request correlation, authorization, failure inspection, and span-link policy will be accepted only with the future operator HTTP milestone.
+Operator authorization, failure inspection, and command semantics are defined by ADR 0008; this
+ADR owns only correlation/trace propagation and safe linking.
 
 ## Alternatives considered
 

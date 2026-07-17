@@ -17,7 +17,18 @@ class StartupDependencyValidatorTest {
 
   private final OperationsProperties properties =
       new OperationsProperties(
-          Duration.ofSeconds(1), Duration.ofSeconds(1), Duration.ofSeconds(2), true);
+          Duration.ofSeconds(1),
+          Duration.ofSeconds(1),
+          Duration.ofSeconds(2),
+          true,
+          10,
+          Duration.ofSeconds(1),
+          Duration.ofSeconds(30),
+          Duration.ofSeconds(2),
+          Duration.ofMinutes(5),
+          3,
+          2,
+          true);
 
   @Test
   void validatesDatabaseAndRequiredKafkaTopicsWhenMessagingIsEnabled() {

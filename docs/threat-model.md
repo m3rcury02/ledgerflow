@@ -1,14 +1,19 @@
 # LedgerFlow MVP Threat Model
 
-- Status: Partially implemented
-- Last updated: 2026-07-15
+- Status: Implemented MVP controls with documented production launch conditions
+- Last updated: 2026-07-17
 - Method: asset and trust-boundary review informed by STRIDE and OWASP API Security Top 10
 
 ## Scope
 
 This threat model covers the MVP public API, operator API, modular-monolith process, mock payment-provider boundary, PostgreSQL, Kafka topics, OpenTelemetry export, and administrative retry flow.
 
-The active scope includes the complete public order/payment workflow, capture accounting, transactional outbox publisher, notification consumer/inbox, DLT evidence, isolated management listener, end-to-end observability, and audited replay CLI. Capture accounting commits `CAPTURE_ACCOUNTED`, the balanced journal, and outbox together; a separate guarded transaction finalizes `CAPTURED`, `COMPLETED`, and the original HTTP result. Kafka publish/consume remains at least once, with independent transport and semantic-effect idempotency. Secured operator HTTP controls below remain launch requirements.
+The active scope includes the complete public order/payment workflow, capture accounting,
+transactional outbox publisher, notification consumer/inbox, DLT evidence, isolated management
+listener, end-to-end observability, and secured operator recovery. Capture accounting commits
+`CAPTURE_ACCOUNTED`, the balanced journal, and outbox together; a separate guarded transaction
+finalizes `CAPTURED`, `COMPLETED`, and the original HTTP result. Kafka publish/consume remains at
+least once, with independent transport and semantic-effect idempotency.
 
 It does not certify PCI DSS compliance or cover a real payment provider, identity-provider implementation, host/container hardening, Kafka/PostgreSQL control planes, or internet-scale denial-of-service protection.
 
@@ -57,7 +62,7 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 | --- | --- | --- | --- | --- |
 | T-01 | Forged, expired, wrong-issuer, wrong-audience, or algorithm-confused JWT | Unauthorized order or operator access | RS256-only signature policy, exact issuer/audience, expiry/not-before validation, deny by default | Signed-token wrong-signature/issuer/audience/expiry and authority tests; bounded JWKS transport/key-rotation exercises remain launch work |
 | T-02 | Broken object-level authorization by changing `orderId` | Customer reads another customer's order | Compare JWT `sub` with persisted owner; return indistinguishable `404` | Two-subject ownership tests |
-| T-03 | Customer calls operator endpoint or operator retries without retry scope | Privilege escalation and duplicate money movement | Reserved operator route policy requires separate read/retry scopes plus operator/admin role; deny by default; future handlers repeat use-case authorization | Negative role/scope route tests now; operator use-case matrix when endpoints exist |
+| T-03 | Customer calls operator endpoint or operator retries without retry scope | Privilege escalation and duplicate money movement | Operator routes require separate read/retry scopes plus operator/admin role; break-glass approval requires its own scope plus admin; deny by default | Missing-token, wrong-role, wrong-scope, customer-boundary, and unauthorized break-glass tests |
 | T-04 | Idempotency-key replay with changed payload | Wrong order returned or duplicate charge | Principal/operation scope, normalized request hash, unique DB key, `409` mismatch | Sequential and concurrent mismatch tests |
 | T-05 | Guessing or leaking idempotency keys | Replay intelligence or cross-client collision | 8–128 bounded ASCII values, client guidance for ≥128-bit entropy, SHA-256 data minimization, no logging, owner/operation scope | Log/DB inspection and cross-scope tests |
 | T-06 | Concurrent requests race state transitions | Double authorization, capture, ledger, or outbox | Stable provider keys, optimistic versions, active-call recovery deadline, bounded contender wait, guarded SQL, unique business references | Public workflow convergence, provider-call-count, and stale-version tests |
@@ -69,7 +74,7 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 | T-12 | Duplicate, reordered, or re-enveloped Kafka record | Duplicate notification or inconsistent projection | Event-ID/hash transport idempotency, order key, database-unique versioned semantic effect based on capture ledger identity, content conflict detection | Redelivery, re-enveloping, conflict, and concurrent-insert tests |
 | T-13 | Spoofed or malformed Kafka event | Unauthorized notification, consumer crash, or permanent DLT partition blockage | Broker TLS/SASL, least-privilege topic ACLs, schema/type/version validation, bounded sizes, acknowledged DLT, terminal evidence by actual DLT coordinates | Invalid-schema, semantic-conflict, malformed-route, persistence-outage, and partition-progress tests |
 | T-14 | Repeated transient event failure causes infinite retry or partition starvation | Availability loss | Three bounded pause-based retries after the initial attempt, bounded poll intake/concurrency, then acknowledged DLT publication; terminal DLT data advances only after durable sanitized evidence | Retry-count, pause/backpressure, DLT acknowledgement, evidence-store outage/recovery, and later-record progress tests |
-| T-15 | DLT replay is abused | Repeated workload or notification effects | Narrow CLI, validated replayable catalog entry, required actor/reason, generated transport correlation/trace, owner lease, immutable audit, inbox deduplication; future HTTP scope controls | Replay validation, stale-lease, audit, and duplicate-delivery tests |
+| T-15 | DLT replay or recovery is abused | Repeated workload or notification effects | JWT-derived actor, separate inspect/retry/break-glass permissions, validated source-owned inputs, idempotent command, one active lease, transactional cooldown/caps, separate immutable approval/use audit, inbox and semantic deduplication | Role/scope, command replay/race, cooldown/cap, approval/use, takeover/stale-owner, DLT validation, and duplicate-delivery tests |
 | T-16 | Sensitive values leak through logs/traces/events/errors | Credential or privacy breach | ECS structured fields, code-allowlisted span/metric dimensions, no bodies/tokens/keys/payment references/exception text, bounded stable error codes, and rejected payment/card-like public fields | Seeded-marker response/log/span/meter tests plus event/header tests |
 | T-17 | Untrusted correlation/trace headers cause log injection or oversized metadata | Log corruption, forged trace ancestry, or resource exhaustion | Validate correlation format/length; standards-compliant W3C parser; replace invalid values; never use client trace flags as authorization | Malformed-header HTTP tests and fixed-trace propagation tests |
 | T-18 | Large bodies, request/probe floods, slow provider, high-cardinality metrics, or telemetry queues exhaust resources | Denial of service/cost | 16 KiB request/provider-response limits, strict JSON/header bounds, bounded per-instance subject rate state, separate non-public management port, coalesced readiness cache, managed Kafka probe client, exact metric label allowlist, bounded OTLP queues/deadlines, provider deadlines/bulkhead/circuit, bounded Kafka intake, and graceful drain; deployment-edge aggregate limits remain required | Request-limit/rate tests, meter-filter tests, 100-caller probe coalescing, management-port HTTP tests, Toxiproxy latency/reset/timeout, circuit/bulkhead, bounded retry, exporter-failure isolation, and shutdown tests; load test before launch |
@@ -82,7 +87,7 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 - Production validates an exact configured issuer, audience `ledgerflow-api`, RS256 signatures only, `exp`, and `nbf`. The application fails closed when signature keys or valid claims are unavailable. Production must use an HTTPS issuer/JWKS endpoint; explicit JWKS transport budgets, rotation exercises, and issuer-outage readiness policy remain launch work.
 - JWT `sub` is the owner scope for order creation and reads.
 - Standard scopes map to `SCOPE_` authorities. Only `customer`, `operator`, and `admin` are accepted from Keycloak `realm_access.roles`; unrecognized or malformed roles add no authority. Active order routes require their route scope plus `customer` or `admin`.
-- The reserved operator path requires `ledgerflow.operations.read` for GET or `ledgerflow.operations.retry` for other methods plus `operator` or `admin`. No operator handler or business action exists yet.
+- Operator GET routes require `ledgerflow.operations.read`; retry POST routes require `ledgerflow.operations.retry`; both also require `operator` or `admin`. Break-glass approval requires `ledgerflow.operations.break-glass` plus `admin`.
 - Integration tests use ephemeral signing keys, and the local Keycloak realm defines roles/scopes/audience without users or credentials. No authentication bypass exists in the main artifact.
 - Actuator uses a separate management listener. The application port serves no Actuator path; the management context exposes status-only liveness/readiness and Prometheus, with aggregate details disabled. `docs/deployment-security.md` requires deny-by-default network isolation and prohibits public management ingress. Mock service code is a separate integration-test fixture and is absent from the production artifact.
 
@@ -125,27 +130,22 @@ The client, operator, provider, Kafka records, and trace headers are untrusted i
 ## Telemetry safety
 
 - W3C `traceparent`/`tracestate` propagates across inbound HTTP, provider HTTP, persisted outbox context, and Kafka. Invalid context starts a new valid trace; the safe correlation ID propagates separately in HTTP responses and Kafka headers.
-- Business and database spans use fixed names and bounded stage/outcome/event-type attributes. Provider URLs, operation IDs, SQL text/parameters, event IDs, customer subjects, and payloads are omitted. The normal outbox path restores trustworthy causal parentage; future independent operator recovery must use a span link.
+- Business and database spans use fixed names and bounded stage/outcome/event-type attributes. Provider URLs, operation IDs, SQL text/parameters, event IDs, customer subjects, and payloads are omitted. The normal outbox path restores trustworthy causal parentage; independent operator worker spans use links to the retry request and stored origin.
 - ECS JSON logs contain trace/span context, validated `correlation_id`, and stable `event_code`/`action`/`outcome`/`error_code` fields. They do not concatenate untrusted input or record JWTs, authorization/cookie headers, payment references, idempotency keys, request/provider/Kafka bodies, poison bytes, operator reasons, exception text, or unnecessary personal data.
 - Custom metric label keys and values are a closed code allowlist. IDs, subjects, coordinates, hashes, URLs with identifiers, and exception text cannot become `ledgerflow.*` dimensions. HTTP metrics use normalized route templates.
 - OTLP export has bounded queues, batches, connect timeouts, and overall deadlines. Sustained Collector export failure alerts independently; exporter failure can lose evidence but never fails or rolls back business processing.
 - Prometheus is reachable only on the isolated management interface. Production must also isolate Collector, Prometheus, Tempo, Loki, and Grafana network/authentication boundaries and set approved telemetry retention.
 - Sampling is deployment-configurable and must preserve error traces at an operationally useful rate without trusting client sampling flags as authorization. Local full sampling is demonstration evidence, not a production policy.
 
-## Replay controls and future operator API
+## Operator recovery and replay controls
 
-- The implemented `scripts/replay-dead-letter` interface targets one replayable catalog UUID and requires an actor and a 10–500 character reason. It generates a new transport correlation/trace; its leased claim and owner-guarded result updates append immutable replay audit rows.
-- The tool cannot replay malformed/non-replayable records, alter the canonical envelope/key, edit offsets, or mutate financial state. `REPLAYED` proves broker acknowledgement only.
-- PostgreSQL rejects update and delete of replay audit evidence. Tests exercise both operations directly; production role separation must additionally prevent trigger or DDL bypass.
-
-The following controls apply to the future operator HTTP workflow and are not implemented by the CLI:
-
-- Operator endpoints require HTTPS and explicit scopes; deployment should additionally restrict network access.
-- List endpoints are paginated, filtered, and bounded. Deployment-edge rate limits are required before internet exposure. Failure details are safe projections rather than raw tables.
-- Retry commands require a 10–500 character reason and idempotency key.
-- Retry dispatch rechecks operation status, retryability, and current domain state inside the acceptance transaction.
-- An append-only audit records operator subject, mutation, reason, resource, before/after status, original and retry correlation IDs, trace ID, and timestamp. Protected access logs cover operator reads.
-- Operators cannot directly change payment or ledger state, edit Kafka offsets, or mutate outbox/inbox rows through the future API.
+- Operator endpoints require HTTPS, explicit scopes and roles, and internal-ingress restriction. Lists use bounded keyset pagination and failure details are safe projections rather than raw tables.
+- Retry commands require a 10–500 character control-free reason and idempotency key. Authenticated issuer, subject, and client identity come only from the validated JWT; neither HTTP nor environment input may assert an actor.
+- Command acceptance locks a monotonic recovery row, rechecks source retryability, permits one active command, applies cooldown and attempt caps, and writes the command plus immutable audit atomically.
+- Workers claim through `SKIP LOCKED` with expiring owner/token/version leases. Handlers guard before external or durable effects; stale workers cannot execute or complete. Payment reconciliation uses original provider IDs, outbox resets the existing logical event, and DLT replay preserves stored identity/key/body.
+- After three automatic attempts by default, an admin with a separate scope records immutable break-glass approval. A later retry action consumes that evidence once; approval and execution are separate audited actions and break-glass attempts are bounded.
+- `scripts/replay-dead-letter` is a bearer-token API client. It cannot replay malformed/non-replayable records, alter the canonical envelope/key, edit offsets, assert an actor, or mutate financial state. Broker acknowledgement proves only the replay send.
+- PostgreSQL rejects update/delete of approval, approval-use, retry-attempt, and operator-audit evidence and protects command request identity. Production role separation must additionally prevent trigger or DDL bypass.
 
 ## Security test strategy
 
@@ -153,7 +153,7 @@ The following controls apply to the future operator HTTP workflow and are not im
 - Malformed/unapproved realm-role conversion and reserved operator-boundary negative tests. Algorithm-confusion, key-rotation, and issuer/JWKS outage exercises remain production-launch tests.
 - Owner-versus-other-owner object authorization tests using indistinguishable `404` responses.
 - Query, media/content encoding, duplicate/unknown JSON, header/body size, rate-limit, and malformed JSON boundary tests.
-- Concurrent HTTP idempotency tests; operator-HTTP retry tests remain future.
+- Concurrent HTTP and operator-command idempotency tests, including changed-key conflict and one-active-command races.
 - Multi-instance outbox/replay claims, expired-lease takeover, and stale-owner completion-rejection tests.
 - Provider contract tests for stable IDs, decline, malformed response, timeout-confirmed lookup, timeout-`NOT_FOUND` same-ID resend, temporary failure, and success-lost-before-persistence recovery.
 - Direct PostgreSQL tests proving balance, immutability, unique source, and state constraints.

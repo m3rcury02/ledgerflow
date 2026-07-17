@@ -7,15 +7,16 @@ import static org.awaitility.Awaitility.await;
 import com.ledgerflow.messaging.api.EventEnvelopeCodec;
 import com.ledgerflow.messaging.api.PaymentCapturedDataV1;
 import com.ledgerflow.messaging.api.PaymentCapturedEventV1;
-import com.ledgerflow.notifications.api.DeadLetterReplay;
-import com.ledgerflow.notifications.api.ReplayOutcome;
-import com.ledgerflow.notifications.api.ReplayResult;
 import com.ledgerflow.notifications.internal.application.NotificationEffectIdentity;
 import com.ledgerflow.notifications.internal.application.NotificationIntegrityException;
 import com.ledgerflow.notifications.internal.persistence.CatalogWriteOutcome;
 import com.ledgerflow.notifications.internal.persistence.JdbcNotificationStore;
 import com.ledgerflow.notifications.internal.persistence.NotificationProcessOutcome;
 import com.ledgerflow.notifications.internal.persistence.TerminalDltRecord;
+import com.ledgerflow.operations.api.OperationRecoveryContext;
+import com.ledgerflow.operations.api.OperationRecoveryHandler;
+import com.ledgerflow.operations.api.OperationRecoveryResult;
+import com.ledgerflow.operations.api.OperationType;
 import com.ledgerflow.testing.KafkaIntegrationTest;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.nio.ByteBuffer;
@@ -36,7 +37,7 @@ import org.springframework.kafka.support.KafkaHeaders;
 
 class KafkaRetryAndDltIntegrationTest extends KafkaIntegrationTest {
 
-  @Autowired private DeadLetterReplay replayService;
+  @Autowired private java.util.List<OperationRecoveryHandler> recoveryHandlers;
   @Autowired private EventEnvelopeCodec codec;
   @Autowired private KafkaTemplate<String, String> kafkaTemplate;
   @Autowired private JdbcNotificationStore notificationStore;
@@ -60,16 +61,31 @@ class KafkaRetryAndDltIntegrationTest extends KafkaIntegrationTest {
     assertThat(notificationCount()).isZero();
     assertThat(inboxCount()).isZero();
 
-    ReplayResult replay =
-        replayService.replay(
-            deadLetter.id(), "operator:test", "Retry after the transient database fault cleared");
+    OperationRecoveryResult replay =
+        deadLetterHandler()
+            .recover(
+                new OperationRecoveryContext(
+                    UUID.randomUUID(),
+                    deadLetter.id(),
+                    "dlt-replay-test",
+                    true,
+                    false,
+                    Duration.ofSeconds(2),
+                    () -> assertThat(true).isTrue()));
 
-    assertThat(replay.outcome()).isEqualTo(ReplayOutcome.PUBLISHED);
+    assertThat(replay.status()).isEqualTo(OperationRecoveryResult.Status.COMPLETED);
     await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertNotificationCount(1));
     assertThat(inboxCount()).isOne();
     assertThat(replayStatus(deadLetter.id())).isEqualTo("REPLAYED");
     assertThat(replayAuditActions(deadLetter.id())).containsExactly("REQUESTED", "PUBLISHED");
     assertReplayAuditIsImmutable(deadLetter.id());
+  }
+
+  private OperationRecoveryHandler deadLetterHandler() {
+    return recoveryHandlers.stream()
+        .filter(handler -> handler.operationType() == OperationType.DEAD_LETTER)
+        .findFirst()
+        .orElseThrow();
   }
 
   @Test

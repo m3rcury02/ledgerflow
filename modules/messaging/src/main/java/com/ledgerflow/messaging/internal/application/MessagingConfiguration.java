@@ -5,6 +5,7 @@ import com.ledgerflow.messaging.api.OutboxEventAppender;
 import com.ledgerflow.messaging.internal.kafka.KafkaTracePropagation;
 import com.ledgerflow.messaging.internal.persistence.JdbcOutboxStore;
 import com.ledgerflow.operations.api.FaultInjection;
+import com.ledgerflow.operations.api.OperationRecoveryHandler;
 import com.ledgerflow.operations.api.WorkTracker;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.opentelemetry.api.GlobalOpenTelemetry;
@@ -45,6 +46,11 @@ public class MessagingConfiguration {
   @Bean
   OutboxMetrics outboxMetrics(JdbcOutboxStore outboxStore, MeterRegistry meterRegistry) {
     return new OutboxMetrics(outboxStore, meterRegistry, Clock.systemUTC());
+  }
+
+  @Bean
+  OperationRecoveryHandler outboxOperationRecoveryHandler(JdbcOutboxStore outboxStore) {
+    return new OutboxOperationRecoveryHandler(outboxStore, Clock.systemUTC());
   }
 
   @Bean

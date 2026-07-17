@@ -28,3 +28,7 @@ management:
     export:
       otlp:
         enabled: false
+
+ledgerflow:
+  operations:
+    recovery-worker-enabled: false
