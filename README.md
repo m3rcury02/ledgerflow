@@ -68,6 +68,19 @@ The command builds the application artifact, scans repository configuration and 
 
 Every pull request runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml) (the full `./gradlew clean verify` lifecycle, then an OCI image build with a CycloneDX SBOM and a Trivy vulnerability scan) and [`.github/workflows/codeql.yml`](.github/workflows/codeql.yml) (CodeQL static analysis). `.github/workflows/security-scan.yml` runs the Docker-socket-privileged `scripts/security-scan` on pushes to `main` and on a schedule, not on pull requests, so a fork-originated PR is never granted that access. Every third-party GitHub Action is pinned to a full commit SHA; [`.github/dependabot.yml`](.github/dependabot.yml) keeps those pins, Gradle dependencies, and the Dockerfile base images current. Recommended `main` branch-protection settings are documented in [`docs/branch-protection.md`](docs/branch-protection.md) — they are recommendations only and are not applied automatically.
 
+## Container image
+
+`Dockerfile` builds a digest-pinned, multi-stage, non-root, read-only-root-filesystem-
+compatible image (`docker build --tag ledgerflow:local .`). `./scripts/scan-image` (or
+`make image-scan`) builds it and generates a CycloneDX SBOM plus a Trivy vulnerability scan
+locally — the same checks `.github/workflows/ci.yml`'s image job runs, for use outside CI.
+There is one image for both roles: a "worker" deployment is the identical image started
+with `LEDGERFLOW_RECOVERY_WORKER_ENABLED=true` (the default) and, in Kubernetes, simply not
+targeted by the public Service. Every hardening property — read-only root filesystem,
+graceful shutdown, a byte-for-byte reproducible jar, and the base-image package trimming
+that closed 5 real HIGH-severity CVEs by removing unused font-rendering and PKCS#11
+packages — is verified with real commands in [`docs/container-hardening.md`](docs/container-hardening.md).
+
 ## Local dependency environment
 
 Start all local dependencies and wait until Compose reports all nine services healthy:

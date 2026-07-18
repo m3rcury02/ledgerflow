@@ -8,8 +8,8 @@
 - Last updated: 2026-07-18
 - Approved by: Gunal (gunal2002@gmail.com), via conversation on 2026-07-18
 - Approval date: 2026-07-18
-- Current milestone: Milestone 2 complete; Milestone 3 (production-oriented containers)
-  awaits separate approval before starting, per the checkpoint execution style approved on
+- Current milestone: Milestone 3 complete; Milestone 4 (local Kubernetes and Helm) awaits
+  separate approval before starting, per the checkpoint execution style approved on
   2026-07-18.
 
 ## Purpose and outcome
@@ -215,14 +215,52 @@ artifacts, not application interfaces.
 
 ### Milestone 3 — Production-oriented containers
 
-- Status: Proposed
-- Intended outcome: hardened multi-stage image(s) building on Milestone 1's Dockerfile —
+- Status: Complete
+- Intended outcome: hardened multi-stage image building on Milestone 1's Dockerfile —
   read-only root filesystem compatibility, bounded writable temp storage, graceful shutdown,
   OCI metadata labels, reproducible-build guidance, SBOM, vulnerability scanning, no embedded
   secrets, documented JVM resource settings. "Worker" is realized as a second deployment of
   the same image with `LEDGERFLOW_RECOVERY_WORKER_ENABLED` and equivalent config, per the
-  Current State finding above — not a second build artifact.
-- Detail deferred until approved to start.
+  Milestone 2 Current State finding — not a second build artifact or Dockerfile.
+- Current-state findings specific to this milestone (re-checked, not assumed, since
+  Milestone 1 already built the base image):
+  - The current `Dockerfile` already has: multi-stage build, digest-pinned Temurin 25
+    Alpine images, non-root `USER`, `ENTRYPOINT` in exec form (so `SIGTERM` reaches the JVM
+    directly — `server.shutdown: graceful` is already configured in
+    `application/src/main/resources/application.yaml`). Not yet present: OCI metadata
+    labels, verified read-only-root-filesystem compatibility, documented JVM resource
+    settings, reproducible-build guidance, and a way to generate an SBOM / scan this
+    specific image locally (Milestone 1's SBOM/Trivy steps only run in CI).
+  - Java 25 (like every JDK since 10) auto-detects cgroup memory/CPU limits by default
+    (`-XX:+UseContainerSupport` is on by default) — container-aware heap sizing needs no
+    code change, only documentation of the tunable flags for when limits are tight.
+- Implementation work:
+  - `Dockerfile`: add `org.opencontainers.image.*` labels (title, description, source,
+    revision, licenses); no other structural change unless the read-only-filesystem test
+    below finds a real gap.
+  - `application/build.gradle.kts`: reproducible `bootJar` settings
+    (`isPreserveFileTimestamps = false`, `isReproducibleFileOrder = true`), verified by
+    building the jar twice and comparing SHA-256, not asserted from documentation alone.
+  - A new script (name decided during implementation) to build, SBOM, and Trivy-scan the
+    application's own image locally, reusing the same pinned Trivy image digest
+    `scripts/security-scan` already uses, plus matching `Makefile` targets — this is new
+    capability, not a change to `scripts/security-scan`'s existing, already-approved
+    behavior.
+  - `docs/container-hardening.md`: OCI metadata, reproducible-build guidance, read-only-
+    root-filesystem instructions (with the exact `docker run` flags proven to work),
+    graceful-shutdown evidence (a real `SIGTERM` sent to a running container), JVM resource
+    settings, SBOM/vulnerability-scan instructions, "no embedded secrets" confirmation, and
+    the API/worker-via-configuration explanation — every claim backed by a command actually
+    run in this milestone, not asserted.
+- Validation commands: `./gradlew clean verify`; `docker build .`; the new local
+  SBOM/scan script; a real `docker run --read-only --tmpfs /tmp ...` smoke test; a real
+  `docker kill --signal SIGTERM` graceful-shutdown test; `./scripts/security-scan`.
+- Observable acceptance criteria: the image runs successfully with `--read-only` and a
+  bounded `/tmp` tmpfs mount; a `SIGTERM` produces the graceful-shutdown log line and the
+  container exits before Docker's default kill-timeout; two consecutive builds produce a
+  byte-identical `ledgerflow.jar` (same SHA-256); the local SBOM/scan script runs and
+  reports no unaddressed HIGH/CRITICAL findings; `./gradlew clean verify` and
+  `./scripts/security-scan` still pass.
 
 ### Milestone 4 — Local Kubernetes and Helm
 
@@ -334,6 +372,19 @@ anticipated by any extension) would use a new forward migration only.
   clean verify` passed (`BUILD SUCCESSFUL`, one `spotlessApply`/checkstyle round-trip
   needed for the two new Java files, no other files touched). `./scripts/security-scan`
   exited 0 with the same pre-existing, unrelated Compose findings as Milestone 1.
+- [x] `2026-07-18` — Milestone 3 implemented and validated with real commands, all recorded
+  in `docs/container-hardening.md`: OCI metadata labels (verified via `docker inspect`);
+  reproducible `bootJar` (two independent builds, byte-identical SHA-256); read-only root
+  filesystem (two full clean startups under `--read-only --tmpfs /tmp`); graceful shutdown
+  (154.4ms measured from real `SIGTERM` log timestamps, not wall-clock-including-CLI-
+  overhead); a new `scripts/scan-image` (`make image-scan`) that found 5 real HIGH-severity
+  CVEs in the unmodified upstream base image (libexpat, p11-kit/p11-kit-trust), which were
+  closed by removing the unused font-rendering and PKCS#11 package chains
+  (`apk info --rdepends` confirmed nothing else needed them; 44→30 packages, 24.0→11.1 MiB),
+  re-verified with a real end-to-end order (`201`/`COMPLETED`/`CAPTURED`) against the
+  hardened image and a clean rescan (0 HIGH/CRITICAL). `./gradlew --no-daemon clean verify`
+  passed; `./scripts/security-scan` passed with the same pre-existing Compose findings as
+  before.
 
 ## Surprises and discoveries
 
@@ -387,6 +438,20 @@ anticipated by any extension) would use a new forward migration only.
   specifically, regardless of mechanism (`docker run -p` or `docker compose`); 18080 is used
   for the application's published HTTP port instead (8082, the management port, is
   unaffected).
+- `apk del pkgA pkgB` silently does nothing to a package if the base image's own "world"
+  file explicitly pins it, even when nothing else depends on it — it just leaves it (and
+  anything it exclusively needs) in place without an error. `eclipse-temurin:25-jre-alpine`
+  pins `ttf-dejavu` this way; the first `apk del` attempt (naming `font-dejavu`,
+  `fontconfig`, etc. but not `ttf-dejavu` itself) printed "not removed due to: ttf-dejavu"
+  for every package in that chain and instead just upgraded `libexpat`/`freetype` in place.
+  `ttf-dejavu` had to be named explicitly before the removal actually took effect. Recorded
+  because the command appeared to succeed (exit 0) both times; only inspecting the
+  resulting package list afterward caught the difference.
+- Ad-hoc `docker run -p` port publishing is genuinely flaky/slow to register in this
+  sandbox even though `docker compose`-published ports register reliably — confirmed by
+  publishing the identical port through both mechanisms back to back. Prefer
+  `docker compose` (even a throwaway one-off project) over bare `docker run -p` for
+  anything that needs to be reachable from this shell.
 
 ## Decision log
 
@@ -440,6 +505,21 @@ anticipated by any extension) would use a new forward migration only.
   version proves both the underlying Postgres locking mechanism and the application's
   actual (better) behavior directly. No ADR required — this is test design, not an
   application change.
+- 2026-07-18 — Remove the unused font-rendering and PKCS#11-trust package chains from the
+  runtime image instead of exception-listing the CVEs a local Trivy scan found in them.
+  Rationale: this repository's own `scripts/security-scan` already establishes "no
+  exception path for the packaged application" as a principle (`docs/development-workflow.md`);
+  applying that same principle to the application's own image is more consistent than
+  inventing a new exception mechanism for it. `apk info --rdepends` confirmed nothing else
+  in the image needs these packages, and a real end-to-end order against the rebuilt image
+  confirmed nothing the application uses was removed. No ADR required — this is a
+  Dockerfile change with no application-code impact.
+- 2026-07-18 — Add a new `scripts/scan-image` rather than extending `scripts/security-scan`
+  to also cover the application's own image. Rationale: `scripts/security-scan`'s existing
+  behavior (Compose images plus the packaged jar) is already approved and exercised by
+  `docs/development-workflow.md`'s documented command list; adding new scope to it would be
+  an unreviewed behavior change to an established check. A new script is new capability,
+  not a change to existing, already-approved behavior. No ADR required.
 
 ## Outcome and follow-up
 

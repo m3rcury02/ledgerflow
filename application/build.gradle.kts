@@ -157,4 +157,9 @@ tasks.register("printMockProviderClasspath") {
 
 tasks.named<org.springframework.boot.gradle.tasks.bundling.BootJar>("bootJar") {
     archiveFileName = "ledgerflow.jar"
+    // Reproducible build: strip per-build file timestamps and fix entry order so two
+    // builds from the same source produce a byte-identical jar (verified in
+    // docs/container-hardening.md by comparing SHA-256 across two clean builds).
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
 }
