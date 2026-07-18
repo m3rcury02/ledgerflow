@@ -64,6 +64,10 @@ Security-sensitive, dependency, or container-image changes also run the separate
 
 The command builds the application artifact, scans repository configuration and committed content for secrets, scans packaged Java dependencies, and scans every Compose image. Repository-secret and application-artifact findings always fail. Compose findings fail unless they exactly match an unexpired, digest-bound local-development record in the [container risk register](docs/security/local-development-container-risk-register.md); Trivy still prints every finding. These exceptions are prohibited for production. The command uses a version-and-digest-pinned Trivy container and read-only Docker-socket access for image inspection; run it only on a trusted development or CI host.
 
+## Continuous integration
+
+Every pull request runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml) (the full `./gradlew clean verify` lifecycle, then an OCI image build with a CycloneDX SBOM and a Trivy vulnerability scan) and [`.github/workflows/codeql.yml`](.github/workflows/codeql.yml) (CodeQL static analysis). `.github/workflows/security-scan.yml` runs the Docker-socket-privileged `scripts/security-scan` on pushes to `main` and on a schedule, not on pull requests, so a fork-originated PR is never granted that access. Every third-party GitHub Action is pinned to a full commit SHA; [`.github/dependabot.yml`](.github/dependabot.yml) keeps those pins, Gradle dependencies, and the Dockerfile base images current. Recommended `main` branch-protection settings are documented in [`docs/branch-protection.md`](docs/branch-protection.md) — they are recommendations only and are not applied automatically.
+
 ## Local dependency environment
 
 Start all local dependencies and wait until Compose reports all nine services healthy:

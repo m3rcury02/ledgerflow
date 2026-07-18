@@ -1,0 +1,54 @@
+name: CodeQL
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (java-kotlin)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 25 (Temurin)
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: gradle
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@eec0bff2f6c15bf3f1e8a0152f94d17664a06a06 # v4
+        with:
+          languages: java-kotlin
+          build-mode: manual
+
+      # Manual build mode compiles every subproject's main sources without running the
+      # full test/integration suite, keeping this workflow independent of `verify` (which
+      # already runs separately in ci.yml) while still giving CodeQL a complete build to
+      # analyze.
+      - name: Build for analysis
+        run: ./gradlew --no-daemon compileJava
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@eec0bff2f6c15bf3f1e8a0152f94d17664a06a06 # v4
+        with:
+          category: "/language:java-kotlin"
