@@ -33,8 +33,17 @@ public final class MockPaymentProviderServer {
   private final HttpServer server;
 
   public MockPaymentProviderServer() {
+    this(0);
+  }
+
+  /**
+   * Binds a specific port instead of an OS-assigned one, for standalone local use (see {@link
+   * StandaloneMockPaymentProviderServer}) where the port must be known before the dependent process
+   * starts. The no-arg constructor above, used by every existing test, is unchanged.
+   */
+  public MockPaymentProviderServer(int port) {
     try {
-      server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+      server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
     } catch (IOException exception) {
       throw new IllegalStateException("Could not create the mock payment provider", exception);
     }

@@ -1,0 +1,62 @@
+# Performance/failure-experiment overlay for the main compose.yaml. Adds the application
+# and the standalone mock payment provider as real containers on the same network as
+# scripts/dev-up's dependencies, so both this host's shell (via published ports, the same
+# mechanism scripts/dev-up already relies on) and other containers (k6, kcat) can reach
+# them consistently. See docs/plans/portfolio-extension-execplan.md, Milestone 2, and
+# performance/scripts/run-experiments.sh.
+#
+# The mock provider shares the application container's network namespace
+# (network_mode: service:app) because MockPaymentProviderServer intentionally binds only
+# 127.0.0.1 (application/src/integrationTest/java/com/ledgerflow/testing/payment/MockPaymentProviderServer.java)
+# — sidecar-style networking is the only way another process can reach it.
+#
+# Run with:
+#   docker compose --env-file .env -f compose.yaml -f performance/compose.perf.yaml \
+#     --project-name ledgerflow-local up --detach app mock-provider
+services:
+  app:
+    image: ${LEDGERFLOW_IMAGE:-ledgerflow:local}
+    networks: [ledgerflow]
+    ports:
+      # Host-side 8080 is reserved by this sandbox's own infrastructure; 18080 is used
+      # instead. The container's internal port is still the application's normal 8080.
+      - "127.0.0.1:18080:8080"
+      - "127.0.0.1:8082:8082"
+    environment:
+      LEDGERFLOW_DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-ledgerflow}
+      LEDGERFLOW_DB_USERNAME: ${POSTGRES_USER:-ledgerflow}
+      LEDGERFLOW_DB_PASSWORD: ${POSTGRES_PASSWORD:-change-me-local-postgres}
+      LEDGERFLOW_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      LEDGERFLOW_OAUTH2_AUDIENCE: ledgerflow-api
+      LEDGERFLOW_OAUTH2_ISSUER: http://localhost:${KEYCLOAK_PORT:-8081}/realms/ledgerflow
+      LEDGERFLOW_OAUTH2_JWK_SET_URI: http://keycloak:8080/realms/ledgerflow/protocol/openid-connect/certs
+      LEDGERFLOW_PAYMENT_PROVIDER_BASE_URL: http://127.0.0.1:${MOCK_PROVIDER_PORT:-8090}
+      LEDGERFLOW_PAYMENT_PROVIDER_CONNECT_TIMEOUT: ${LEDGERFLOW_PAYMENT_PROVIDER_CONNECT_TIMEOUT:-1s}
+      LEDGERFLOW_PAYMENT_PROVIDER_READ_TIMEOUT: ${LEDGERFLOW_PAYMENT_PROVIDER_READ_TIMEOUT:-2s}
+      LEDGERFLOW_PAYMENT_PROVIDER_OVERALL_TIMEOUT: ${LEDGERFLOW_PAYMENT_PROVIDER_OVERALL_TIMEOUT:-2500ms}
+      LEDGERFLOW_PAYMENT_PROVIDER_ACTIVE_OPERATION_TIMEOUT: ${LEDGERFLOW_PAYMENT_PROVIDER_ACTIVE_OPERATION_TIMEOUT:-3s}
+      LEDGERFLOW_MANAGEMENT_PORT: "8082"
+      LEDGERFLOW_HEALTH_PROBE_CACHE_TTL: 2s
+      LEDGERFLOW_DEPLOYMENT_ENVIRONMENT: local
+      LEDGERFLOW_TRACE_SAMPLING_PROBABILITY: "0"
+      LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED: ${LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED:-true}
+      LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED: "true"
+      LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED: "true"
+
+  mock-provider:
+    image: eclipse-temurin:25-jdk-alpine@sha256:5ecfde8e5ecde5954ea3721155b345ef56c1d579b940c761318ad4c05959a151
+    network_mode: "service:app"
+    depends_on:
+      app:
+        condition: service_started
+    environment:
+      MOCK_PROVIDER_PORT: ${MOCK_PROVIDER_PORT:-8090}
+    volumes:
+      - ${HOME}/.gradle/caches:${HOME}/.gradle/caches:ro
+      - ${LEDGERFLOW_ROOT}:${LEDGERFLOW_ROOT}:ro
+    working_dir: ${LEDGERFLOW_ROOT}
+    entrypoint:
+      - java
+      - -cp
+      - ${MOCK_PROVIDER_CLASSPATH}
+      - com.ledgerflow.testing.payment.StandaloneMockPaymentProviderServer

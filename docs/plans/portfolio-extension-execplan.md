@@ -8,9 +8,9 @@
 - Last updated: 2026-07-18
 - Approved by: Gunal (gunal2002@gmail.com), via conversation on 2026-07-18
 - Approval date: 2026-07-18
-- Current milestone: Milestone 1 complete; Milestone 2 (performance and failure
-  experiments) awaits separate approval before starting, per the checkpoint execution
-  style approved on 2026-07-18.
+- Current milestone: Milestone 2 complete; Milestone 3 (production-oriented containers)
+  awaits separate approval before starting, per the checkpoint execution style approved on
+  2026-07-18.
 
 ## Purpose and outcome
 
@@ -142,13 +142,76 @@ artifacts, not application interfaces.
 
 ### Milestone 2 — Performance and failure experiments
 
-- Status: Proposed
-- Intended outcome: k6 (or equivalent) scenarios for the 11 listed workloads, each with a
+- Status: Complete
+- Intended outcome: k6 (or equivalent) scenarios for all 11 listed workloads, each with a
   recorded hypothesis, workload, test data, expected behavior, threshold, and an honestly
-  observed result (or an explicit manual-execution marker where automation is unsafe, e.g.
-  scenarios that stop Docker containers).
-- Detail deferred until this milestone is approved to start, per `.agent/PLANS.md` (avoid
-  prescribing implementation before the current milestone is complete and reviewed).
+  observed result. This session has real, working Docker and network access (confirmed in
+  Milestone 1: built and ran the image, resolved live registry digests), so every scenario
+  is attempted against the real local stack rather than pre-emptively marked manual; a
+  scenario is only marked manual if it turns out to be genuinely unsafe or infeasible here.
+- Current-state findings specific to this milestone:
+  - There is no standalone runtime mock payment provider. `MockPaymentProviderServer`
+    (`application/src/integrationTest/java/com/ledgerflow/testing/payment/MockPaymentProviderServer.java`)
+    is an in-JVM JDK `HttpServer` fixture, started only from JUnit tests
+    (`README.md`: "manual curl use requires a separately running implementation... The
+    default application has no provider base URL, so no outbound provider client starts
+    accidentally"). The fixture already implements deterministic success, decline, slow
+    (`pm_mock_slow_response`, 400 ms), and timeout (`pm_mock_authorization_timeout` /
+    `pm_mock_capture_timeout`, 1500 ms; `..._timeout_not_found` variants for the
+    timeout-then-lookup path) payment-method references — exactly what the "slow provider"
+    and "provider timeout" scenarios need. A new standalone launcher (test-scope only, no
+    production code or dependency change) is required to run it as a real local process for
+    live experiments.
+  - The realm imported by `infra/keycloak/ledgerflow-realm.json` intentionally has no
+    users, passwords, or client secrets, and (verified live) has no `roles` client scope —
+    role claims reach the token only through a client's own dedicated protocol mapper, not
+    a shared realm scope. A dedicated, load-test-only confidential client
+    (`ledgerflow-load-test`, service accounts enabled, `customer` realm role, `orders.read`/
+    `orders.write` optional scopes, its own `oidc-usermodel-realm-role-mapper` mapper
+    emitting `realm_access.roles`) is provisioned idempotently through the Keycloak Admin
+    REST API at experiment-run time — not by editing the committed realm file, which is
+    MVP-owned local-dev infrastructure this plan's non-goals exclude rewriting.
+  - `modules/orders/.../LedgerFlowJwtAuthoritiesConverter.java` confirmed (by reading the
+    source, not assumption) that authorization requires both `realm_access.roles` containing
+    `customer`/`operator`/`admin` and the relevant `ledgerflow.orders.*` scope — both are
+    verified present in a real minted token before any scenario runs.
+- Implementation work (as actually built — see Surprises and Decision log for why this
+  diverged from the original plan sketch above):
+  - `application/src/integrationTest/java/com/ledgerflow/testing/payment/MockPaymentProviderServer.java`
+    — additive `MockPaymentProviderServer(int port)` constructor (the existing no-arg
+    constructor now delegates to it with port 0, unchanged for every existing test); a new
+    `StandaloneMockPaymentProviderServer` launcher reads `MOCK_PROVIDER_PORT` (default 8090)
+    so the port is known before dependent processes start. A `runMockPaymentProvider` Gradle
+    task and a `printMockProviderClasspath` task (prints the `integrationTest` runtime
+    classpath so a container can run the launcher via mounted classes) were added to
+    `application/build.gradle.kts` — no new source set, no new dependency.
+  - `performance/scripts/provision-load-test-client.sh` — idempotent Keycloak Admin API
+    provisioning of a **pool** of 10 round-robinned clients plus two dedicated clients
+    (`-contention`, `-burst`), not one shared client — see Decision log.
+  - `performance/compose.perf.yaml` — runs the application (`ledgerflow:local`, Milestone 1's
+    `Dockerfile`) and the mock provider as real containers, not bare local processes — see
+    Surprises and discoveries. The mock provider uses `network_mode: "service:app"`.
+  - `performance/scenarios/*.js` — one k6 script per workload, importing shared token-pool
+    logic from `performance/scenarios/lib/client.js`.
+  - `performance/scripts/run-experiments.sh` — orchestrates the whole run: builds the image,
+    provisions identities, brings up `compose.perf.yaml`, runs a JVM/pool warmup, runs all 11
+    scenarios via `performance/scripts/run-k6.sh` or dedicated shell scripts
+    (`db-lock-contention.sh`, `kafka-outage-recovery.sh`, `duplicate-event-delivery.sh`,
+    `worker-restart.sh`, `outbox-backlog-drainage.sh`), and tears its own containers down
+    afterward. It never touches `scripts/dev-up`'s shared dependency containers destructively
+    (only stops/starts `kafka` for the outage scenario).
+  - `docs/performance-experiments.md` — the required hypothesis/workload/test
+    data/expected/threshold/observed/bottleneck/optimization/rerun record for all 11
+    scenarios, filled in only from real command output, including the debugging process for
+    the two experiments that needed real fixes before they were trustworthy.
+- Validation commands: `./gradlew clean verify`; `./scripts/security-scan`; a full run of
+  `./performance/scripts/run-experiments.sh` (exit 0 required — every scenario's own
+  pass/fail is asserted inside the script, not just recorded).
+- Observable acceptance criteria: every one of the 11 scenarios has a real recorded result
+  with evidence (k6 summary JSON, shell-script log output, or a direct SQL query result
+  quoted in `docs/performance-experiments.md`); no invented numbers; `./gradlew clean
+  verify` and `./scripts/security-scan` still pass after the milestone's changes. Met: a
+  full `run-experiments.sh` run completed with exit code 0 on 2026-07-18.
 
 ### Milestone 3 — Production-oriented containers
 
@@ -259,9 +322,38 @@ anticipated by any extension) would use a new forward migration only.
   pass, and the only Compose-image findings are on third-party images (Keycloak, Valkey)
   already covered by pre-existing, unexpired local-development risk records unrelated to
   this milestone's changes.
+- [x] `2026-07-18` — Milestone 2 implemented and validated end to end. Real infrastructure
+  discoveries along the way (this sandbox's split Docker networking; the application's
+  documented 60/min per-subject write rate limit; k6's `open()` being init-stage-only;
+  Postgres never blocking a plain `SELECT` behind a writer's row lock) required rebuilding
+  the load-generation identity model, the app/mock-provider process model, and the
+  database-lock-contention experiment's design partway through — recorded in Surprises and
+  discoveries and in `docs/performance-experiments.md` itself rather than hidden. Final full
+  run: `./performance/scripts/run-experiments.sh` exited 0, all 11 scenarios passed with
+  real, non-fabricated numbers (`docs/performance-experiments.md`). `./gradlew --no-daemon
+  clean verify` passed (`BUILD SUCCESSFUL`, one `spotlessApply`/checkstyle round-trip
+  needed for the two new Java files, no other files touched). `./scripts/security-scan`
+  exited 0 with the same pre-existing, unrelated Compose findings as Milestone 1.
 
 ## Surprises and discoveries
 
+- This sandbox's Docker networking is not uniform: this shell's own network namespace and
+  the namespace `docker run --network host` containers join are different. A bare process
+  bound directly in this shell (e.g. `java -jar ... ` on port 8080) is invisible to any
+  Docker container, host-network or not; conversely a container's directly-bound port
+  (`docker run -p` without going through `docker compose`) is invisible to this shell. The
+  only mechanism reachable from **both** sides, empirically verified, is a port published
+  by `docker compose up` (which is how `scripts/dev-up`'s Postgres/Kafka/Keycloak ports
+  already worked, and is why they seemed to "just work" while a hand-started application
+  process and a hand-started k6 container could not see each other). Consequently
+  Milestone 2 runs the application and the mock payment provider as real containers via
+  `performance/compose.perf.yaml`, not bare local processes — see that file's own comments
+  for the mechanics, including why the mock provider needs `network_mode: "service:app"`
+  (it intentionally binds only `127.0.0.1` inside its own container, so only a process
+  sharing that exact network namespace, not merely the same bridge network, can reach it).
+  Separately, host port 8080 specifically returns a `500` from Docker's own port-forward
+  registration in this sandbox regardless of mechanism; the application is published on
+  18080 instead (8082 for management, unaffected).
 - The application has no separate "worker" process today; Extensions 3 and 4's "API and
   worker" language must map to configuration-differentiated deployments of one image, not
   two build artifacts. Recorded above so Milestones 3–4 don't assume a nonexistent artifact.
@@ -271,6 +363,30 @@ anticipated by any extension) would use a new forward migration only.
 - The previous (reverted) extension attempt left two CLI binaries committed to git history
   on `archive/main-before-d2f1721-2026-07-17` (~12 MB) and an unrequested demo UI. Neither is
   reused; noted so the same mistake isn't repeated.
+- The application enforces a documented 60-requests/minute/subject write rate limit
+  (`README.md`, "Create Order API"). A single shared load-test identity trips it within
+  seconds under any real k6 throughput, which looks like a system failure but is actually a
+  load-generator artifact. Fixed with a pool of per-VU identities plus two fully isolated
+  dedicated identities (`-contention`, `-burst`) so scenarios that must exhaust or share one
+  identity never poison another scenario's "clean" measurement. See
+  `performance/scripts/provision-load-test-client.sh` and `docs/performance-experiments.md`.
+- k6's `open()` function only works in the init stage (a script's top-level/module scope),
+  never inside the exported `default` function. A first attempt called it lazily from a
+  shared helper invoked per-iteration; every iteration threw immediately, zero real HTTP
+  requests were ever sent, and the run still reported a false "pass" because the metrics
+  being thresholded (`http_req_failed`) were trivially 0-of-0. Fixed by reading each
+  scenario's token file at true module top level. Recorded because a green run is not proof
+  a scenario actually executed — worth checking request counts, not just exit codes.
+- Postgres never blocks a plain (non-locking) `SELECT` behind another session's row lock
+  under `READ COMMITTED` — only writers/`FOR UPDATE` contend. The original database-lock-
+  contention experiment assumed idempotent replay would queue behind a lock and was wrong;
+  the application's replay path is, correctly, a non-blocking read. Redesigned to prove that
+  directly instead of reporting a misleading "failure" — see
+  `docs/performance-experiments.md` scenario 7.
+- This sandbox's Docker port-forward registration returns a hard `500` for host port 8080
+  specifically, regardless of mechanism (`docker run -p` or `docker compose`); 18080 is used
+  for the application's published HTTP port instead (8082, the management port, is
+  unaffected).
 
 ## Decision log
 
@@ -303,6 +419,27 @@ anticipated by any extension) would use a new forward migration only.
   two such binaries (~12 MB) directly into git history; downloading actionlint to the
   session scratchpad for one-off validation gets the same assurance without repeating that
   mistake. No ADR required.
+- 2026-07-18 — Run the application and mock provider as real containers
+  (`performance/compose.perf.yaml`) for Milestone 2, not bare local processes as originally
+  sketched. Rationale: this sandbox's Docker networking is split (see Surprises above) —
+  only `docker compose`-published ports are reachable from both this shell and other
+  containers; a bare process is invisible to k6/kcat containers regardless of how it's
+  bound. No ADR required — this is portfolio test tooling, not an application architecture
+  decision, and it changes no production behavior.
+- 2026-07-18 — Provision a pool of load-test identities instead of one shared client.
+  Rationale: the application's documented per-subject write rate limit turns a single
+  shared identity into a load-generator artifact well below any realistic scenario
+  throughput; a pool (plus two fully isolated dedicated identities for the scenarios that
+  must deliberately share or exhaust one identity) models multiple customers instead and
+  keeps each scenario's measurement honest. No ADR required.
+- 2026-07-18 — Redesign the database-lock-contention experiment mid-milestone instead of
+  reporting the original (wrong) hypothesis as a failure. Rationale: the original test
+  design could never observe contention because it targeted a code path — idempotent
+  replay — that is correctly lock-free by design; asserting the disproven hypothesis would
+  have produced a misleading "failure" about correct application behavior. The redesigned
+  version proves both the underlying Postgres locking mechanism and the application's
+  actual (better) behavior directly. No ADR required — this is test design, not an
+  application change.
 
 ## Outcome and follow-up
 

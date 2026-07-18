@@ -1,3 +1,4 @@
+import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.testing.Test
 
 plugins {
@@ -133,6 +134,25 @@ tasks.register<Test>("architectureTest") {
 
 tasks.named("check") {
     dependsOn("integrationTest", "architectureTest")
+}
+
+tasks.register<JavaExec>("runMockPaymentProvider") {
+    group = "performance"
+    description =
+        "Runs the deterministic mock payment provider fixture as a standalone local " +
+        "process for performance/scripts (see docs/plans/portfolio-extension-execplan.md)."
+    classpath = integrationTest.runtimeClasspath
+    mainClass = "com.ledgerflow.testing.payment.StandaloneMockPaymentProviderServer"
+}
+
+tasks.register("printMockProviderClasspath") {
+    group = "performance"
+    description =
+        "Prints the runtime classpath needed to run StandaloneMockPaymentProviderServer " +
+        "from a container that mounts this repository and the Gradle cache read-only."
+    doLast {
+        println("MOCK_PROVIDER_CLASSPATH=" + integrationTest.runtimeClasspath.asPath)
+    }
 }
 
 tasks.named<org.springframework.boot.gradle.tasks.bundling.BootJar>("bootJar") {

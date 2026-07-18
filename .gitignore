@@ -6,4 +6,8 @@
 .DS_Store
 out/
 .env
+performance/results/
+performance/scenarios/tokens.json
+performance/scenarios/contention-token.json
+performance/scenarios/burst-token.json
 
