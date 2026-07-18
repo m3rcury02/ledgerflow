@@ -1,0 +1,105 @@
+# Dev-only PostgreSQL for the kind cluster (Milestone 4). Mirrors compose.yaml's postgres
+# service (same image, same database/role names) so the application's real migrations and
+# Keycloak's real schema run unmodified. Not a production database design — Milestone 5's
+# Terraform/RDS design covers that. The `postgres-init` ConfigMap referenced below is created
+# by scripts/kind-up directly from infra/postgres/init/001-create-keycloak-database.sh so the
+# same idempotent bootstrap script Compose already uses is reused, not duplicated.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: ledgerflow
+type: Opaque
+stringData:
+  POSTGRES_DB: ledgerflow
+  POSTGRES_USER: ledgerflow
+  POSTGRES_PASSWORD: change-me-local-postgres
+  KEYCLOAK_DB_NAME: keycloak
+  KEYCLOAK_DB_USER: keycloak
+  KEYCLOAK_DB_PASSWORD: change-me-local-keycloak-db
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: ledgerflow
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: ledgerflow
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:18.4-trixie
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: [pg_isready, --username=ledgerflow, --dbname=ledgerflow]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: [pg_isready, --username=ledgerflow, --dbname=ledgerflow]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 12
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 768Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+        - name: init
+          configMap:
+            name: postgres-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: ledgerflow
+  labels:
+    app: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432

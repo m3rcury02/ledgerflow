@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Shows the local kind cluster's health for the ledgerflow deployment (docs/plans/
+# portfolio-extension-execplan.md, Milestone 4). Mirrors scripts/dev-status.
+set -euo pipefail
+
+CLUSTER_NAME=ledgerflow-dev
+NAMESPACE=ledgerflow
+
+if ! kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
+  echo "No kind cluster named '$CLUSTER_NAME' exists. Run scripts/kind-up first."
+  exit 1
+fi
+
+kubectl --namespace "$NAMESPACE" get deployments,pods,svc,hpa,pdb,networkpolicy
+echo
+kubectl --namespace kube-system get deployment metrics-server

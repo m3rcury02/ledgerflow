@@ -1,0 +1,29 @@
+{{- if .Values.api.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ledgerflow-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "ledgerflow.selectorLabels.api" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.api.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "ledgerflow.selectorLabels.api" . | nindent 6 }}
+{{- end }}
+---
+{{- if .Values.worker.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ledgerflow-worker
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "ledgerflow.selectorLabels.worker" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.worker.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "ledgerflow.selectorLabels.worker" . | nindent 6 }}
+{{- end }}

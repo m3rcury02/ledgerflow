@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# One-command local Kubernetes deploy (docs/plans/portfolio-extension-execplan.md,
+# Milestone 4): creates/reuses a kind cluster, builds and loads both local images, applies
+# the dev-only dependencies (PostgreSQL, Kafka, Keycloak, metrics-server), waits for them,
+# then installs the Helm chart and waits for its rollout. Mirrors the shape of
+# scripts/dev-up.
+set -euo pipefail
+
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+CLUSTER_NAME=ledgerflow-dev
+NAMESPACE=ledgerflow
+DEPS_DIR="$ROOT_DIR/deploy/kind/dependencies"
+
+for tool in kind helm kubectl docker; do
+  command -v "$tool" >/dev/null || { echo "Missing required tool: $tool" >&2; exit 1; }
+done
+
+if ! kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
+  echo "Creating kind cluster '$CLUSTER_NAME'..."
+  kind create cluster --config "$ROOT_DIR/deploy/kind/kind-config.yaml"
+else
+  echo "Reusing existing kind cluster '$CLUSTER_NAME'."
+fi
+kubectl config use-context "kind-$CLUSTER_NAME" >/dev/null
+
+echo "Building images..."
+docker build --tag ledgerflow:local "$ROOT_DIR"
+docker build --tag ledgerflow-mock-provider:local --file "$ROOT_DIR/deploy/kind/mock-provider.Dockerfile" "$ROOT_DIR"
+
+echo "Loading images into kind..."
+kind load docker-image ledgerflow:local --name "$CLUSTER_NAME"
+kind load docker-image ledgerflow-mock-provider:local --name "$CLUSTER_NAME"
+
+echo "Applying namespace and dev-only dependencies..."
+kubectl apply -f "$DEPS_DIR/namespace.yaml"
+
+kubectl create configmap postgres-init \
+  --namespace "$NAMESPACE" \
+  --from-file="$ROOT_DIR/infra/postgres/init/001-create-keycloak-database.sh" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl create configmap keycloak-realm \
+  --namespace "$NAMESPACE" \
+  --from-file="$ROOT_DIR/infra/keycloak/ledgerflow-realm.json" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl apply -f "$DEPS_DIR/postgres.yaml"
+kubectl apply -f "$DEPS_DIR/kafka.yaml"
+kubectl apply -f "$DEPS_DIR/keycloak.yaml"
+kubectl apply -f "$DEPS_DIR/metrics-server.yaml"
+
+echo "Waiting for dependencies to become ready (Keycloak's first start can take a few minutes)..."
+kubectl --namespace "$NAMESPACE" rollout status deployment/postgres --timeout=180s
+kubectl --namespace "$NAMESPACE" rollout status deployment/kafka --timeout=180s
+kubectl --namespace "$NAMESPACE" rollout status deployment/keycloak --timeout=300s
+kubectl --namespace kube-system rollout status deployment/metrics-server --timeout=180s
+
+echo "Installing/upgrading the ledgerflow Helm release..."
+helm upgrade --install ledgerflow "$ROOT_DIR/deploy/helm/ledgerflow" \
+  --namespace "$NAMESPACE" \
+  --wait --timeout 5m
+
+echo
+kubectl --namespace "$NAMESPACE" get deployments,pods,svc,hpa,pdb

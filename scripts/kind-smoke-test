@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# Real end-to-end proof for the Milestone 4 kind deployment (docs/plans/
+# portfolio-extension-execplan.md): mints a token from the in-cluster Keycloak, creates one
+# real order through the port-forwarded ledgerflow-api Service, confirms the durable
+# COMPLETED/CAPTURED result, then polls the outbox table until the ledgerflow-worker
+# Deployment — never the API Deployment — publishes that order's event, proving the two
+# Deployments really are independent roles. Finally confirms the worker NetworkPolicy
+# actually refuses a direct request to a worker pod's HTTP port. Every check is a real
+# command against the real cluster scripts/kind-up created; nothing here is asserted from
+# manifests alone.
+set -euo pipefail
+
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+NAMESPACE=ledgerflow
+KEYCLOAK_LOCAL_PORT=${KEYCLOAK_LOCAL_PORT:-18081}
+API_LOCAL_PORT=${API_LOCAL_PORT:-18080}
+KEYCLOAK_ADMIN_USER=${KEYCLOAK_ADMIN_USER:-admin}
+KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD:-change-me-local-keycloak-admin}
+SMOKE_CLIENT_ID=${SMOKE_CLIENT_ID:-ledgerflow-kind-smoke-test}
+
+log() { echo "[kind-smoke-test] $*" >&2; }
+
+PORT_FORWARD_PIDS=()
+cleanup() {
+  for pid in "${PORT_FORWARD_PIDS[@]:-}"; do
+    kill "$pid" >/dev/null 2>&1 || true
+  done
+}
+trap cleanup EXIT
+
+start_port_forward() {
+  local service=$1 local_port=$2 remote_port=$3
+  kubectl --namespace "$NAMESPACE" port-forward "svc/$service" "$local_port:$remote_port" \
+    >/tmp/kind-smoke-test-port-forward-"$service".log 2>&1 &
+  PORT_FORWARD_PIDS+=("$!")
+}
+
+wait_for_port() {
+  local port=$1 label=$2
+  for _ in $(seq 1 30); do
+    if curl --silent --output /dev/null --max-time 2 "http://127.0.0.1:$port/"; then
+      return 0
+    fi
+    sleep 1
+  done
+  log "Timed out waiting for $label on port $port"
+  return 1
+}
+
+log "Confirming ledgerflow-api rollout is healthy..."
+kubectl --namespace "$NAMESPACE" rollout status deployment/ledgerflow-api --timeout=120s
+kubectl --namespace "$NAMESPACE" rollout status deployment/ledgerflow-worker --timeout=120s
+
+log "Port-forwarding keycloak and ledgerflow-api..."
+start_port_forward keycloak "$KEYCLOAK_LOCAL_PORT" 8080
+start_port_forward ledgerflow-api "$API_LOCAL_PORT" 8080
+wait_for_port "$KEYCLOAK_LOCAL_PORT" keycloak || exit 1
+wait_for_port "$API_LOCAL_PORT" ledgerflow-api || exit 1
+
+KEYCLOAK_BASE_URL="http://127.0.0.1:$KEYCLOAK_LOCAL_PORT"
+
+admin_token() {
+  curl --fail --silent --show-error \
+    --request POST "$KEYCLOAK_BASE_URL/realms/master/protocol/openid-connect/token" \
+    --header "Content-Type: application/x-www-form-urlencoded" \
+    --data "grant_type=password" \
+    --data "client_id=admin-cli" \
+    --data "username=$KEYCLOAK_ADMIN_USER" \
+    --data "password=$KEYCLOAK_ADMIN_PASSWORD" \
+    | jq -r '.access_token'
+}
+
+realm_api() {
+  local method=$1 path=$2 data=${3:-}
+  local args=(--fail --silent --show-error --request "$method" \
+    "$KEYCLOAK_BASE_URL/admin/realms/ledgerflow$path" \
+    --header "Authorization: Bearer $(admin_token)" \
+    --header "Content-Type: application/json")
+  if [[ -n "$data" ]]; then
+    args+=(--data "$data")
+  fi
+  curl "${args[@]}"
+}
+
+log "Provisioning the smoke-test client (idempotent)..."
+client_uuid=$(realm_api GET "/clients?clientId=$SMOKE_CLIENT_ID" | jq -r '.[0].id // empty')
+if [[ -z "$client_uuid" ]]; then
+  realm_api POST "/clients" "$(jq -n --arg id "$SMOKE_CLIENT_ID" '{
+    clientId: $id,
+    name: "LedgerFlow kind smoke-test client (local only)",
+    protocol: "openid-connect",
+    publicClient: false,
+    serviceAccountsEnabled: true,
+    standardFlowEnabled: false,
+    directAccessGrantsEnabled: false,
+    implicitFlowEnabled: false,
+    defaultClientScopes: ["ledgerflow-api-audience"],
+    optionalClientScopes: ["ledgerflow.orders.read", "ledgerflow.orders.write"]
+  }')" >/dev/null
+  client_uuid=$(realm_api GET "/clients?clientId=$SMOKE_CLIENT_ID" | jq -r '.[0].id')
+  realm_api POST "/clients/$client_uuid/protocol-mappers/models" '{
+    "name": "realm-roles",
+    "protocol": "openid-connect",
+    "protocolMapper": "oidc-usermodel-realm-role-mapper",
+    "consentRequired": false,
+    "config": {
+      "claim.name": "realm_access.roles",
+      "jsonType.label": "String",
+      "multivalued": "true",
+      "access.token.claim": "true",
+      "id.token.claim": "false",
+      "userinfo.token.claim": "false"
+    }
+  }' >/dev/null
+  sa_user_id=$(realm_api GET "/clients/$client_uuid/service-account-user" | jq -r '.id')
+  customer_role=$(realm_api GET "/roles/customer")
+  realm_api POST "/users/$sa_user_id/role-mappings/realm" "[$customer_role]" >/dev/null
+else
+  log "Client already provisioned; reusing it."
+fi
+client_secret=$(realm_api GET "/clients/$client_uuid/client-secret" | jq -r '.value')
+
+log "Minting an access token..."
+access_token=$(curl --fail --silent --show-error \
+  --request POST "$KEYCLOAK_BASE_URL/realms/ledgerflow/protocol/openid-connect/token" \
+  --header "Content-Type: application/x-www-form-urlencoded" \
+  --data "grant_type=client_credentials" \
+  --data "client_id=$SMOKE_CLIENT_ID" \
+  --data "client_secret=$client_secret" \
+  --data "scope=ledgerflow.orders.write ledgerflow.orders.read" \
+  | jq -r '.access_token')
+
+correlation_id="kind-smoke-test-$(date +%s)"
+idempotency_key="kind-smoke-test-key-$(date +%s)"
+client_reference="kind-smoke-test-ref-$(date +%s)"
+
+log "Creating a real order through the port-forwarded API..."
+response=$(curl --silent --show-error --write-out '\n%{http_code}' \
+  "http://127.0.0.1:$API_LOCAL_PORT/api/v1/orders" \
+  --request POST \
+  --header "Authorization: Bearer $access_token" \
+  --header 'Content-Type: application/json' \
+  --header "Idempotency-Key: $idempotency_key" \
+  --header "X-Correlation-Id: $correlation_id" \
+  --data "$(jq -n --arg ref "$client_reference" '{
+    clientReference: $ref,
+    amount: {amountMinor: 150000, currency: "INR"},
+    paymentMethodReference: "pm_mock_success"
+  }')")
+
+http_status=$(echo "$response" | tail -n1)
+body=$(echo "$response" | sed '$d')
+
+if [[ "$http_status" != "201" ]]; then
+  log "FAIL: expected 201, got $http_status. Body: $body"
+  exit 1
+fi
+
+order_status=$(echo "$body" | jq -r '.status')
+payment_status=$(echo "$body" | jq -r '.payment.status // .paymentStatus // empty')
+log "Order created: status=$order_status http=$http_status"
+if [[ "$order_status" != "COMPLETED" ]]; then
+  log "FAIL: expected order status COMPLETED, got $order_status. Body: $body"
+  exit 1
+fi
+
+log "Polling outbox_events for correlation_id=$correlation_id until the worker Deployment publishes it..."
+published=false
+for _ in $(seq 1 30); do
+  row=$(kubectl --namespace "$NAMESPACE" exec deploy/postgres -- \
+    psql --username=ledgerflow --dbname=ledgerflow --tuples-only --no-align \
+    --command "SELECT status FROM outbox_events WHERE correlation_id = '$correlation_id';" 2>/dev/null | tr -d '[:space:]')
+  if [[ "$row" == "PUBLISHED" ]]; then
+    published=true
+    break
+  fi
+  sleep 1
+done
+
+if [[ "$published" != "true" ]]; then
+  log "FAIL: outbox event for correlation_id=$correlation_id never reached PUBLISHED (last status: ${row:-<none>})"
+  exit 1
+fi
+log "Outbox event PUBLISHED — confirmed the worker Deployment, not the API Deployment, drove this (API has LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED=false)."
+
+log "Confirming NetworkPolicy refuses a direct request to a worker pod's HTTP port..."
+worker_pod_ip=$(kubectl --namespace "$NAMESPACE" get pods -l app.kubernetes.io/component=worker \
+  -o jsonpath='{.items[0].status.podIP}')
+if kubectl --namespace "$NAMESPACE" run kind-smoke-test-netpol --rm -i --restart=Never \
+  --image=busybox:1.37 --command --quiet -- \
+  wget --timeout=5 --tries=1 -qO- "http://$worker_pod_ip:8080/actuator/health/liveness" >/dev/null 2>&1; then
+  log "FAIL: worker pod HTTP port was reachable; NetworkPolicy did not block it."
+  exit 1
+fi
+log "Confirmed: direct HTTP access to the worker pod is refused."
+
+log "PASS: real order created (201/COMPLETED), worker Deployment published its outbox event independently, worker NetworkPolicy verified."

@@ -1,0 +1,111 @@
+# Request/response role only: every background-job flag is off (Milestone 4 Decision log),
+# so autoscaling this Deployment never multiplies lease contention against the
+# outbox/notification/recovery tables the worker Deployment owns.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledgerflow-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "ledgerflow.selectorLabels.api" . | nindent 4 }}
+spec:
+  {{- if not .Values.api.autoscaling.enabled }}
+  replicas: {{ .Values.api.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "ledgerflow.selectorLabels.api" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ledgerflow.selectorLabels.api" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ if .Values.serviceAccount.create }}ledgerflow-api{{ else }}default{{ end }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: ledgerflow-api
+          image: "{{ .Values.image.api.repository }}:{{ .Values.image.api.tag }}"
+          imagePullPolicy: {{ .Values.image.api.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: ledgerflow-config
+            - secretRef:
+                name: ledgerflow-db-credentials
+          env:
+            - name: LEDGERFLOW_RECOVERY_WORKER_ENABLED
+              value: "false"
+            - name: LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED
+              value: "false"
+            - name: LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED
+              value: "false"
+            - name: LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED
+              value: "false"
+            {{- if .Values.api.mockProvider.enabled }}
+            - name: LEDGERFLOW_PAYMENT_PROVIDER_BASE_URL
+              value: {{ printf "http://127.0.0.1:%d" (.Values.api.mockProvider.port | int) | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.containerPort }}
+            - name: management
+              containerPort: {{ .Values.managementPort }}
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: management
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: management
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: management
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+        {{- if .Values.api.mockProvider.enabled }}
+        - name: mock-payment-provider
+          image: "{{ .Values.image.mockProvider.repository }}:{{ .Values.image.mockProvider.tag }}"
+          imagePullPolicy: {{ .Values.image.mockProvider.pullPolicy }}
+          env:
+            - name: MOCK_PROVIDER_PORT
+              value: {{ .Values.api.mockProvider.port | quote }}
+          # No readinessProbe: Kubernetes probes (even tcpSocket) connect via the Pod IP
+          # from the kubelet, never via loopback — but MockPaymentProviderServer
+          # intentionally binds only 127.0.0.1 (Milestone 2 finding), so a network probe
+          # against this container can never succeed by design. The main container's own
+          # probes already gate Pod readiness, and this sidecar is listening within ~1s.
+          resources:
+            {{- toYaml .Values.api.mockProvider.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+        {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

@@ -1,3 +1,4 @@
+import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.testing.Test
 
@@ -153,6 +154,28 @@ tasks.register("printMockProviderClasspath") {
     doLast {
         println("MOCK_PROVIDER_CLASSPATH=" + integrationTest.runtimeClasspath.asPath)
     }
+}
+
+tasks.register<Copy>("exportMockProviderRuntime") {
+    group = "performance"
+    description =
+        "Copies StandaloneMockPaymentProviderServer's compiled classes and its actual " +
+        "runtime dependency (Jackson only; verified by running the class with just these " +
+        "jars) into build/mock-provider-runtime, for a minimal, self-contained container " +
+        "image (see deploy/kind/mock-provider.Dockerfile, Milestone 4) that needs neither " +
+        "Gradle, the full integrationTest classpath, nor a mounted repository checkout at " +
+        "runtime."
+    from(integrationTest.output.classesDirs) {
+        into("classes")
+    }
+    from(
+        integrationTest.runtimeClasspath.filter {
+            it.isFile && it.name.startsWith("jackson-") && it.name.endsWith(".jar")
+        },
+    ) {
+        into("libs")
+    }
+    into(layout.buildDirectory.dir("mock-provider-runtime"))
 }
 
 tasks.named<org.springframework.boot.gradle.tasks.bundling.BootJar>("bootJar") {

@@ -81,6 +81,27 @@ graceful shutdown, a byte-for-byte reproducible jar, and the base-image package 
 that closed 5 real HIGH-severity CVEs by removing unused font-rendering and PKCS#11
 packages — is verified with real commands in [`docs/container-hardening.md`](docs/container-hardening.md).
 
+## Kubernetes deployment (local)
+
+`deploy/helm/ledgerflow/` is a Helm chart deploying `ledgerflow:local` as two
+role-differentiated Deployments — `ledgerflow-api` (request/response, autoscaled 2–5 replicas
+via an HPA) and `ledgerflow-worker` (background outbox/notification/recovery processing, no
+public Service, no ingress traffic permitted by its NetworkPolicy) — with security contexts
+matching [container hardening](docs/container-hardening.md) (non-root, read-only root
+filesystem, dropped capabilities), resource limits, PodDisruptionBudgets, and least-privilege
+ServiceAccounts. `deploy/kind/` stands up a self-contained local `kind` cluster, including
+dev-only PostgreSQL/Kafka/Keycloak dependencies, with one command:
+
+```bash
+scripts/kind-up            # create/reuse the cluster, build+load images, deploy everything
+scripts/kind-smoke-test    # real order creation, worker-independence, and NetworkPolicy proof
+scripts/kind-down          # delete the cluster
+```
+
+Full architecture, a real HPA scale-out under load, and every issue found and fixed while
+actually deploying (not just inspecting manifests) are recorded in
+[`docs/kubernetes-deployment.md`](docs/kubernetes-deployment.md).
+
 ## Local dependency environment
 
 Start all local dependencies and wait until Compose reports all nine services healthy:

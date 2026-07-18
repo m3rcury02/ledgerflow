@@ -1,0 +1,85 @@
+# Background-processing role only: every background-job flag is on, no public Service
+# targets these pods, and the worker NetworkPolicy denies inbound HTTP traffic outright
+# (Milestone 4 Decision log) — enforced at the network layer, not just by Service omission.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledgerflow-worker
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "ledgerflow.selectorLabels.worker" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ledgerflow.selectorLabels.worker" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ledgerflow.selectorLabels.worker" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ if .Values.serviceAccount.create }}ledgerflow-worker{{ else }}default{{ end }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: ledgerflow-worker
+          image: "{{ .Values.image.api.repository }}:{{ .Values.image.api.tag }}"
+          imagePullPolicy: {{ .Values.image.api.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: ledgerflow-config
+            - secretRef:
+                name: ledgerflow-db-credentials
+          env:
+            - name: LEDGERFLOW_RECOVERY_WORKER_ENABLED
+              value: "true"
+            - name: LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED
+              value: "true"
+            - name: LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED
+              value: "true"
+            - name: LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: management
+              containerPort: {{ .Values.managementPort }}
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: management
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: management
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: management
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

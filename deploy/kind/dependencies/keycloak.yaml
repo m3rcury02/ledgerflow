@@ -1,0 +1,115 @@
+# Dev-only Keycloak for the kind cluster (Milestone 4). Same image and realm import as
+# compose.yaml, pointed at the in-cluster postgres Service. The `keycloak-realm` ConfigMap
+# referenced below is created by scripts/kind-up directly from
+# infra/keycloak/ledgerflow-realm.json — the exact realm the rest of the repository already
+# uses, not a copy.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-credentials
+  namespace: ledgerflow
+type: Opaque
+stringData:
+  KC_DB_USERNAME: keycloak
+  KC_DB_PASSWORD: change-me-local-keycloak-db
+  KC_BOOTSTRAP_ADMIN_USERNAME: admin
+  KC_BOOTSTRAP_ADMIN_PASSWORD: change-me-local-keycloak-admin
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: ledgerflow
+  labels:
+    app: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak
+  template:
+    metadata:
+      labels:
+        app: keycloak
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.7.0
+          args: [start-dev, --import-realm]
+          envFrom:
+            - secretRef:
+                name: keycloak-credentials
+          env:
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL
+              value: jdbc:postgresql://postgres:5432/keycloak
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_METRICS_ENABLED
+              value: "true"
+            # Pinned rather than left to KC_HOSTNAME_STRICT=false's default request-Host-header
+            # inference: this cluster is reached both via kubectl port-forward (for the
+            # smoke test's token minting) and via in-cluster Service DNS (for the
+            # application's JWT issuer validation) — two different Host headers for the same
+            # realm. A fixed hostname keeps every minted token's `iss` claim identical to
+            # LEDGERFLOW_OAUTH2_ISSUER (deploy/helm/ledgerflow/values.yaml) regardless of how
+            # the token endpoint was reached. Confirmed real 401s ("A valid bearer token is
+            # required") until this was pinned.
+            - name: KC_HOSTNAME
+              value: http://keycloak:8080
+            - name: KC_HOSTNAME_STRICT
+              value: "false"
+            - name: JAVA_OPTS_KC_HEAP
+              value: -XX:InitialRAMPercentage=30 -XX:MaxRAMPercentage=70
+          ports:
+            - containerPort: 8080
+            - containerPort: 9000
+          volumeMounts:
+            - name: realm
+              mountPath: /opt/keycloak/data/import/ledgerflow-realm.json
+              subPath: ledgerflow-realm.json
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 9000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 9000
+            initialDelaySeconds: 45
+            periodSeconds: 15
+            failureThreshold: 12
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+      volumes:
+        - name: realm
+          configMap:
+            name: keycloak-realm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: ledgerflow
+  labels:
+    app: keycloak
+spec:
+  selector:
+    app: keycloak
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: metrics
+      port: 9000
+      targetPort: 9000

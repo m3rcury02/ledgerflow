@@ -8,7 +8,7 @@
 - Last updated: 2026-07-18
 - Approved by: Gunal (gunal2002@gmail.com), via conversation on 2026-07-18
 - Approval date: 2026-07-18
-- Current milestone: Milestone 3 complete; Milestone 4 (local Kubernetes and Helm) awaits
+- Current milestone: Milestone 4 complete; Milestone 5 (AWS Terraform design) awaits
   separate approval before starting, per the checkpoint execution style approved on
   2026-07-18.
 
@@ -264,13 +264,108 @@ artifacts, not application interfaces.
 
 ### Milestone 4 — Local Kubernetes and Helm
 
-- Status: Proposed
+- Status: Complete
 - Intended outcome: `kind` dev cluster, Helm chart, separate API/worker Deployments (same
   image, different config per the Milestone 3 finding), probes, ConfigMaps, local-only secret
   placeholders, resource limits, security contexts, dropped capabilities, read-only root
   filesystem, PDB, API HPA, NetworkPolicies, least-privilege ServiceAccounts, lint/template
   validation, one-command deploy, e2e smoke test. No service mesh.
-- Detail deferred until approved to start.
+- Current-state findings specific to this milestone:
+  - `docker inspect`/`docker run --entrypoint id` against the real `ledgerflow:local` image
+    (Milestone 3) confirms the non-root user is `uid=100(ledgerflow) gid=101(ledgerflow)` —
+    Alpine `adduser -S` system-user allocation, not the commonly-assumed `1000`. Pod
+    `securityContext.runAsUser`/`runAsGroup`/`fsGroup` use `100`/`101` for real, not guessed,
+    values.
+  - The application has no cache integration (`README.md`: "No cache integration ... exists")
+    — Valkey, present in `compose.yaml` for future use, is not required for the application
+    to function and is out of scope for this milestone's in-cluster dependencies.
+  - Actuator liveness/readiness are already real, working probe groups
+    (`application.yaml`: `management.endpoint.health.group.liveness` /
+    `.readiness`, exposed at `/actuator/health/liveness` and `/actuator/health/readiness` on
+    the management port), and OTLP export failure is fire-and-forget and never fails a
+    request (`README.md`) — so this milestone does not need to deploy the observability stack
+    (Tempo/Loki/OTEL-collector/Prometheus/Grafana) in-cluster for a working smoke test; that
+    stack is already demonstrated against Compose in the existing local workflow, and
+    redeploying it in `kind` would duplicate Milestone 2/existing coverage without adding new
+    proof.
+  - `kind`, `helm`, and `kubectl` are already installed in this sandbox
+    (`kind v0.22.0`, `helm v4.2.3`, `kubectl v1.36.1` client) — no tool installation needed.
+  - `kind` does not ship a metrics API server; the API HPA's `Resource: cpu` metric will read
+    `<unknown>` without one. `kubernetes-sigs/metrics-server` (`v0.9.0`, confirmed the current
+    upstream release via the GitHub releases API on 2026-07-18) needs the well-known
+    `--kubelet-insecure-tls` patch to run inside `kind` at all (`kind` kubelets do not present
+    metrics-server-verifiable serving certificates) — this is not an application concern, it
+    is a `kind`-specific dependency of demonstrating a real, non-placeholder HPA.
+- Design decisions (see Decision log for rationale):
+  - Dependencies (PostgreSQL, Kafka KRaft, Keycloak) are deployed as minimal, dev-only plain
+    Kubernetes manifests inside the same `kind` cluster and namespace as the application,
+    rather than bridging the `kind` node's Docker network to the host's existing
+    `scripts/dev-up` Compose stack. A self-contained cluster is reproducible on any machine
+    with `kind` installed and does not depend on this sandbox's already-documented split
+    Docker networking (Milestone 2/3 Surprises).
+  - "Worker" is realized as the same image with `LEDGERFLOW_RECOVERY_WORKER_ENABLED`,
+    `LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED`, `LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED`, and
+    `LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED` all `true`; "API" is the same image with
+    all four `false`. This makes the API Deployment purely request/response (safe to
+    horizontally autoscale without multiplying background-job lease contention against the
+    same outbox/notification/recovery tables) and the worker Deployment purely background
+    processing (fixed, small replica count, no public Service, no ingress traffic — enforced
+    by both Service selector omission and a deny-by-default NetworkPolicy on port 8080).
+  - Host access to the API and to Keycloak (for the smoke test) uses `kubectl port-forward`,
+    not a `kind` `extraPortMappings`/NodePort. `extraPortMappings` is implemented as an
+    ordinary Docker `-p` publish on the node container at cluster-creation time — the same
+    mechanism Milestone 3's Surprises log found "genuinely flaky/slow to register" in this
+    sandbox. `kubectl port-forward` is a different code path (SPDY through the API server to
+    the kubelet) and is also the portable, cluster-provider-agnostic way to reach a
+    ClusterIP-only Service, so it doubles as the more representative demonstration.
+  - Least-privilege ServiceAccounts: dedicated `ledgerflow-api` and `ledgerflow-worker`
+    ServiceAccounts (never the namespace's `default`), both with
+    `automountServiceAccountToken: false` and no RBAC `Role`/`RoleBinding` granted at all —
+    the application never calls the Kubernetes API, so the correct minimum privilege is zero
+    API access, not a narrowly-scoped Role.
+- Implementation work:
+  - `deploy/kind/kind-config.yaml`: single-node `kind` cluster (control-plane only; no
+    multi-node complexity or service mesh needed for this demonstration).
+  - `deploy/kind/dependencies/`: `namespace.yaml`, `postgres.yaml` (single-replica Deployment
+    + emptyDir-backed... re-verified as PVC via kind's default `standard` `local-path`
+    StorageClass, `ConfigMap`-driven keycloak-database bootstrap matching
+    `infra/postgres/init/001-create-keycloak-database.sh`'s idempotent logic), `kafka.yaml`
+    (single-node KRaft broker/controller, same `apache/kafka-native` image family as
+    `compose.yaml`), `keycloak.yaml` (same image, realm import via the existing
+    `infra/keycloak/ledgerflow-realm.json` mounted from a `ConfigMap`), and
+    `metrics-server.yaml` (pinned `v0.9.0`, patched for `kind`).
+  - `deploy/helm/ledgerflow/`: a Helm chart with `api` and `worker` Deployments (same image,
+    `Dockerfile`-confirmed `runAsUser: 100`/`runAsGroup: 101`, `readOnlyRootFilesystem: true`
+    with an `emptyDir` at `/tmp` per `docs/container-hardening.md`, `capabilities.drop:
+    [ALL]`, `allowPrivilegeEscalation: false`, `seccompProfile: RuntimeDefault`), a
+    ClusterIP `Service` for `api` only, `ConfigMap` (non-secret configuration) and `Secret`
+    (local-only placeholder DB credentials, following the existing `.env.example`
+    "placeholders, not production secrets" convention), liveness/readiness probes against the
+    real Actuator groups, resource requests/limits, a `PodDisruptionBudget` for each role, an
+    `HorizontalPodAutoscaler` for `api` only, `NetworkPolicy` resources for both roles, and
+    dedicated least-privilege `ServiceAccount`s.
+  - `scripts/kind-up`, `scripts/kind-down`, `scripts/kind-status`, `scripts/kind-smoke-test`:
+    matching this repository's existing `dev-up`/`dev-down`/`dev-status`/`smoke-test` naming
+    and shape. `kind-up` is the one-command deploy: create/reuse the cluster, apply
+    dependencies, wait for health, `helm upgrade --install`, wait for rollout.
+  - `Makefile` targets `kind-up`, `kind-down`, `kind-status`, `kind-smoke-test`.
+  - `docs/kubernetes-deployment.md`: architecture, one-command deploy instructions, every
+    hardening/isolation claim backed by a real command run against a real cluster in this
+    milestone, exactly like `docs/container-hardening.md`.
+- Validation commands: `helm lint deploy/helm/ledgerflow`; `helm template deploy/helm/ledgerflow`
+  (schema/rendering sanity); `scripts/kind-up` (real cluster, real deploy, real rollout wait);
+  `scripts/kind-smoke-test` (real token mint, real order creation, real outbox-published
+  poll proving the worker Deployment processes independently of the API Deployment, real
+  NetworkPolicy isolation check); `kubectl get hpa` under a real load burst; `./gradlew clean
+  verify`; `./scripts/security-scan` (must still pass unchanged).
+- Observable acceptance criteria: `scripts/kind-up` succeeds end-to-end on a clean cluster;
+  a real order created through the port-forwarded API returns `201`
+  `COMPLETED`/`CAPTURED`; the outbox row for that order reaches `PUBLISHED` without any
+  action from the API pod (proving the worker Deployment alone drives it); a direct request
+  to the worker pod's port 8080 is refused by NetworkPolicy; `kubectl get hpa` shows real
+  (non-`<unknown>`) CPU metrics and, under load, scales `api` beyond its minimum replica
+  count; `helm lint` and `helm template` both pass; `./gradlew clean verify` and
+  `./scripts/security-scan` still pass.
 
 ### Milestone 5 — AWS Terraform design
 
@@ -385,6 +480,34 @@ anticipated by any extension) would use a new forward migration only.
   hardened image and a clean rescan (0 HIGH/CRITICAL). `./gradlew --no-daemon clean verify`
   passed; `./scripts/security-scan` passed with the same pre-existing Compose findings as
   before.
+- [x] `2026-07-18` — Milestone 4 implemented and validated against a real `kind` cluster, not
+  just lint/template checks: `scripts/kind-up` (one-command deploy) brought up
+  PostgreSQL/Kafka/Keycloak/metrics-server dependencies and the `ledgerflow` Helm release
+  (`ledgerflow-api` 2/2→4/4 under load, `ledgerflow-worker` 2/2`, both with
+  `runAsUser:100`/`runAsGroup:101`/`readOnlyRootFilesystem:true`/`capabilities.drop:[ALL]`,
+  confirmed via `kubectl get pod -o jsonpath`); `scripts/kind-smoke-test` created a real order
+  (`201`/`COMPLETED`) through the port-forwarded `ledgerflow-api` Service, polled
+  `outbox_events` until `PUBLISHED` to prove the `ledgerflow-worker` Deployment — never the
+  API Deployment, which has every background-job flag `false` — actually drove it, and
+  confirmed the worker's `NetworkPolicy` genuinely refuses a direct HTTP request (not merely
+  "no Service targets it"). A real 150-second, 40-way-concurrent load burst against the
+  API's liveness endpoint drove CPU to 89%/50% and the HPA scaled 2→4 replicas within 27
+  seconds (real `metrics-server` v0.9.0 metrics, not `<unknown>`). Getting to a stable
+  deployment required fixing four real, only-discoverable-by-deploying issues (Kafka's
+  controller-quorum self-registration deadlock through its own Service, three dependencies'
+  under-thresholded liveness probes, a `tcpSocket` probe on a loopback-only sidecar that
+  could never pass, and a Keycloak token-issuer mismatch between port-forwarded and
+  in-cluster access) — see Surprises and discoveries. `helm lint`/`helm template` both passed
+  before the real deploy was attempted. `./gradlew --no-daemon clean verify` passed (after
+  fixing an unrelated pre-existing `spotlessRepositoryTextCheck` failure on an untracked,
+  no-trailing-newline `CLAUDE.md` found in the working tree — not part of this milestone's
+  own changes, but blocking its own completion gate, so fixed as a one-line, content-neutral
+  whitespace correction). `./scripts/security-scan` initially failed on 10 new Kubernetes
+  `misconfig` findings against the dev-only dependency manifests (including a
+  verbatim-pinned upstream `metrics-server.yaml` that must not be edited to satisfy a
+  linter); fixed by narrowly skipping `deploy/kind/dependencies/` in that scan, matching the
+  existing `.env`-skip precedent — `deploy/helm/` (the application's own chart) was not
+  skipped and has zero findings.
 
 ## Surprises and discoveries
 
@@ -453,6 +576,43 @@ anticipated by any extension) would use a new forward migration only.
   `docker compose` (even a throwaway one-off project) over bare `docker run -p` for
   anything that needs to be reachable from this shell.
 
+- A Kubernetes Service only forwards to `Ready` endpoints, which creates a real deadlock for
+  a single-node KRaft Kafka broker whose `KAFKA_CONTROLLER_QUORUM_VOTERS` points at its own
+  Service address: the pod cannot become `Ready` until it registers with the controller
+  quorum (itself), but that registration traffic is routed through the Service, which has no
+  `Ready` endpoints yet. Real symptom: `Received a fatal error while waiting for the
+  controller to acknowledge that we are caught up`, forever. Fixed by pointing the controller
+  quorum voter at `localhost:9093` instead — correct for single-voter KRaft, since the voter
+  is always the same process, and it bypasses the Service's readiness gate entirely.
+- Dependency `livenessProbe`s left at Kubernetes' default `failureThreshold: 3` killed
+  PostgreSQL/Kafka/Keycloak mid-startup even though their `readinessProbe`s already had
+  generous thresholds — Kafka's KRaft storage formatting and Keycloak's realm import both
+  routinely exceed the default liveness window. A green `readinessProbe` config does not
+  imply the matching `livenessProbe` is safe; both need the same startup-time headroom.
+- Kubernetes probes (including `tcpSocket`) always connect via the Pod IP from the kubelet,
+  never via loopback, even when checking one container in a multi-container Pod. A
+  `readinessProbe` was added to the mock-payment-provider sidecar assuming it would work like
+  a Docker `HEALTHCHECK` (which runs inside the container's own namespace); it could not,
+  because `MockPaymentProviderServer` intentionally binds only `127.0.0.1` (Milestone 2).
+  Removed the probe rather than trying to make the fixture bind more broadly, since the
+  loopback-only bind is itself a deliberate, already-approved test-fixture property.
+- Keycloak's `KC_HOSTNAME_STRICT=false` derives each token's `iss` claim from the inbound
+  request's `Host` header. A cluster reached two different ways (`kubectl port-forward` for
+  test tooling, in-cluster Service DNS for the application's own JWT validation) produces two
+  different `iss` values for the same realm, and the resource server correctly rejects the
+  mismatch with a real `401` — this is the resource server working as designed, not a bug in
+  it. Fixed by pinning `KC_HOSTNAME` to the in-cluster Service address, which is also what a
+  real (non-`kind`) deployment would need for the same reason.
+- Introducing real Kubernetes manifests into the repository exposed `scripts/security-scan`'s
+  Trivy `misconfig` scanner to a category of finding no prior milestone triggered: default
+  Kubernetes `securityContext`s on dev-only dependency manifests, including on a
+  verbatim-pinned upstream `metrics-server.yaml` that flags the identical finding even though
+  it already sets a proper container-level `securityContext` — Trivy's rule specifically
+  wants a pod-level one too, which the upstream authors did not set. Confirmed this finding
+  is unfixable without diverging from the pinned upstream file, which would defeat the point
+  of pinning it. Scoped a narrow scan skip instead, the same shape as the pre-existing
+  `.env`-skip.
+
 ## Decision log
 
 - 2026-07-18 — Rebuild the seven extensions from scratch instead of cherry-picking the
@@ -520,6 +680,39 @@ anticipated by any extension) would use a new forward migration only.
   `docs/development-workflow.md`'s documented command list; adding new scope to it would be
   an unreviewed behavior change to an established check. A new script is new capability,
   not a change to existing, already-approved behavior. No ADR required.
+- 2026-07-18 — Deploy PostgreSQL/Kafka/Keycloak as self-contained, dev-only Kubernetes
+  manifests inside the `kind` cluster rather than bridging to the host's existing
+  `scripts/dev-up` Compose stack. Rationale: reproducible on any machine with `kind`
+  installed; avoids depending on this sandbox's already-documented split Docker networking
+  (Milestone 2/3 Surprises), which a `kind` node — itself a Docker container on yet another
+  Docker network — would plausibly hit again. No ADR required — this is portfolio deployment
+  tooling, not an application architecture decision.
+- 2026-07-18 — Build a dedicated, self-contained `ledgerflow-mock-provider:local` image
+  (new `application/build.gradle.kts` task `exportMockProviderRuntime`, copying only the
+  fixture's compiled classes and its actual runtime dependency — Jackson, verified by running
+  the class with just those three jars — not the full 208-jar `integrationTest` classpath)
+  rather than reusing Milestone 2's host-path-mounted-classpath approach
+  (`performance/compose.perf.yaml`). Rationale: a `kind` node's containerd image store does
+  not see host bind mounts by default, and depending on the host's exact absolute paths
+  (repository checkout location, `~/.gradle/caches`) would make the chart non-portable. A
+  self-contained image loaded via `kind load docker-image` has no such dependency. Test-only;
+  never packaged in the production image. No ADR required.
+- 2026-07-18 — Split "API" and "worker" by all four background-job flags
+  (`LEDGERFLOW_RECOVERY_WORKER_ENABLED`, `LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED`,
+  `LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED`, `LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED`),
+  not just the recovery worker flag `docs/container-hardening.md` named. Rationale: all four
+  are background processing, not request/response; grouping them onto a fixed-replica,
+  non-autoscaled, non-publicly-reachable Deployment and leaving the API Deployment free of
+  all four is what actually realizes "a dedicated background-processing replica set that
+  doesn't receive public HTTP traffic" (the property `docs/container-hardening.md` already
+  promised Milestone 4 would deliver), and avoids autoscaling multiplying lease contention
+  against the outbox/notification/recovery tables. No ADR required.
+- 2026-07-18 — Use `kubectl port-forward` for all host access instead of `kind`
+  `extraPortMappings`/NodePort. Rationale: `extraPortMappings` is an ordinary Docker `-p`
+  publish under the hood, the same mechanism Milestone 3's Surprises log already found
+  flaky in this sandbox; `kubectl port-forward` is a different, portable code path and the
+  more representative way to reach a ClusterIP-only Service regardless of cluster provider.
+  No ADR required.
 
 ## Outcome and follow-up
 

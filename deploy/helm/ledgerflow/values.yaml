@@ -1,0 +1,98 @@
+# Default values for the LedgerFlow Helm chart. This chart targets the local kind dev
+# cluster in deploy/kind/ (docs/plans/portfolio-extension-execplan.md, Milestone 4); the
+# `secrets` block below follows this repository's existing .env.example convention —
+# "placeholders, not production secrets" — and must be overridden with a separate values
+# file (never committed) for any non-local use.
+
+namespace: ledgerflow
+
+image:
+  api:
+    repository: ledgerflow
+    tag: local
+    pullPolicy: IfNotPresent
+  mockProvider:
+    repository: ledgerflow-mock-provider
+    tag: local
+    pullPolicy: IfNotPresent
+
+# The application has one build artifact and one image (docs/container-hardening.md); "API"
+# and "worker" below are the same image started with different LEDGERFLOW_* configuration,
+# not two Dockerfiles.
+api:
+  replicaCount: 2
+  containerPort: 8080
+  resources:
+    requests:
+      cpu: 250m
+      memory: 384Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 50
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  # Dev/kind-only sidecar so a real create-order call has a real provider to reach — see
+  # deploy/kind/mock-provider.Dockerfile. Set to false and provide config.paymentProviderBaseUrl
+  # for any non-local use; with both left at their defaults the API still starts and serves
+  # traffic, but create-order fails safe with 503 (README.md, "Payment provider test harness").
+  mockProvider:
+    enabled: true
+    port: 8090
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+worker:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 200m
+      memory: 384Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+managementPort: 8081
+
+networkPolicy:
+  enabled: true
+
+serviceAccount:
+  create: true
+
+# Non-secret configuration. Service DNS names are short (same-namespace) to match
+# deploy/kind/dependencies/*.yaml.
+config:
+  kafkaBootstrapServers: "kafka:9092"
+  oauth2Audience: "ledgerflow-api"
+  oauth2Issuer: "http://keycloak:8080/realms/ledgerflow"
+  oauth2JwkSetUri: "http://keycloak:8080/realms/ledgerflow/protocol/openid-connect/certs"
+  dbUrl: "jdbc:postgresql://postgres:5432/ledgerflow"
+  deploymentEnvironment: "kind"
+  healthProbeCacheTtl: "2s"
+  # No observability stack is deployed in-cluster for this milestone (Current-state findings,
+  # Milestone 4): OTLP export is fire-and-forget and never fails a request, so leaving these
+  # unset is safe, not a functional gap for the smoke test.
+  otlpTracesEndpoint: ""
+  otlpLogsEndpoint: ""
+  traceSamplingProbability: "0"
+  paymentProviderBaseUrl: ""
+
+# Local-only placeholders (matches .env.example's postgres-credentials values in
+# deploy/kind/dependencies/postgres.yaml). Never a production credential.
+secrets:
+  dbUsername: ledgerflow
+  dbPassword: change-me-local-postgres

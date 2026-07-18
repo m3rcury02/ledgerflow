@@ -1,0 +1,9 @@
+apiVersion: v2
+name: ledgerflow
+description: >-
+  LedgerFlow API and background-worker Deployments — one image (Milestone 3's
+  ledgerflow:local), two role-differentiated configurations. See
+  docs/plans/portfolio-extension-execplan.md, Milestone 4.
+type: application
+version: 0.1.0
+appVersion: "0.1.0-SNAPSHOT"

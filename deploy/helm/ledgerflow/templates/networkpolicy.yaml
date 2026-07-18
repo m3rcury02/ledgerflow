@@ -1,0 +1,107 @@
+{{- if .Values.networkPolicy.enabled }}
+# api: HTTP (8080) is reachable from anywhere in the cluster (stands in for "behind a real
+# ingress/gateway" — no Ingress controller is deployed for this milestone); management
+# (8081, metrics/health) is restricted to the same namespace, never public.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ledgerflow-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "ledgerflow.selectorLabels.api" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ledgerflow.selectorLabels.api" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - port: http
+          protocol: TCP
+    - from:
+        - podSelector: {}
+      ports:
+        - port: management
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - port: 9092
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app: keycloak
+      ports:
+        - port: 8080
+          protocol: TCP
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# worker: no ingress rule permits port 8080 at all — a direct request to a worker pod's HTTP
+# port is refused at the network layer, independent of the Service selector already omitting
+# it (belt-and-suspenders; see docs/kubernetes-deployment.md for the real verification).
+# Management (8081) stays reachable from the same namespace only, matching api.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ledgerflow-worker
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "ledgerflow.selectorLabels.worker" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ledgerflow.selectorLabels.worker" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - port: management
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - port: 9092
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app: keycloak
+      ports:
+        - port: 8080
+          protocol: TCP
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+{{- end }}
