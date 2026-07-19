@@ -1,0 +1,17 @@
+.git/
+.gradle/
+**/build/
+.idea/
+*.iml
+.vscode/
+.DS_Store
+out/
+.env
+.venv/
+docs/
+infra/
+deploy/
+performance/
+scripts/
+config/security/
+*.md

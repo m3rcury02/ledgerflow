@@ -1,3 +1,5 @@
+import org.gradle.api.tasks.Copy
+import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.testing.Test
 
 plugins {
@@ -135,6 +137,52 @@ tasks.named("check") {
     dependsOn("integrationTest", "architectureTest")
 }
 
+tasks.register<JavaExec>("runMockPaymentProvider") {
+    group = "performance"
+    description =
+        "Runs the deterministic mock payment provider fixture as a standalone local " +
+        "process for performance/scripts (see docs/plans/portfolio-extension-execplan.md)."
+    classpath = integrationTest.runtimeClasspath
+    mainClass = "com.ledgerflow.testing.payment.StandaloneMockPaymentProviderServer"
+}
+
+tasks.register("printMockProviderClasspath") {
+    group = "performance"
+    description =
+        "Prints the runtime classpath needed to run StandaloneMockPaymentProviderServer " +
+        "from a container that mounts this repository and the Gradle cache read-only."
+    doLast {
+        println("MOCK_PROVIDER_CLASSPATH=" + integrationTest.runtimeClasspath.asPath)
+    }
+}
+
+tasks.register<Copy>("exportMockProviderRuntime") {
+    group = "performance"
+    description =
+        "Copies StandaloneMockPaymentProviderServer's compiled classes and its actual " +
+        "runtime dependency (Jackson only; verified by running the class with just these " +
+        "jars) into build/mock-provider-runtime, for a minimal, self-contained container " +
+        "image (see deploy/kind/mock-provider.Dockerfile, Milestone 4) that needs neither " +
+        "Gradle, the full integrationTest classpath, nor a mounted repository checkout at " +
+        "runtime."
+    from(integrationTest.output.classesDirs) {
+        into("classes")
+    }
+    from(
+        integrationTest.runtimeClasspath.filter {
+            it.isFile && it.name.startsWith("jackson-") && it.name.endsWith(".jar")
+        },
+    ) {
+        into("libs")
+    }
+    into(layout.buildDirectory.dir("mock-provider-runtime"))
+}
+
 tasks.named<org.springframework.boot.gradle.tasks.bundling.BootJar>("bootJar") {
     archiveFileName = "ledgerflow.jar"
+    // Reproducible build: strip per-build file timestamps and fix entry order so two
+    // builds from the same source produce a byte-identical jar (verified in
+    // docs/container-hardening.md by comparing SHA-256 across two clean builds).
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
 }

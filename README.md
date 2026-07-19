@@ -64,6 +64,72 @@ Security-sensitive, dependency, or container-image changes also run the separate
 
 The command builds the application artifact, scans repository configuration and committed content for secrets, scans packaged Java dependencies, and scans every Compose image. Repository-secret and application-artifact findings always fail. Compose findings fail unless they exactly match an unexpired, digest-bound local-development record in the [container risk register](docs/security/local-development-container-risk-register.md); Trivy still prints every finding. These exceptions are prohibited for production. The command uses a version-and-digest-pinned Trivy container and read-only Docker-socket access for image inspection; run it only on a trusted development or CI host.
 
+## Continuous integration
+
+Every pull request runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml) (the full `./gradlew clean verify` lifecycle, then an OCI image build with a CycloneDX SBOM and a Trivy vulnerability scan) and [`.github/workflows/codeql.yml`](.github/workflows/codeql.yml) (CodeQL static analysis). `.github/workflows/security-scan.yml` runs the Docker-socket-privileged `scripts/security-scan` on pushes to `main` and on a schedule, not on pull requests, so a fork-originated PR is never granted that access. Every third-party GitHub Action is pinned to a full commit SHA; [`.github/dependabot.yml`](.github/dependabot.yml) keeps those pins, Gradle dependencies, and the Dockerfile base images current. Recommended `main` branch-protection settings are documented in [`docs/branch-protection.md`](docs/branch-protection.md) — they are recommendations only and are not applied automatically.
+
+## Container image
+
+`Dockerfile` builds a digest-pinned, multi-stage, non-root, read-only-root-filesystem-
+compatible image (`docker build --tag ledgerflow:local .`). `./scripts/scan-image` (or
+`make image-scan`) builds it and generates a CycloneDX SBOM plus a Trivy vulnerability scan
+locally — the same checks `.github/workflows/ci.yml`'s image job runs, for use outside CI.
+There is one image for both roles: a "worker" deployment is the identical image started
+with `LEDGERFLOW_RECOVERY_WORKER_ENABLED=true` (the default) and, in Kubernetes, simply not
+targeted by the public Service. Every hardening property — read-only root filesystem,
+graceful shutdown, a byte-for-byte reproducible jar, and the base-image package trimming
+that closed 5 real HIGH-severity CVEs by removing unused font-rendering and PKCS#11
+packages — is verified with real commands in [`docs/container-hardening.md`](docs/container-hardening.md).
+
+## Kubernetes deployment (local)
+
+`deploy/helm/ledgerflow/` is a Helm chart deploying `ledgerflow:local` as two
+role-differentiated Deployments — `ledgerflow-api` (request/response, autoscaled 2–5 replicas
+via an HPA) and `ledgerflow-worker` (background outbox/notification/recovery processing, no
+public Service, no ingress traffic permitted by its NetworkPolicy) — with security contexts
+matching [container hardening](docs/container-hardening.md) (non-root, read-only root
+filesystem, dropped capabilities), resource limits, PodDisruptionBudgets, and least-privilege
+ServiceAccounts. `deploy/kind/` stands up a self-contained local `kind` cluster, including
+dev-only PostgreSQL/Kafka/Keycloak dependencies, with one command:
+
+```bash
+scripts/kind-up            # create/reuse the cluster, build+load images, deploy everything
+scripts/kind-smoke-test    # real order creation, worker-independence, and NetworkPolicy proof
+scripts/kind-down          # delete the cluster
+```
+
+Full architecture, a real HPA scale-out under load, and every issue found and fixed while
+actually deploying (not just inspecting manifests) are recorded in
+[`docs/kubernetes-deployment.md`](docs/kubernetes-deployment.md).
+
+## AWS Terraform design (validated, never applied)
+
+`deploy/terraform/aws/` is a validated, **never-applied** two-AZ reference architecture — VPC
+with no NAT Gateway (VPC interface/gateway endpoints instead), ECS Fargate running the same
+api/worker split as the Kubernetes deployment above, RDS PostgreSQL (Multi-AZ, RDS-managed
+Secrets Manager credential — no password ever appears in a `.tf` file), ECR, and CloudWatch
+Logs. `terraform fmt`/`validate`, `tflint`, and Checkov all pass with zero unaddressed
+findings; every deliberately accepted finding (e.g. the ALB's public internet-facing ingress)
+is suppressed narrowly with a recorded rationale, in both Checkov's and the repository's own
+Trivy scanner's idiom. No `terraform plan`, `apply`, or AWS credentials are used anywhere.
+Architecture, a manually auditable cost estimate, the remote-state bootstrap procedure, and
+teardown instructions are recorded in
+[`docs/aws-terraform-design.md`](docs/aws-terraform-design.md).
+
+## AI operations assistant (optional)
+
+`ai-assistant/` is a separate, optional FastAPI service that turns an incident description into
+a structured, human-reviewed summary grounded in this repository's own curated runbook corpus
+(`docs/observability-runbook.md`) — advisory only, no tools, never claims to have performed
+remediation. It defaults to a deterministic **fake provider** requiring no API key, no network
+access, and no cost; an OpenAI Responses API provider is available behind explicit
+configuration for anyone who supplies their own key. Untrusted telemetry is regex-sanitized
+before it reaches any provider and is structurally isolated from model instructions in the
+prompt — both are directly tested, including a test that intercepts the real outbound HTTP
+request to confirm a secret never appears in it. 69 tests, `ruff` clean; see
+[`docs/ai-operations-assistant.md`](docs/ai-operations-assistant.md) for architecture, what the
+sanitizer does and doesn't catch (stated honestly), and how to run it.
+
 ## Local dependency environment
 
 Start all local dependencies and wait until Compose reports all nine services healthy:
@@ -220,6 +286,21 @@ make demo-observability
 ```
 
 The demonstration reports the durable business result first, prints its trace and correlation IDs, then verifies the same trace in Tempo and correlated logs in Loki. It returns a distinct failure if telemetry is unavailable; telemetry failure never changes or rolls back the order. See [observability design and SLOs](docs/observability.md) and the [alert runbook](docs/observability-runbook.md).
+
+## Portfolio release materials
+
+Everything above is the engineering; the material below is how to present it. Every claim in
+these documents traces to a real command, test, or doc already linked from this README — none
+of it is written to sound better than the evidence supports.
+
+| Document | Purpose |
+| --- | --- |
+| [Demo script](docs/demo-script.md) | A ~10-minute recorded-walkthrough script; every command in it is one already validated elsewhere in this repository. |
+| [Screenshots guide](docs/screenshots-guide.md) | What to capture and why — this is a guide, not a set of captured images; this environment has no display. |
+| [Résumé bullets](docs/resume-bullets.md) | Grounded only in implemented, evidenced work — no unsourced numbers or claims. |
+| [Interview discussion guide](docs/interview-guide.md) | Anticipated questions by topic, plus a "Hard questions" section on weaknesses and residual risk — deliberately the most important part. |
+| [Trade-offs and rejected alternatives](docs/trade-offs.md) | A curated index into the ADRs and both plans' Decision logs, not a duplicate of them. |
+| [Final residual risks](docs/residual-risks.md) | The single entry point for what this release does not prove, spanning the MVP and all six extensions. |
 
 ## Project structure
 

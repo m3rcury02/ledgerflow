@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TRIVY_IMAGE: "ghcr.io/aquasecurity/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f"
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 25 (Temurin)
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: gradle
+
+      # AGENTS.md and docs/development-workflow.md require the complete lifecycle
+      # (formatting, static analysis, unit, PostgreSQL + Kafka integration, architecture,
+      # OpenAPI, Compose, observability, and documentation checks) to run through the
+      # committed wrapper. `verify` already depends on every one of these; migration
+      # validation is covered because `integrationTest` runs Flyway against an empty
+      # PostgreSQL Testcontainer.
+      - name: Run full verification lifecycle
+        run: ./gradlew --no-daemon clean verify
+
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: gradle-reports
+          path: |
+            **/build/reports/**
+            **/build/test-results/**
+          retention-days: 14
+
+  image:
+    name: Build and scan OCI image
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Record build timestamp
+        id: build-timestamp
+        run: echo "value=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      # Built and scanned on every pull request, but never pushed to a registry from one:
+      # this job has no registry credentials and no login step, and `push` is always
+      # false here. A future milestone that adds a real publish step must gate it on
+      # `github.event_name != 'pull_request'` (or an environment protection rule) so a
+      # fork-originated pull request can never cause a deployment or registry write.
+      - name: Build image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ledgerflow:${{ github.sha }}
+          build-args: |
+            IMAGE_REVISION=${{ github.sha }}
+            IMAGE_CREATED=${{ steps.build-timestamp.outputs.value }}
+
+      - name: Generate SBOM (CycloneDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ledgerflow:${{ github.sha }}
+          format: cyclonedx-json
+          output-file: sbom.cyclonedx.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sbom
+          path: sbom.cyclonedx.json
+          retention-days: 90
+
+      - name: Scan image with Trivy
+        run: |
+          set -o pipefail
+          docker run --rm \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges \
+            --volume /var/run/docker.sock:/var/run/docker.sock:ro \
+            "$TRIVY_IMAGE" \
+            image \
+            --timeout 15m \
+            --scanners vuln \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --severity HIGH,CRITICAL \
+            --table-mode detailed \
+            --no-progress \
+            ledgerflow:${{ github.sha }} | tee trivy-image-report.txt
+
+      - name: Upload Trivy report on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: trivy-image-report
+          path: trivy-image-report.txt
+          retention-days: 14

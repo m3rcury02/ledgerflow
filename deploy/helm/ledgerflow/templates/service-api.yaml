@@ -1,0 +1,21 @@
+# ClusterIP only, api role only — the worker Deployment is deliberately never targeted by a
+# Service (Milestone 4 Decision log). Host access uses `kubectl port-forward`, not a
+# NodePort — see the kind-config.yaml comment and Milestone 4's Decision log for why.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledgerflow-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "ledgerflow.selectorLabels.api" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "ledgerflow.selectorLabels.api" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.api.containerPort }}
+      targetPort: http
+    - name: management
+      port: {{ .Values.managementPort }}
+      targetPort: management

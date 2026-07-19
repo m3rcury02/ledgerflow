@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help run dev-up dev-down dev-reset dev-status smoke-test demo-mvp replay-dead-letter security-scan observability-check demo-observability format check-format static-analysis test integration-test architecture-test openapi-check compose-check docs-check verify clean
+.PHONY: help run dev-up dev-down dev-reset dev-status smoke-test demo-mvp replay-dead-letter security-scan image-scan observability-check demo-observability format check-format static-analysis test integration-test architecture-test openapi-check compose-check docs-check verify clean kind-up kind-down kind-status kind-smoke-test
 
 help:
 	@echo "LedgerFlow developer commands"
@@ -13,6 +13,7 @@ help:
 	@echo "  make demo-mvp           Run the focused MVP scenario demonstration"
 	@echo "  make replay-dead-letter Replay one validated DLT record with audit evidence"
 	@echo "  make security-scan      Scan secrets, dependencies, and Compose images"
+	@echo "  make image-scan         Build the app image and generate its SBOM + vulnerability scan"
 	@echo "  make observability-check Validate metrics, traces, logs, rules, and dashboards"
 	@echo "  make demo-observability Create one order and verify its Tempo/Loki trace"
 	@echo "  make format             Apply formatting"
@@ -25,6 +26,10 @@ help:
 	@echo "  make compose-check      Validate Docker Compose configuration"
 	@echo "  make docs-check         Validate documentation"
 	@echo "  make verify             Run the complete verification lifecycle"
+	@echo "  make kind-up            Deploy LedgerFlow to a local kind cluster (one command)"
+	@echo "  make kind-down          Delete the local kind cluster"
+	@echo "  make kind-status        Show local kind deployment health"
+	@echo "  make kind-smoke-test    Prove one complete order journey on the kind cluster"
 
 run:
 	./gradlew :application:bootRun
@@ -52,6 +57,9 @@ replay-dead-letter:
 
 security-scan:
 	./scripts/security-scan
+
+image-scan:
+	./scripts/scan-image
 
 observability-check:
 	./scripts/validate-observability
@@ -91,3 +99,15 @@ verify:
 
 clean:
 	./gradlew clean
+
+kind-up:
+	./scripts/kind-up
+
+kind-down:
+	./scripts/kind-down
+
+kind-status:
+	./scripts/kind-status
+
+kind-smoke-test:
+	./scripts/kind-smoke-test

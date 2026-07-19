@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Deletes the local kind cluster created by scripts/kind-up, and everything in it. Local-only,
+# destructive, and immediate — matches this repository's dev-reset warning conventions.
+set -euo pipefail
+
+CLUSTER_NAME=ledgerflow-dev
+
+if kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
+  kind delete cluster --name "$CLUSTER_NAME"
+else
+  echo "No kind cluster named '$CLUSTER_NAME' exists."
+fi
