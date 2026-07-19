@@ -36,7 +36,7 @@ jobs:
           cache: gradle
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@eec0bff2f6c15bf3f1e8a0152f94d17664a06a06 # v4
+        uses: github/codeql-action/init@7188fc363630916deb702c7fdcf4e481b751f97a # v4
         with:
           languages: java-kotlin
           build-mode: manual
@@ -49,6 +49,6 @@ jobs:
         run: ./gradlew --no-daemon compileJava
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@eec0bff2f6c15bf3f1e8a0152f94d17664a06a06 # v4
+        uses: github/codeql-action/analyze@7188fc363630916deb702c7fdcf4e481b751f97a # v4
         with:
           category: "/language:java-kotlin"
