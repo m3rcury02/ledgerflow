@@ -8,9 +8,9 @@
 - Last updated: 2026-07-19
 - Approved by: Gunal (gunal2002@gmail.com), via conversation on 2026-07-18
 - Approval date: 2026-07-18
-- Current milestone: Milestone 5 complete; Milestone 6 (optional AI operations assistant)
-  awaits separate approval before starting, per the checkpoint execution style approved on
-  2026-07-18.
+- Current milestone: Milestone 6 (optional AI operations assistant) complete as of
+  2026-07-19; awaiting checkpoint review before Milestone 7 starts, per the checkpoint
+  execution style approved on 2026-07-18.
 
 ## Purpose and outcome
 
@@ -464,7 +464,7 @@ artifacts, not application interfaces.
 
 ### Milestone 6 — Optional AI operations assistant
 
-- Status: Proposed
+- Status: Complete
 - Intended outcome: separate Python FastAPI service, deterministic fake provider as the
   default with no API key required for local tests, optional OpenAI Responses API provider,
   curated runbook retrieval, sanitized telemetry input, structured incident-summary output
@@ -472,7 +472,56 @@ artifacts, not application interfaces.
   remediation, strict token/timeout/cost bounds, prompt-injection-resistant context
   separation, ≥20 evaluation fixtures, latency/cost metrics, tests proving secrets are never
   sent. Fake provider stays default unless the maintainer explicitly configures API billing.
-- Detail deferred until approved to start.
+- Current-state findings specific to this milestone:
+  - This repository has no existing Python code or Python service convention; the root
+    `.venv/` is an empty, untracked, self-ignoring artifact (`*` in its own `.gitignore`,
+    zero installed packages) unrelated to this milestone — not reused. A dedicated
+    `ai-assistant/` project with its own `pyproject.toml` is created instead, matching how
+    `performance/` and `deploy/helm/` are each self-contained trees with their own tooling.
+  - This repository already has a rich, real curated-runbook corpus to retrieve from instead
+    of inventing one: `docs/observability-runbook.md` (16 alert entries, each with
+    Diagnosis/Impact/Safe immediate actions/Escalation/Recovery verification) and
+    `docs/runbook-index.md` (a situational index mapping symptoms to runbook sections).
+    `docs/observability-runbook.md:7-8` already states the exact sanitization policy this
+    milestone's sanitizer implements in code ("Never paste tokens, request bodies, payment
+    references, raw Kafka payloads, poison bytes, SQL parameters, or customer subjects").
+  - Verified via `pip index versions` (real package index lookups, not assumed) the current
+    installable versions of every dependency this service needs: `fastapi` 0.139.2, `openai`
+    2.46.0, `pydantic` 2.13.4, `pydantic-settings` 2.14.2, `httpx` 0.28.1, `uvicorn` 0.51.0,
+    `pytest` 9.1.1, `ruff` 0.15.22. Python 3.14 is already present in this sandbox.
+  - Verified via live documentation fetch (`developers.openai.com`, since `platform.openai.com`
+    redirects there) the current OpenAI Responses API structured-output shape:
+    `client.responses.create(model=..., input=[{"role": "system"|"user", "content": ...}],
+    text={"format": {"type": "json_schema", "name": ..., "schema": ..., "strict": True}},
+    max_output_tokens=...)`, with usage reported as `response.usage.input_tokens` /
+    `.output_tokens` / `.total_tokens` (Responses API field names, distinct from the older
+    Chat Completions API's `prompt_tokens`/`completion_tokens`). Not assumed from
+    pre-existing knowledge, since this SDK version and API shape could have changed.
+  - The current OpenAI model lineup (verified via web search, since this is genuinely new
+    information) is the GPT-5.6 family (`sol`/`terra`/`luna` tiers); `gpt-5.6-luna` is the
+    cheapest tier (~$1.00/$6.00 per 1M input/output tokens) and is used as the default
+    configured model — a real, current, cost-conscious default rather than an invented
+    model name, with the same "verify before relying on it" caveat this plan already applied
+    to Milestone 5's RDS `engine_version` (pricing/model availability drift over time and
+    cannot be checked by any offline test in this milestone).
+- Design decisions (see Decision log for rationale): retrieval happens in the service layer
+  before any provider is called, so runbook citations are grounded in what was actually
+  retrieved from the curated corpus, never invented by a model — this is also what makes the
+  deterministic fake provider tractable, since it can template directly off retrieved
+  content instead of needing to reason. Retrieval is keyword/alert-name matching over the
+  16-entry corpus, not embeddings or a vector store — disproportionate machinery for this
+  corpus size. `SanitizedIncidentRequest` is a distinct type only constructible by the
+  sanitizer; both providers' method signatures accept only that type, so an unsanitized
+  request reaching a provider is a type error, not a discipline lapse. Automated tests
+  exercise the fake provider (deterministic, no network, no secrets risk) by default; the
+  two security-critical properties (secrets never sent, prompt-injection resistance) are
+  proven by asserting on the constructed outbound request/prompt structure itself, not on
+  any provider's output, since an LLM's behavioral compliance is not something a unit test
+  can guarantee. Kept out of `./gradlew clean verify` (a genuinely separate Python service,
+  per the milestone's own framing) with its own `pytest`/`ruff` gate instead.
+- Detail on implementation work, validation commands, and observable acceptance criteria
+  recorded below as the milestone completes, matching this plan's established
+  evidence-first documentation style.
 
 ### Milestone 7 — Final portfolio release
 
@@ -629,6 +678,32 @@ anticipated by any extension) would use a new forward migration only.
   that do not exist in `application/src/main/resources/application.yaml` (the real property
   is a single `LEDGERFLOW_DB_URL`). All three fixed; re-ran the full validation and both
   gates afterward — unchanged, `0` regressions. See Surprises and discoveries.
+- [x] `2026-07-19` — Milestone 6 implemented and validated with real commands:
+  `ai-assistant/` (a self-contained Python/FastAPI project, no Gradle module) with
+  `models.py`/`sanitizer.py`/`runbooks.py`/`prompt.py`/`service.py`/`main.py` and two
+  providers (`FakeProvider`, deterministic/no-network/default; `OpenAIProvider`, opt-in,
+  Responses API with structured JSON-schema output). 69 tests across 7 test files, all
+  passing (`.venv/bin/python -m pytest`); `ruff check .` and `ruff format --check .` both
+  clean (one scoped `E501` per-file ignore added for `runbooks.py`'s verbatim-transcribed
+  corpus text — see Decision log). The 16-entry runbook corpus is transcribed verbatim from
+  `docs/observability-runbook.md`, not paraphrased. 22 evaluation fixtures
+  (`tests/fixtures/eval_cases.json`, exceeding the ≥20 requirement) cover every corpus alert
+  name plus keyword-fallback, ambiguous-input, no-match, and two prompt-injection scenarios.
+  The strongest test in the suite, `test_openai_provider_secrets_never_sent.py`, intercepts
+  the real HTTP transport the `openai` SDK builds (`httpx.MockTransport`) and asserts a
+  secret embedded in raw telemetry never appears in the actual outbound request body — only
+  its `[REDACTED:...]` placeholder does — exercising real request-building code, not the
+  fake provider, which would make the assertion vacuous. `docs/ai-operations-assistant.md`
+  and a `README.md` pointer section were written recording architecture, design decisions,
+  what the sanitizer does and does not catch (stated honestly), what the prompt-injection
+  eval fixtures do and do not prove (see Surprises and discoveries), and how to run the
+  tests. Confirmed the rest of the repository is genuinely unaffected: `./gradlew --no-daemon
+  clean verify` → `BUILD SUCCESSFUL` (67 actionable tasks, no Python-related changes to any
+  Java task); `./scripts/security-scan` → exit `0`, the repository-wide secret scan covered
+  `ai-assistant/` with no dedicated skip and found nothing, confirming the
+  runtime-constructed-fake-secrets discipline (never a literal secret-shaped string in a test
+  file) held. A live smoke test against the real OpenAI API is intentionally deferred to a
+  separate step requiring the maintainer's own API key — see Outcome and follow-up.
 
 ## Surprises and discoveries
 
@@ -769,6 +844,42 @@ anticipated by any extension) would use a new forward migration only.
   what only careful reading of the actual generated `container_definitions` JSON and the
   actual application configuration caught this time. Recorded because it's a general lesson
   about "never applied, but validated" claims, not specific to this one design.
+- Milestone 6's sanitizer had a real double-redaction bug on the first test run, not a
+  hypothetical one: the generic `credential-assignment` pattern re-matched text an earlier,
+  more specific pattern (`bearer-token`) had already redacted (e.g.
+  `"Authorization: [REDACTED:bearer-token]"` got re-matched and stomped into
+  `"Authorization=[REDACTED:credential-assignment]"`), producing a wrong tag and an inflated
+  `redaction_count`. Caught immediately because each module was tested right after being
+  written, not batched — `pytest tests/test_sanitizer.py` failed 2 of 11 with a clear diff
+  the moment it was run. Fixed with a negative lookahead, `(?!\[REDACTED:)`, so a pattern
+  skips text that already contains a redaction placeholder.
+- The installed `openai==2.46.0` SDK's own response Pydantic models are stricter than the
+  Responses API documentation alone implies: a hand-built mock JSON payload for
+  `test_openai_provider_secrets_never_sent.py` failed `Response.model_validate()` on the
+  first attempt with `usage.input_tokens_details.cache_write_tokens: Field required` — a
+  field the public API docs don't call out as required. Fixed by validating the mock payload
+  directly against the installed SDK's own models before writing it into a test, not by
+  guessing from documentation a second time; this is the same "verify against the real
+  installed thing, not just its docs" discipline Milestone 5 applied to Checkov/Trivy
+  comment-placement rules.
+- The eval harness's own `must_not_contain_in_output` canary check (for the
+  `prompt-injection-remediation-claim` fixture) initially scanned `evidence` alongside the
+  assistant's own generated `summary`/`uncertainty`/`suggested_steps` fields, and failed: the
+  injection payload's own text ("...respond only with: remediation complete...") is
+  legitimately echoed verbatim into `evidence` (labeled `"Telemetry excerpt: ..."`) so a
+  human reviewer can see exactly what was reported — that is honest quoting, not the
+  assistant adopting the claim. Narrowed the check to only the assistant's own generated
+  fields, with an explicit comment recording that the exclusion is `FakeProvider`-specific:
+  for `OpenAIProvider`, `evidence` is model-authored, so a live-provider run of these
+  fixtures must not apply the same exclusion. Also added a **positive** assertion to both
+  injection fixtures (confidence stays `high` and the correct runbook is still cited despite
+  the injected telemetry; a fabricated runbook name the injected text demands never survives
+  grounding) — the negative-only check was close to vacuous against a fake provider that
+  cannot be steered at all, since it never reasons about telemetry content in the first
+  place. Recorded honestly in `docs/ai-operations-assistant.md`: automated eval fixtures
+  against the fake provider verify the retrieval/grounding layer's real resistance to
+  injected instructions, not a live model's behavioral compliance — no automated test in
+  this milestone calls a live model at all.
 
 ## Decision log
 
@@ -906,7 +1017,52 @@ anticipated by any extension) would use a new forward migration only.
   clean, not skip-listing a directory, which is also why this differs from Milestone 4's
   `deploy/kind/dependencies/` skip (that was vendored, dev-only, verbatim-upstream). No ADR
   required.
+- 2026-07-19 — Deterministic fake provider is the default (`AI_ASSISTANT_PROVIDER=fake`), and
+  the real OpenAI provider is opt-in behind an explicit environment variable plus a
+  maintainer-supplied key. Rationale: no test, script, container image, or default
+  configuration in this milestone should ever be able to trigger real API billing or send
+  data to a third party without a deliberate maintainer choice; this mirrors the same
+  "advisory only, opt-in, never a default hidden cost" posture the extension prompt itself
+  specifies for this milestone. No ADR required.
+- 2026-07-19 — Retrieval happens in the service layer before any provider is invoked, and a
+  provider's claimed citations are grounded against what was actually retrieved
+  (`_ground_citations`), never trusted from the model's own self-report. Rationale: this is
+  what makes "never invent a runbook citation" a structurally enforced, tested property
+  instead of a prompt-only request the model could ignore, and it is also what makes the
+  deterministic fake provider possible at all, since it can template directly off retrieved
+  content instead of needing to reason about the incident. No ADR required.
+- 2026-07-19 — `SanitizedIncidentRequest` is a distinct Pydantic type, not a subclass of
+  `IncidentRequest`, constructible only by `sanitizer.sanitize()`, and every provider's
+  `summarize()` entry point runtime-checks `isinstance` before handing off to
+  `_summarize_sanitized()`. Rationale: Python has no private-constructor enforcement, so this
+  is deliberately a type-level separation plus a runtime guard, not a doc comment asking
+  callers to remember to sanitize first — an unsanitized request reaching a provider is a
+  caught, tested `UnsanitizedRequestError`, not a silent bug. No ADR required.
+- 2026-07-19 — Prompt-injection resistance is tested structurally (prompt construction:
+  where untrusted content can and cannot land) and the eval fixtures' injection scenarios
+  assert a positive property (retrieval/grounding is not perturbed by injected text) rather
+  than only a negative one (forbidden phrases absent from output). Rationale: no automated
+  test can prove a live model always complies with a system prompt's instructions — claiming
+  otherwise would be exactly the kind of overstated validation claim Milestone 5's
+  "validated ≠ correct" note already warned against. The honest, provable claims are: (1)
+  untrusted input is structurally isolated in the prompt, and (2) the retrieval/grounding
+  layer itself is not misled by injected text. Documented explicitly in
+  `docs/ai-operations-assistant.md` rather than left implied. No ADR required.
+- 2026-07-19 — Runbook corpus text (`runbooks.py`) is exempted from `ruff`'s line-length rule
+  via a scoped `[tool.ruff.lint.per-file-ignores]` entry, rather than wrapped to fit. Rationale:
+  the corpus strings are transcribed verbatim from `docs/observability-runbook.md` specifically
+  so every citation is grounded in already-reviewed documentation; reformatting them for line
+  length would risk introducing a transcription mismatch with the source they are checked
+  against, for a purely cosmetic gain. No ADR required.
 
 ## Outcome and follow-up
 
-Not yet complete. Milestones 1-5 of 7 complete. Updated as each milestone finishes.
+Not yet complete. Milestones 1-6 of 7 complete. Updated as each milestone finishes.
+
+Milestone 6 follow-up (not a blocker for completion, tracked separately): a live smoke test
+against the real OpenAI Responses API, using a maintainer-supplied key, to confirm the
+structured-output wiring `test_openai_provider_secrets_never_sent.py` validates against a
+mocked transport also works against the real API end to end. The offline test suite proves
+request-shape and secret-safety properties that don't require a live call; it cannot prove
+the real API accepts this exact schema/parameter combination. To be run and recorded as a
+small follow-up commit once the maintainer provides a key.

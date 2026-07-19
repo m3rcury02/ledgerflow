@@ -18,3 +18,11 @@ performance/scenarios/burst-token.json
 crash.log
 crash.*.log
 
+ai-assistant/.venv/
+ai-assistant/.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
