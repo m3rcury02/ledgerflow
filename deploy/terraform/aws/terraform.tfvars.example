@@ -1,0 +1,20 @@
+# Copy to terraform.tfvars (gitignored) and fill in real values before ever running
+# `terraform plan` or `terraform apply`. No real account IDs or values are committed here -
+# see docs/aws-terraform-design.md.
+
+aws_region   = "ap-south-1"
+project_name = "ledgerflow"
+environment  = "dev"
+
+# Required: no default. Push a real image to the ECR repository this configuration creates
+# (see the ecr_repository_url output) before setting this, e.g. a git commit SHA.
+container_image_tag = "REPLACE_ME"
+
+# Optional: leave unset (default "") for HTTP-only. Set to a real ACM certificate ARN in this
+# account/region to enable HTTPS.
+# acm_certificate_arn = "arn:aws:acm:ap-south-1:111111111111:certificate/REPLACE_ME"
+
+# Out-of-scope dependency placeholders (see docs/aws-terraform-design.md, "Out of scope").
+# Replace once a real MSK cluster and identity provider exist.
+# kafka_bootstrap_servers = "REPLACE_ME:9092"
+# oauth2_issuer_uri       = "https://REPLACE_ME/realms/ledgerflow"

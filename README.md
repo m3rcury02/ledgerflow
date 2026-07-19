@@ -102,6 +102,20 @@ Full architecture, a real HPA scale-out under load, and every issue found and fi
 actually deploying (not just inspecting manifests) are recorded in
 [`docs/kubernetes-deployment.md`](docs/kubernetes-deployment.md).
 
+## AWS Terraform design (validated, never applied)
+
+`deploy/terraform/aws/` is a validated, **never-applied** two-AZ reference architecture — VPC
+with no NAT Gateway (VPC interface/gateway endpoints instead), ECS Fargate running the same
+api/worker split as the Kubernetes deployment above, RDS PostgreSQL (Multi-AZ, RDS-managed
+Secrets Manager credential — no password ever appears in a `.tf` file), ECR, and CloudWatch
+Logs. `terraform fmt`/`validate`, `tflint`, and Checkov all pass with zero unaddressed
+findings; every deliberately accepted finding (e.g. the ALB's public internet-facing ingress)
+is suppressed narrowly with a recorded rationale, in both Checkov's and the repository's own
+Trivy scanner's idiom. No `terraform plan`, `apply`, or AWS credentials are used anywhere.
+Architecture, a manually auditable cost estimate, the remote-state bootstrap procedure, and
+teardown instructions are recorded in
+[`docs/aws-terraform-design.md`](docs/aws-terraform-design.md).
+
 ## Local dependency environment
 
 Start all local dependencies and wait until Compose reports all nine services healthy:

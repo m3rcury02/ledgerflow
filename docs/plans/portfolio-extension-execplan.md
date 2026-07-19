@@ -5,11 +5,11 @@
 - Status: In Progress
 - Owner: Gunal (gunal2002@gmail.com)
 - Created: 2026-07-18
-- Last updated: 2026-07-18
+- Last updated: 2026-07-19
 - Approved by: Gunal (gunal2002@gmail.com), via conversation on 2026-07-18
 - Approval date: 2026-07-18
-- Current milestone: Milestone 4 complete; Milestone 5 (AWS Terraform design) awaits
-  separate approval before starting, per the checkpoint execution style approved on
+- Current milestone: Milestone 5 complete; Milestone 6 (optional AI operations assistant)
+  awaits separate approval before starting, per the checkpoint execution style approved on
   2026-07-18.
 
 ## Purpose and outcome
@@ -369,12 +369,98 @@ artifacts, not application interfaces.
 
 ### Milestone 5 — AWS Terraform design
 
-- Status: Proposed
+- Status: Complete
 - Intended outcome: validated (`terraform fmt`/`validate`, `tflint`, Checkov-or-equivalent),
   never-applied two-AZ VPC/ECS Fargate/RDS/ECR/Secrets Manager/CloudWatch design with cost
   tags, a cost estimate, remote-state design, and teardown instructions. No real account IDs,
   no `terraform apply`, no cloud resources created.
-- Detail deferred until approved to start.
+- Current-state findings specific to this milestone:
+  - `terraform` (v1.15.8), `tflint` (v0.50.3, `aws` ruleset plugin installs cleanly from
+    this sandbox), and `checkov` (3.3.8) are already installed. `infracost` is **not**
+    installed and there is no network path to obtain a live-priced cost estimate with an
+    API key in this sandbox, so the cost-estimate deliverable is a manually computed,
+    auditable unit-price × quantity breakdown (region, pricing date, and sizing assumptions
+    stated explicitly) rather than a tool-generated number.
+  - `scripts/security-scan`'s Trivy `fs` invocation (`--scanners secret,misconfig`) scans
+    the entire repository, including any new `deploy/terraform/aws/**/*.tf` — Trivy has a
+    native Terraform misconfig scanner (separate rule IDs, `AVD-AWS-*`) distinct from
+    Checkov. Unlike Milestone 4's `deploy/kind/dependencies/` (vendored, dev-only,
+    verbatim-upstream manifests, which justified a scan skip), this Terraform is
+    hand-authored and meant to be exemplary, so the target is passing both scanners
+    cleanly, not skip-listing the directory. Any deliberately accepted finding (e.g. the
+    ALB's internet-facing `0.0.0.0/0` ingress) is suppressed narrowly in both idioms
+    (`#checkov:skip=<ID>` and Trivy's `#trivy:ignore:<AVD-ID>`) with the same recorded
+    rationale, matching this repository's existing narrow-skip-with-rationale convention.
+  - The extension prompt's own service list for this milestone —
+    "VPC/ECS Fargate/RDS/ECR/Secrets Manager/CloudWatch" — does not include Kafka or
+    Keycloak (unlike Milestone 4, which deployed both in-cluster). Following the same
+    reasoning as Milestone 4's Valkey exclusion, this design's compute/data tier is
+    presented as a partial production topology: a real production deployment would add
+    Amazon MSK (or a self-managed Kafka on ECS) and either a self-hosted Keycloak service
+    or Amazon Cognito, both explicitly out of scope here. Connection settings for both are
+    modeled as Terraform variables with placeholder defaults and an explicit comment, not
+    fabricated infrastructure.
+  - `docker inspect`/Milestone 3's Dockerfile confirm the runtime image `EXPOSE`s `8080`
+    (API) and `8081` (management/Actuator) — the ECS task definition's container port
+    mappings and ALB target group / health-check path reuse these real values, the same
+    ones Milestone 4's Helm chart already validated against a running container.
+  - `docs/operational-limitations.md:66` ("No Kubernetes/Helm deployment, Terraform, cloud
+    account... is included") is now stale after Milestone 4 and will be further stale after
+    this milestone. That file is pre-existing MVP-scope documentation this plan's non-goals
+    exclude rewriting; it is not edited here. Flagged so Milestone 7 (final polish, which
+    explicitly reconciles documented trade-offs) catches and corrects it.
+- Design decisions: three-tier two-AZ VPC (public/private-app/private-data) with VPC
+  interface endpoints (ecr.api, ecr.dkr, logs, secretsmanager) plus an S3 gateway endpoint
+  instead of a NAT Gateway — no route to the internet exists from either private tier at all;
+  `ap-south-1` default region (matches the application's documented INR-only scope);
+  RDS-managed master credential (`manage_master_user_password`, never a Terraform variable);
+  dedicated least-privilege ECS execution/task roles per service role, mirroring Milestone
+  4's dedicated ServiceAccounts; Application Auto Scaling on `api` only (CPU target 50%,
+  min 2/max 5 — the exact values Milestone 4's HPA already validated under real load); one
+  shared customer-managed KMS key for CloudWatch Logs and ECR rather than one per resource;
+  HTTPS conditional on a supplied `acm_certificate_arn` (no real domain/certificate exists
+  for this never-applied design). Full rationale in `docs/aws-terraform-design.md`.
+- Implementation work:
+  - `deploy/terraform/aws/bootstrap/`: a separate, minimal root module (local state — it
+    cannot depend on the backend it creates) provisioning the S3 state bucket (versioned,
+    SSE-KMS, fully public-access-blocked, TLS-only bucket policy, 90-day noncurrent-version
+    lifecycle rule) and DynamoDB lock table (on-demand billing, point-in-time recovery,
+    server-side encryption) the main configuration's remote state depends on.
+  - `deploy/terraform/aws/` (main configuration): `vpc.tf` (VPC, 6 subnets across 2 AZs,
+    IGW, VPC Flow Logs, a locked-down default security group), `endpoints.tf` (4 interface
+    endpoints + 1 S3 gateway endpoint), `security_groups.tf` (ALB/api/worker/rds security
+    groups built from individual `aws_vpc_security_group_{ingress,egress}_rule` resources —
+    the worker security group has no ingress rule of any kind), `alb.tf` (ALB, target group
+    against `/actuator/health/readiness`, conditional HTTP/HTTPS listeners), `ecr.tf`
+    (immutable-tag repository, scan-on-push, untagged-image lifecycle policy), `rds.tf`
+    (Multi-AZ PostgreSQL, a dedicated parameter group forcing SSL and DDL query logging,
+    Performance Insights, Enhanced Monitoring), `iam.tf` (per-role execution/task roles),
+    `cloudwatch.tf` (KMS-encrypted log groups, the shared CMK, Container Insights setting on
+    the cluster resource), `ecs.tf` (Fargate cluster, api/worker task definitions and
+    services, api's Application Auto Scaling target/policy), `provider.tf`, `versions.tf`,
+    `backend.tf` (partial S3 backend — no account-specific values committed),
+    `variables.tf`, `outputs.tf`, `terraform.tfvars.example`.
+  - `docs/aws-terraform-design.md`: architecture, every design decision's rationale, the
+    out-of-scope list, the remote-state bootstrap procedure, a manually computed and
+    auditable cost estimate (no `infracost` available in this sandbox), the full validation
+    transcript, and teardown instructions.
+  - `README.md`: new "AWS Terraform design (validated, never applied)" section.
+  - `.gitignore`: `.terraform/`, `*.tfstate`, `*.tfstate.*`, `*.tfvars`, `crash*.log` (the
+    committed `terraform.tfvars.example` is unaffected — it does not match `*.tfvars`).
+- Validation commands: `terraform fmt -check -recursive .`; `terraform init -backend=false &&
+  terraform validate` (both the main configuration and `bootstrap/` — `-backend=false`
+  deliberately avoids the S3 backend ever initializing, since no AWS credentials exist in
+  this sandbox; `terraform plan`/`apply` are never run, per this milestone's own
+  constraint); `tflint` (both modules, `aws` + `terraform` rulesets); `checkov -d
+  deploy/terraform/aws --compact`; `./scripts/security-scan` (Trivy's independent Terraform
+  misconfig scanner, run as part of the existing `trivy fs` invocation — no script changes
+  were needed, unlike Milestone 4); `./gradlew clean verify`.
+- Observable acceptance criteria: `terraform fmt`/`validate` report success for both
+  modules; `tflint` reports zero issues for both modules; `checkov` reports `0` failed
+  checks and `16` explicitly suppressed-with-rationale checks; `./scripts/security-scan`
+  passes with the new Terraform included (no skip-listing); no real AWS account ID appears
+  anywhere in the committed configuration; `./gradlew clean verify` still passes. Met: see
+  Progress below.
 
 ### Milestone 6 — Optional AI operations assistant
 
@@ -508,6 +594,30 @@ anticipated by any extension) would use a new forward migration only.
   linter); fixed by narrowly skipping `deploy/kind/dependencies/` in that scan, matching the
   existing `.env`-skip precedent — `deploy/helm/` (the application's own chart) was not
   skipped and has zero findings.
+- [x] `2026-07-19` — Milestone 5 implemented and validated with real commands, never
+  applied: `terraform fmt -check -recursive` and `terraform init -backend=false &&
+  terraform validate` both pass cleanly for the main configuration and the separate
+  `bootstrap/` remote-state module; `tflint` (with the `aws` ruleset plugin) reports zero
+  issues for both. `checkov -d deploy/terraform/aws` went from 14 real findings down to `0`
+  failed / `16` suppressed-with-rationale checks, each suppression a considered trade-off
+  (documented in `docs/aws-terraform-design.md`), not a blanket exclusion — along the way,
+  fixed real findings rather than suppressing them wherever a real fix was proportionate:
+  CloudWatch log retention raised to 400 days (audit-appropriate for a ledger/payments
+  system, not just scanner-appeasement), RDS Performance Insights + Enhanced Monitoring +
+  `copy_tags_to_snapshot` + a dedicated parameter group forcing SSL and DDL query logging,
+  and a locked-down default VPC security group. Confirmed empirically that Checkov's inline
+  skip comments must sit **inside** the failing resource block, not above it (a comment
+  placed before the `resource` keyword is silently ignored — cost real iteration to
+  discover). Unlike Milestone 4, `scripts/security-scan` needed **no changes**: its existing
+  `trivy fs --scanners secret,misconfig` invocation already covers the whole repository, so
+  the new Terraform was scanned by Trivy's independent Terraform misconfig scanner
+  automatically; found 3 findings (matching 3 of the Checkov-accepted trade-offs under
+  different rule IDs), suppressed with `#trivy:ignore:<ID>` comments — confirmed empirically
+  that Trivy's ignore-comment placement rule is the **opposite** of Checkov's (directly
+  above the resource, not inside it). Real, non-fabricated final gate run:
+  `./gradlew --no-daemon clean verify` → `BUILD SUCCESSFUL`; `./scripts/security-scan` →
+  exit `0`, log confirms both Terraform roots were scanned and all three ignores were
+  honored, only pre-existing already-accepted Keycloak/Valkey Compose findings remain.
 
 ## Surprises and discoveries
 
@@ -612,6 +722,27 @@ anticipated by any extension) would use a new forward migration only.
   is unfixable without diverging from the pinned upstream file, which would defeat the point
   of pinning it. Scoped a narrow scan skip instead, the same shape as the pre-existing
   `.env`-skip.
+- Checkov's inline `#checkov:skip=<ID>:<reason>` comment is silently ignored when placed
+  directly above a `resource`/`data` block (outside it) — it must be the first line(s)
+  *inside* the block, before the block's own attributes/nested blocks. Confirmed with an
+  isolated reproduction: identical file, identical finding, moving the same comment from
+  "line before `resource {`" to "first line after `resource {`" was the only change between
+  a `FAILED` and a `SKIPPED` result. Cost real iteration in this milestone before the cause
+  was isolated — recorded so it isn't rediscovered.
+- Trivy's inline `#trivy:ignore:<ID> <reason>` comment follows the **opposite** placement
+  rule from Checkov's: it must sit directly **above** the resource/attribute line it
+  suppresses, not inside the block. A comment placed inside the block (in the same position
+  that works for Checkov) was silently ignored by Trivy. The two scanners' ignore-comment
+  conventions are mirror images of each other, on the same files, in the same milestone —
+  worth remembering the next time either tool's skip doesn't take effect.
+- Unlike Milestone 4's Kubernetes manifests, this milestone's Terraform needed **zero**
+  changes to `scripts/security-scan` itself: the script's existing `trivy fs --scanners
+  secret,misconfig` invocation already scans the whole repository, and Trivy's `fs` scanner
+  includes the Terraform misconfig scanner by default (no separate flag needed, unlike the
+  Kubernetes scanner also being on by default but tripping on a *vendored, un-editable*
+  upstream file in Milestone 4 — this milestone's Terraform is hand-authored, so real fixes
+  and narrow, documented ignores were both available, and a directory-level skip was never
+  necessary).
 
 ## Decision log
 
@@ -713,7 +844,43 @@ anticipated by any extension) would use a new forward migration only.
   flaky in this sandbox; `kubectl port-forward` is a different, portable code path and the
   more representative way to reach a ClusterIP-only Service regardless of cluster provider.
   No ADR required.
+- 2026-07-19 — VPC interface/gateway endpoints instead of a NAT Gateway for Milestone 5.
+  Rationale: the only things ECS tasks need to reach outside the VPC are ECR, CloudWatch
+  Logs, and Secrets Manager, all of which have VPC endpoint support; routing that traffic
+  through endpoints instead of a NAT Gateway means the private subnets have no route to the
+  internet at all, ever, rather than a route that happens to be scoped to those three
+  services today. Cost-comparable to a single NAT Gateway and cheaper than the two-NAT
+  topology a genuinely AZ-independent NAT-based design would need; the real motivation is
+  categorical (no egress path exists to misconfigure), matching the least-privilege thread
+  through Milestones 1-4. No ADR required — this is portfolio deployment tooling, not an
+  application architecture decision.
+- 2026-07-19 — Kafka and an identity provider (Keycloak/Cognito) are explicitly out of scope
+  for the Terraform design, unlike Milestone 4's in-cluster Kafka+Keycloak. Rationale: the
+  extension prompt's own service list for this milestone
+  (VPC/ECS Fargate/RDS/ECR/Secrets Manager/CloudWatch) does not include either; same
+  reasoning already applied to excluding Valkey from Milestone 4. Modeled as placeholder
+  Terraform variables with explicit comments rather than fabricated infrastructure. No ADR
+  required.
+- 2026-07-19 — Dedicated least-privilege ECS execution/task roles per service role (api,
+  worker), never shared, mirroring Milestone 4's dedicated ServiceAccounts. Rationale:
+  consistency with the already-established project convention, even though the two roles'
+  actual AWS permissions are nearly identical (each execution role differs only in which
+  specific CloudWatch log group ARN it can write to) — the identity boundary itself, not
+  just the permission set, is the property being preserved. No ADR required.
+- 2026-07-19 — Fix real Checkov/Trivy findings where proportionate (CloudWatch log
+  retention, RDS Performance Insights/Enhanced Monitoring/copy-tags-to-snapshot/forced-SSL
+  query logging, a locked-down default VPC security group), and accept narrowly-scoped,
+  documented, dual-tool (`#checkov:skip` + `#trivy:ignore`) suppressions only for trade-offs
+  that are either standard AWS-recommended patterns the scanner flags as a false positive
+  (the KMS key's account-root-admin statement), or would require a materially new AWS
+  service/resource outside this milestone's literal scope (AWS WAFv2, a dedicated ALB
+  access-log S3 bucket). Rationale: matches this repository's existing
+  `scripts/security-scan` philosophy of "no exception path for the packaged application,"
+  applied here to hand-authored (not vendored) infrastructure code — the target is passing
+  clean, not skip-listing a directory, which is also why this differs from Milestone 4's
+  `deploy/kind/dependencies/` skip (that was vendored, dev-only, verbatim-upstream). No ADR
+  required.
 
 ## Outcome and follow-up
 
-Not yet complete. Updated as each milestone finishes.
+Not yet complete. Milestones 1-5 of 7 complete. Updated as each milestone finishes.

@@ -11,3 +11,10 @@ performance/scenarios/tokens.json
 performance/scenarios/contention-token.json
 performance/scenarios/burst-token.json
 
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
+crash.*.log
+
