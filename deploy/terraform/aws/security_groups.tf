@@ -40,6 +40,15 @@ resource "aws_vpc_security_group_egress_rule" "alb_to_api" {
   referenced_security_group_id = aws_security_group.api.id
 }
 
+resource "aws_vpc_security_group_egress_rule" "alb_to_api_health_check" {
+  security_group_id            = aws_security_group.alb.id
+  description                  = "Health check the api service's management port (aws_lb_target_group.api's health_check.port)"
+  from_port                    = 8081
+  to_port                      = 8081
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.api.id
+}
+
 resource "aws_security_group" "api" {
   name_prefix = "${var.project_name}-${var.environment}-api-"
   description = "ledgerflow api ECS tasks: request/response, autoscaled, reachable only from the ALB."
@@ -59,6 +68,19 @@ resource "aws_vpc_security_group_ingress_rule" "api_from_alb" {
   description                  = "HTTP from the ALB only"
   from_port                    = 8080
   to_port                      = 8080
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.alb.id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "api_health_check_from_alb" {
+  # Without this, ALB health checks against the target group's management-port health check
+  # (alb.tf: aws_lb_target_group.api.health_check.port = "8081") are blocked, targets never
+  # go healthy, and the api service's rollout hangs forever - no public listener routes to
+  # 8081, so this enables health checks only, not public actuator exposure.
+  security_group_id            = aws_security_group.api.id
+  description                  = "Health check (management port) from the ALB only"
+  from_port                    = 8081
+  to_port                      = 8081
   ip_protocol                  = "tcp"
   referenced_security_group_id = aws_security_group.alb.id
 }

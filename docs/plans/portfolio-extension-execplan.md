@@ -618,6 +618,17 @@ anticipated by any extension) would use a new forward migration only.
   `./gradlew --no-daemon clean verify` → `BUILD SUCCESSFUL`; `./scripts/security-scan` →
   exit `0`, log confirms both Terraform roots were scanned and all three ignores were
   honored, only pre-existing already-accepted Keycloak/Valkey Compose findings remain.
+  A pre-push design review (not a tool — none of `fmt`/`validate`/`tflint`/`checkov`/Trivy
+  execute the config) then caught three real runtime defects that all five validators had
+  missed because none of them run anything: ALB health checks blocked by a security-group
+  gap (target group checks port `8081`, but the api/ALB security groups only allowed `8080`
+  — the api service's rollout would have hung forever), `linuxParameters.tmpfs` used for a
+  writable `/tmp` (Fargate does not support `tmpfs` at all — EC2 launch type only), and the
+  RDS-managed credential wired as one opaque blob into an environment variable the
+  application does not read, using invented `LEDGERFLOW_DB_HOST`/`_PORT`/`_NAME` variables
+  that do not exist in `application/src/main/resources/application.yaml` (the real property
+  is a single `LEDGERFLOW_DB_URL`). All three fixed; re-ran the full validation and both
+  gates afterward — unchanged, `0` regressions. See Surprises and discoveries.
 
 ## Surprises and discoveries
 
@@ -743,6 +754,21 @@ anticipated by any extension) would use a new forward migration only.
   upstream file in Milestone 4 — this milestone's Terraform is hand-authored, so real fixes
   and narrow, documented ignores were both available, and a directory-level skip was never
   necessary).
+- Static validation (`fmt`/`validate`/`tflint`/`checkov`/Trivy) is not runtime validation: all
+  five tools were green throughout while the configuration had three real defects that only a
+  manual review (not a tool, and not `terraform plan`/`apply`, which this milestone never
+  runs) surfaced — an ALB security-group gap on the exact port its own target group health
+  check uses (would have hung every rollout forever), `linuxParameters.tmpfs` on Fargate
+  (unsupported by that launch type; `RegisterTaskDefinition` would reject it at apply time),
+  and datasource environment variables invented (`LEDGERFLOW_DB_HOST`/`_PORT`/`_NAME`)
+  without checking `application/src/main/resources/application.yaml`, whose real property is
+  a single `LEDGERFLOW_DB_URL`. "Validated" in this milestone's sense (fmt/validate/lint/scan
+  all pass) is a real, meaningful bar, but it is a syntactic-and-security bar, not a
+  functional-correctness one — a `terraform plan`/`apply` (impossible here without AWS
+  credentials, and out of scope by the milestone's own constraint) would be needed to catch
+  what only careful reading of the actual generated `container_definitions` JSON and the
+  actual application configuration caught this time. Recorded because it's a general lesson
+  about "never applied, but validated" claims, not specific to this one design.
 
 ## Decision log
 

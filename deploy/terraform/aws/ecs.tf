@@ -22,14 +22,28 @@ locals {
   # deploy/helm/ledgerflow/templates/deployment-api.yaml /
   # deploy/helm/ledgerflow/templates/deployment-worker.yaml): api runs purely
   # request/response, worker runs purely background processing.
+  # Property names verified against application/src/main/resources/application.yaml, not
+  # assumed - in particular the datasource takes one LEDGERFLOW_DB_URL (a full JDBC URL),
+  # not separate host/port/name properties.
   shared_environment = [
     { name = "LEDGERFLOW_MANAGEMENT_PORT", value = "8081" },
     { name = "LEDGERFLOW_DEPLOYMENT_ENVIRONMENT", value = var.environment },
     { name = "LEDGERFLOW_OAUTH2_ISSUER", value = var.oauth2_issuer_uri },
+    # Keycloak's realm JWKS path convention, matching the out-of-scope identity-provider
+    # placeholder (see variables.tf, oauth2_issuer_uri) - this property has no application
+    # default and must resolve to something once a real identity provider exists.
+    { name = "LEDGERFLOW_OAUTH2_JWK_SET_URI", value = "${var.oauth2_issuer_uri}/protocol/openid-connect/certs" },
     { name = "LEDGERFLOW_KAFKA_BOOTSTRAP_SERVERS", value = var.kafka_bootstrap_servers },
-    { name = "LEDGERFLOW_DB_HOST", value = aws_db_instance.this.address },
-    { name = "LEDGERFLOW_DB_PORT", value = tostring(aws_db_instance.this.port) },
-    { name = "LEDGERFLOW_DB_NAME", value = aws_db_instance.this.db_name },
+    { name = "LEDGERFLOW_DB_URL", value = "jdbc:postgresql://${aws_db_instance.this.address}:${aws_db_instance.this.port}/${aws_db_instance.this.db_name}" },
+  ]
+
+  # RDS's manage_master_user_password stores the credential as a JSON secret
+  # ({"username":...,"password":...,...}), not a scalar - project the two fields the
+  # application actually reads (LEDGERFLOW_DB_USERNAME / LEDGERFLOW_DB_PASSWORD) individually
+  # via ECS's "secretArn:jsonKey::" syntax rather than injecting the whole JSON blob.
+  db_credential_secrets = [
+    { name = "LEDGERFLOW_DB_USERNAME", valueFrom = "${aws_db_instance.this.master_user_secret[0].secret_arn}:username::" },
+    { name = "LEDGERFLOW_DB_PASSWORD", valueFrom = "${aws_db_instance.this.master_user_secret[0].secret_arn}:password::" },
   ]
 
   api_environment = concat(local.shared_environment, [
@@ -45,8 +59,6 @@ locals {
     { name = "LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED", value = "true" },
     { name = "LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED", value = "true" },
   ])
-
-  db_secret_arn = aws_db_instance.this.master_user_secret[0].secret_arn
 
   container_image = "${aws_ecr_repository.app.repository_url}:${var.container_image_tag}"
 }
@@ -67,6 +79,13 @@ resource "aws_ecs_task_definition" "api" {
     cpu_architecture        = "X86_64"
   }
 
+  # Fargate does not support the `tmpfs` linux parameter (EC2 launch type only) - a writable
+  # /tmp under readonlyRootFilesystem instead uses an ephemeral task-level volume, mounted
+  # into the container below.
+  volume {
+    name = "tmp"
+  }
+
   container_definitions = jsonencode([
     {
       name      = "ledgerflow-api"
@@ -79,17 +98,12 @@ resource "aws_ecs_task_definition" "api" {
       ]
 
       environment = local.api_environment
-
-      secrets = [
-        { name = "LEDGERFLOW_DB_CREDENTIALS", valueFrom = local.db_secret_arn },
-      ]
+      secrets     = local.db_credential_secrets
 
       readonlyRootFilesystem = true
-      linuxParameters = {
-        tmpfs = [
-          { containerPath = "/tmp", size = 128 },
-        ]
-      }
+      mountPoints = [
+        { sourceVolume = "tmp", containerPath = "/tmp", readOnly = false },
+      ]
 
       healthCheck = {
         command     = ["CMD-SHELL", "wget -q -O- http://localhost:8081/actuator/health/liveness || exit 1"]
@@ -192,6 +206,11 @@ resource "aws_ecs_task_definition" "worker" {
     cpu_architecture        = "X86_64"
   }
 
+  # See the api task definition above: Fargate does not support the `tmpfs` linux parameter.
+  volume {
+    name = "tmp"
+  }
+
   container_definitions = jsonencode([
     {
       name      = "ledgerflow-worker"
@@ -203,17 +222,12 @@ resource "aws_ecs_task_definition" "worker" {
       ]
 
       environment = local.worker_environment
-
-      secrets = [
-        { name = "LEDGERFLOW_DB_CREDENTIALS", valueFrom = local.db_secret_arn },
-      ]
+      secrets     = local.db_credential_secrets
 
       readonlyRootFilesystem = true
-      linuxParameters = {
-        tmpfs = [
-          { containerPath = "/tmp", size = 128 },
-        ]
-      }
+      mountPoints = [
+        { sourceVolume = "tmp", containerPath = "/tmp", readOnly = false },
+      ]
 
       healthCheck = {
         command     = ["CMD-SHELL", "wget -q -O- http://localhost:8081/actuator/health/liveness || exit 1"]

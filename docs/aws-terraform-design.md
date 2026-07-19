@@ -110,6 +110,46 @@ of any kind - the same "no rule permits inbound traffic at all" property Milesto
 - **ALB access logging to S3** (would require a dedicated log-delivery bucket).
 - **Multi-region / cross-region replication** for the Terraform state bucket.
 
+## A note on what "validated" does and doesn't mean here
+
+`terraform validate`, `tflint`, and Checkov/Trivy all operate on the configuration statically
+- none of them execute a plan against real AWS APIs, so none of them can catch a defect that
+only manifests at `RegisterTaskDefinition` or service-stabilization time. Three such defects
+were found by manual review (not by any tool, and not by applying, since this milestone never
+applies) and fixed before this milestone was considered complete:
+
+- **ALB health checks were blocked by security groups.** The api target group's health check
+  correctly targets port `8081` (the management/Actuator port - `8080` only serves the
+  application API, which has no unauthenticated health endpoint), but the original api
+  security group only allowed ingress on `8080` from the ALB, and the ALB security group only
+  allowed egress on `8080`. Targets would never have gone healthy and the api service's
+  rollout would have hung indefinitely. Fixed by adding a dedicated `8081`
+  ingress/egress rule pair, scoped only to ALB<->api - no public listener routes to `8081`, so
+  this enables health checks without exposing the management port publicly.
+- **`tmpfs` is not supported on Fargate.** The original api/worker container definitions used
+  `linuxParameters.tmpfs` for a writable `/tmp` under `readonlyRootFilesystem: true` - a
+  pattern that works on the EC2 launch type but that Fargate's `RegisterTaskDefinition`
+  rejects outright. Fixed by switching to an ephemeral task-level `volume` block plus a
+  `mountPoints` entry, the correct Fargate-native mechanism for the same property.
+- **The RDS-managed secret was wired as a single opaque blob, and the wrong DB environment
+  variables were used.** `manage_master_user_password` stores the credential as a JSON
+  document (`{"username":...,"password":...,...}`), not a scalar string; the original
+  `secrets` block injected the whole ARN into one `LEDGERFLOW_DB_CREDENTIALS` variable the
+  application does not read. Separately, the application's actual datasource configuration
+  (`application/src/main/resources/application.yaml`) takes a single `LEDGERFLOW_DB_URL`
+  (a full JDBC URL) plus `LEDGERFLOW_DB_USERNAME`/`LEDGERFLOW_DB_PASSWORD` - not the
+  `LEDGERFLOW_DB_HOST`/`_PORT`/`_NAME` triple this configuration originally invented without
+  checking the real property names. Fixed by reading the actual `application.yaml` datasource
+  block, constructing `LEDGERFLOW_DB_URL` from the real RDS attributes, and projecting the
+  secret's two individual JSON keys via ECS's `secretArn:jsonKey::` syntax
+  (`LEDGERFLOW_DB_USERNAME`, `LEDGERFLOW_DB_PASSWORD`) instead of the whole document.
+
+None of these three findings changed a single `fmt`/`validate`/`tflint`/`checkov`/Trivy
+result - all were, and remain, green throughout. That is the point being recorded here:
+static validation is real evidence of syntactic correctness and scanner-level security
+posture, not of runtime correctness, and a "validated, never-applied" design is only as
+trustworthy as the review that goes beyond what the validators check.
+
 ## Remote state bootstrap
 
 `deploy/terraform/aws/bootstrap/` is a separate, minimal root module that creates the S3
