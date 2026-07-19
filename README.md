@@ -287,6 +287,21 @@ make demo-observability
 
 The demonstration reports the durable business result first, prints its trace and correlation IDs, then verifies the same trace in Tempo and correlated logs in Loki. It returns a distinct failure if telemetry is unavailable; telemetry failure never changes or rolls back the order. See [observability design and SLOs](docs/observability.md) and the [alert runbook](docs/observability-runbook.md).
 
+## Portfolio release materials
+
+Everything above is the engineering; the material below is how to present it. Every claim in
+these documents traces to a real command, test, or doc already linked from this README — none
+of it is written to sound better than the evidence supports.
+
+| Document | Purpose |
+| --- | --- |
+| [Demo script](docs/demo-script.md) | A ~10-minute recorded-walkthrough script; every command in it is one already validated elsewhere in this repository. |
+| [Screenshots guide](docs/screenshots-guide.md) | What to capture and why — this is a guide, not a set of captured images; this environment has no display. |
+| [Résumé bullets](docs/resume-bullets.md) | Grounded only in implemented, evidenced work — no unsourced numbers or claims. |
+| [Interview discussion guide](docs/interview-guide.md) | Anticipated questions by topic, plus a "Hard questions" section on weaknesses and residual risk — deliberately the most important part. |
+| [Trade-offs and rejected alternatives](docs/trade-offs.md) | A curated index into the ADRs and both plans' Decision logs, not a duplicate of them. |
+| [Final residual risks](docs/residual-risks.md) | The single entry point for what this release does not prove, spanning the MVP and all six extensions. |
+
 ## Project structure
 
 - `application` — the single deployable Spring Boot application and cross-module verification suites.

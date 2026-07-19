@@ -63,8 +63,12 @@ regulatory, or disaster-recovery claim.
   backend outage; it never becomes part of a financial transaction.
 - Management port isolation is an application listener boundary plus deployment requirement. A
   production ingress/network policy must prove it is unreachable from public and customer paths.
-- No Kubernetes/Helm deployment, Terraform, cloud account, paid service, production credential, or
-  production environment is included.
+- A local `kind` Kubernetes/Helm deployment and a validated, never-applied AWS Terraform design
+  were added after this document was first written (see
+  [`docs/kubernetes-deployment.md`](kubernetes-deployment.md) and
+  [`docs/aws-terraform-design.md`](aws-terraform-design.md)). Neither involves a real cloud
+  account, a paid service, a production credential, or a production environment — the Terraform
+  design is explicitly never applied.
 
 ## Release interpretation
 

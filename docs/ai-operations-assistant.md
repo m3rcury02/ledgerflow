@@ -179,6 +179,28 @@ is the structural prompt-construction tests above, plus (if a live smoke test is
 "Provider configuration") manual review of that one real response; the automated eval suite
 does not and cannot prove a live model resists injection, since it never calls one.
 
+## Running the server
+
+```bash
+cd ai-assistant
+.venv/bin/uvicorn ai_assistant.main:app --port 8000
+```
+
+Real output from this milestone (2026-07-19), fake provider, no configuration:
+
+```
+$ curl -s http://localhost:8000/healthz
+{"status":"ok","provider":"fake"}
+
+$ curl -s -X POST http://localhost:8000/v1/incidents/summarize \
+    -H 'Content-Type: application/json' \
+    -d '{"alert_name": "LedgerFlowOutboxBacklog", "description": "Outbox oldest age climbing past 60s"}'
+{"summary":"Likely matches LedgerFlowOutboxBacklog: Completed financial work remains durable,
+but downstream notifications are delayed.", "confidence":"high", "cited_runbooks":[{"alert_name":
+"LedgerFlowOutboxBacklog","source":"docs/observability-runbook.md#ledgerflowoutboxbacklog", ...}],
+"provider":"fake","latency_ms":0.013,"tokens":null,"estimated_cost_usd":0.0}
+```
+
 ## API
 
 `main.py` exposes three endpoints:

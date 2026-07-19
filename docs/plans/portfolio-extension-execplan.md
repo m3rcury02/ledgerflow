@@ -8,9 +8,12 @@
 - Last updated: 2026-07-19
 - Approved by: Gunal (gunal2002@gmail.com), via conversation on 2026-07-18
 - Approval date: 2026-07-18
-- Current milestone: Milestone 6 (optional AI operations assistant) complete as of
-  2026-07-19; awaiting checkpoint review before Milestone 7 starts, per the checkpoint
-  execution style approved on 2026-07-18.
+- Current milestone: Milestone 7 (final portfolio release) complete as of 2026-07-19; all
+  seven milestones complete. Two items remain, deferred by explicit maintainer choice rather
+  than blocking completion: a live OpenAI smoke test for Milestone 6, and a decision on
+  opening a PR to capture real CI evidence for Milestone 7 (see Outcome and follow-up). The
+  final tag (`v1.1.0-portfolio`) and push to `main` require separate explicit confirmation,
+  per the checkpoint execution style approved on 2026-07-18.
 
 ## Purpose and outcome
 
@@ -525,14 +528,60 @@ artifacts, not application interfaces.
 
 ### Milestone 7 — Final portfolio release
 
-- Status: Proposed
+- Status: Complete
 - Intended outcome: polished technical-interviewer README, architecture diagrams, demo video
   script, screenshots guide, résumé bullets grounded only in implemented evidence, interview
   discussion guide, documented trade-offs/rejected alternatives, local setup verification, CI
   evidence, performance evidence, Kubernetes evidence, Terraform validation evidence, AI
   evaluation evidence, final residual risks, no inflated production-scale claims. Every
   validation and security gate run for real before this milestone is marked complete.
-- Detail deferred until approved to start.
+- Current-state findings specific to this milestone:
+  - Architecture diagrams already exist (`docs/architecture.md`'s Mermaid system/sequence
+    diagrams; ASCII topology diagrams in `docs/aws-terraform-design.md` and
+    `docs/ai-operations-assistant.md`) — this milestone's job was tying existing evidence
+    together for a portfolio reader, not re-deriving it, so new documents index and link
+    rather than duplicate.
+  - `docs/adr/README.md` (13 ADRs) is already a curated trade-off index for the MVP; a curated
+    trade-offs document for this milestone extends that pattern to the six extensions instead
+    of re-authoring MVP content.
+  - `docs/security/mvp-residual-risk-register.md` (10 severity-ranked entries, `LF-MVP-R001`-
+    `R010`) is already a real risk register for the MVP; the extensions had no equivalent, so
+    this milestone adds one (`LF-EXT-R001`-`R007`) rather than folding new entries into the
+    MVP-scoped register, which has its own review date and ownership already recorded.
+  - Checked real CI history via `gh run list --branch feat/portfolio-extensions`: zero runs.
+    `ci.yml`/`codeql.yml` trigger only on `pull_request` or `push: branches: [main]`;
+    `security-scan.yml` triggers only on `push: main` and schedule, deliberately excluded from
+    pull requests so a fork-originated PR is never granted its Docker-socket access (see
+    `README.md`, "Continuous integration"). This branch has never been merged and no PR has
+    been opened against it, so **no CI evidence for these three workflows exists yet** — not a
+    tooling gap to paper over, a real fact to report honestly and let the maintainer decide
+    how to close (see Decision log).
+  - `docs/operational-limitations.md` (written before the portfolio extensions began) contained
+    one now-inaccurate claim — "No Kubernetes/Helm deployment, Terraform, ... is included" —
+    superseded by Milestones 4-5. Fixed as a small, factual, one-bullet correction rather than
+    left stale, since an inaccurate limitations doc is itself a false claim by omission.
+  - `ai-assistant/`'s FastAPI service had no documented way to actually start the server
+    (`main.py` has no `if __name__` entry point, `pyproject.toml` defines no console script) —
+    added a "Running the server" section to `docs/ai-operations-assistant.md` with a real
+    `uvicorn` invocation and real `curl` output, verified by actually starting the server and
+    calling it, since the demo script (this milestone) needed a real command to reference.
+- Design decisions: new documents are written to **link to** primary sources (ADRs, both plans'
+  Decision logs, per-milestone docs' own "out of scope"/limitation sections) rather than
+  duplicate them, so a future edit to a primary source doesn't silently desynchronize a
+  portfolio-facing summary. The screenshots guide is written explicitly as a guide for what to
+  capture, not a claim that captured images exist — this sandbox is headless and has no
+  display, and implying otherwise would be exactly the kind of fabricated evidence this whole
+  plan has avoided throughout. The résumé bullets and interview guide's "Hard questions"
+  section are held to the same evidence-only bar as every other document in this repository:
+  every number traces to a real, linked source, and weaknesses are stated as plainly as
+  strengths.
+- Real validation run for this milestone: `./gradlew --no-daemon clean verify --console=plain`
+  (`BUILD SUCCESSFUL`, including `documentationCheck` against every new/edited Markdown link);
+  `./scripts/security-scan` (exit `0`); `ai-assistant/`'s own gate
+  (`.venv/bin/python -m pytest` — 69 passed; `ruff check .` and `ruff format --check .` — both
+  clean); `make smoke-test` (real HTTP/payment/ledger/outbox/Kafka/notification proof,
+  `BUILD SUCCESSFUL`, "MVP smoke proof passed") as this milestone's own "local setup
+  verification" requirement, run fresh rather than assumed from earlier milestones' runs.
 
 ## Implementation approach
 
@@ -704,6 +753,22 @@ anticipated by any extension) would use a new forward migration only.
   runtime-constructed-fake-secrets discipline (never a literal secret-shaped string in a test
   file) held. A live smoke test against the real OpenAI API is intentionally deferred to a
   separate step requiring the maintainer's own API key — see Outcome and follow-up.
+- [x] `2026-07-19` — Milestone 7 implemented: six new portfolio documents
+  (`docs/demo-script.md`, `docs/screenshots-guide.md`, `docs/resume-bullets.md`,
+  `docs/interview-guide.md`, `docs/trade-offs.md`, `docs/residual-risks.md`), a new "Portfolio
+  release materials" `README.md` section linking all six, a "Running the server" addition to
+  `docs/ai-operations-assistant.md` (verified by actually starting the FastAPI service and
+  calling it — see Current-state findings above), and a one-bullet factual correction to
+  `docs/operational-limitations.md`'s now-stale "no Kubernetes/Terraform" claim. Every new
+  document links to primary sources (ADRs, both plans' Decision logs, each milestone's own
+  doc) rather than duplicating them. Real validation: `./gradlew --no-daemon clean verify`
+  (`BUILD SUCCESSFUL`, `documentationCheck` passed standalone against every new/edited
+  Markdown link — zero broken links); `./scripts/security-scan` → exit `0`; `ai-assistant/`'s
+  own gate (69 tests passed, `ruff` clean); `make smoke-test` → real HTTP/payment/ledger/
+  outbox/Kafka/notification proof, run fresh as this milestone's own local-setup-verification
+  requirement. A real `gh run list` check confirmed zero CI runs exist for this branch (see
+  Current-state findings) — reported honestly rather than worked around; the decision to open
+  a PR to close that gap is the maintainer's, deferred per Decision log below.
 
 ## Surprises and discoveries
 
@@ -880,6 +945,27 @@ anticipated by any extension) would use a new forward migration only.
   against the fake provider verify the retrieval/grounding layer's real resistance to
   injected instructions, not a live model's behavioral compliance — no automated test in
   this milestone calls a live model at all.
+- Milestone 7 assumed CI evidence for this branch would be trivially available and found the
+  opposite: `gh run list --branch feat/portfolio-extensions` returned zero rows. Reading
+  `ci.yml`/`codeql.yml`/`security-scan.yml`'s actual `on:` triggers explained why —
+  `pull_request` and `push: branches: [main]` for the first two, `push: main` plus schedule
+  (deliberately excluding PRs, for fork-safety) for the third — and none of those conditions
+  had ever been true for this branch, since every milestone so far pushed directly to
+  `feat/portfolio-extensions`, never to `main`, and no PR was ever opened. `workflow_dispatch`
+  could not substitute: manual dispatch requires the workflow file to already exist on the
+  default branch, and all three were added on this branch and never merged. The only path to
+  real `ci.yml`/`codeql.yml` evidence is a PR from this branch into `main`; real
+  `security-scan.yml` evidence cannot exist before an actual merge, by that workflow's own
+  design. Recorded rather than worked around — see Decision log.
+- `docs/operational-limitations.md` (authored before any portfolio extension existed) still
+  asserted "No Kubernetes/Helm deployment, Terraform, ... is included" — literally false as of
+  Milestones 4-5. An MVP-scoped document silently going stale as later milestones add real
+  capability is a general risk worth naming: a document is only as trustworthy as its last
+  review date, and nothing in this plan's process re-reviews earlier documents when later
+  milestones change facts they asserted. Fixed with a one-bullet, narrowly-scoped correction
+  rather than a broader rewrite, since the rest of that document's MVP-scope claims are still
+  accurate and rewriting more than the stale bullet would risk introducing a new inaccuracy
+  under a "final polish" banner instead of fixing the one that was actually found.
 
 ## Decision log
 
@@ -1054,15 +1140,49 @@ anticipated by any extension) would use a new forward migration only.
   so every citation is grounded in already-reviewed documentation; reformatting them for line
   length would risk introducing a transcription mismatch with the source they are checked
   against, for a purely cosmetic gain. No ADR required.
+- 2026-07-19 — New Milestone 7 documents link to primary sources (ADRs, both plans' Decision
+  logs, each milestone's own doc) instead of re-authoring their content. Rationale: a portfolio
+  summary that duplicates content will drift from the source it summarizes the first time
+  either one is edited without the other; a curated index with links stays correct by
+  construction, at the cost of requiring one more click to reach full detail. Matches the same
+  reasoning already applied to `docs/adr/README.md` and
+  `docs/security/mvp-residual-risk-register.md`, both pre-existing curated indexes this
+  milestone extends the pattern from rather than replaces. No ADR required.
+- 2026-07-19 — Opening a PR from `feat/portfolio-extensions` into `main`, the only way to get
+  real `ci.yml`/`codeql.yml` evidence, is left as the maintainer's explicit decision rather
+  than done unilaterally as part of Milestone 7. Rationale: creating a PR is a repository-
+  visible action affecting shared state, and this plan's own execution style already reserves
+  the final tag and push to `main` for separate explicit confirmation for the same reason —
+  opening the PR that would precede any such merge belongs in the same category. Milestone 7 is
+  reported complete without it; the CI-evidence gap is documented honestly
+  (`docs/plans/portfolio-extension-execplan.md`'s own Milestone 7 Current-state findings and
+  Surprises above) rather than worked around or silently skipped. No ADR required.
+- 2026-07-19 — The screenshots guide (`docs/screenshots-guide.md`) is written explicitly as
+  "what to capture," not as a claim that screenshots exist. Rationale: this sandbox is headless
+  with no display; producing an image claiming to be a real screenshot without one would be
+  fabricated evidence, the one thing this entire plan has avoided from Milestone 1 onward. A
+  guide with no images is more honest than a milestone marked incomplete for lacking a display,
+  and more honest than fabricating one. No ADR required.
 
 ## Outcome and follow-up
 
-Not yet complete. Milestones 1-6 of 7 complete. Updated as each milestone finishes.
+All seven milestones complete as of 2026-07-19. Two items remain, both deferred by explicit
+maintainer choice rather than blocking any milestone's completion:
 
-Milestone 6 follow-up (not a blocker for completion, tracked separately): a live smoke test
-against the real OpenAI Responses API, using a maintainer-supplied key, to confirm the
-structured-output wiring `test_openai_provider_secrets_never_sent.py` validates against a
-mocked transport also works against the real API end to end. The offline test suite proves
-request-shape and secret-safety properties that don't require a live call; it cannot prove
-the real API accepts this exact schema/parameter combination. To be run and recorded as a
-small follow-up commit once the maintainer provides a key.
+- **Milestone 6 follow-up**: a live smoke test against the real OpenAI Responses API, using a
+  maintainer-supplied key, to confirm the structured-output wiring
+  `test_openai_provider_secrets_never_sent.py` validates against a mocked transport also works
+  against the real API end to end. The offline test suite proves request-shape and
+  secret-safety properties that don't require a live call; it cannot prove the real API accepts
+  this exact schema/parameter combination. To be run and recorded as a small follow-up commit
+  once the maintainer provides a key.
+- **Milestone 7 follow-up**: whether to open a PR from `feat/portfolio-extensions` into `main`
+  to capture real `ci.yml`/`codeql.yml` evidence (`security-scan.yml` cannot run on a PR by its
+  own design regardless — see Surprises and discoveries). No CI workflow has ever run against
+  this branch, since every milestone pushed directly to it and neither a PR nor a merge to
+  `main` has happened. This is the maintainer's decision, not made unilaterally, per the same
+  "separate explicit confirmation" standard this plan already applies to the final tag and
+  push to `main`.
+
+The final tag (`v1.1.0-portfolio`) and push to `main` remain pending separate explicit
+maintainer confirmation, as stated throughout this plan.
