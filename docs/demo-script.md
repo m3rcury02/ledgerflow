@@ -85,12 +85,31 @@ Reference: `README.md`, "Observability demonstration"; `docs/observability.md`.
 ```bash
 docker build --tag ledgerflow:local .
 docker inspect --format '{{.Config.User}}' ledgerflow:local
-docker run --rm --read-only --tmpfs /tmp ledgerflow:local --version
 ```
 
-Narrate: non-root user, read-only root filesystem, and — cut to the doc — a real base-image scan
-that found 5 HIGH-severity CVEs and closed them by removing unused font-rendering/PKCS#11
-package chains, re-verified with a real order still working against the hardened image.
+With the dependency stack up (`scripts/dev-up`), start the container under the real hardening
+flags and show a clean `Started LedgerFlowApplication` with no filesystem errors — this is the
+exact invocation `docs/container-hardening.md` used, environment variables included, not a
+shortened stand-in:
+
+```bash
+docker run --rm --network host --read-only --tmpfs /tmp:rw,size=64m \
+  --env LEDGERFLOW_DB_URL=jdbc:postgresql://localhost:5433/ledgerflow \
+  --env LEDGERFLOW_DB_USERNAME=ledgerflow \
+  --env LEDGERFLOW_DB_PASSWORD=change-me-local-postgres \
+  --env LEDGERFLOW_KAFKA_BOOTSTRAP_SERVERS=localhost:9092 \
+  --env LEDGERFLOW_OAUTH2_AUDIENCE=ledgerflow-api \
+  --env LEDGERFLOW_OAUTH2_ISSUER=http://localhost:8081/realms/ledgerflow \
+  --env LEDGERFLOW_OAUTH2_JWK_SET_URI=http://localhost:8081/realms/ledgerflow/protocol/openid-connect/certs \
+  --env LEDGERFLOW_MANAGEMENT_PORT=8082 \
+  ledgerflow:local
+```
+
+Narrate: non-root user, a container that starts and serves traffic with *no writable root
+filesystem at all* — the only writable path is a `tmpfs` mount, and nothing in the application
+needs more than that. Cut to the doc for the base-image scan that found 5 HIGH-severity CVEs and
+closed them by removing unused font-rendering/PKCS#11 package chains, re-verified with a real
+order still working against the hardened image.
 
 Reference: `docs/container-hardening.md`.
 
