@@ -2,18 +2,19 @@
 
 ## Metadata
 
-- Status: In Progress
+- Status: In Progress (all seven milestones complete and merged to `main`; only the final tag
+  remains — see below)
 - Owner: Gunal (gunal2002@gmail.com)
 - Created: 2026-07-18
-- Last updated: 2026-07-19
+- Last updated: 2026-07-20
 - Approved by: Gunal (gunal2002@gmail.com), via conversation on 2026-07-18
 - Approval date: 2026-07-18
-- Current milestone: Milestone 7 (final portfolio release) complete as of 2026-07-19; all
-  seven milestones complete. Two items remain, deferred by explicit maintainer choice rather
-  than blocking completion: a live OpenAI smoke test for Milestone 6, and a decision on
-  opening a PR to capture real CI evidence for Milestone 7 (see Outcome and follow-up). The
-  final tag (`v1.1.0-portfolio`) and push to `main` require separate explicit confirmation,
-  per the checkpoint execution style approved on 2026-07-18.
+- Current milestone: all seven milestones complete as of 2026-07-20 and merged into `main`
+  (PR #3, merge commit `c2b8c47`), with real `CI`/`CodeQL`/`Security scan` evidence all
+  passing on `main` after two rounds of real post-merge fixes (see Outcome and follow-up). One
+  item remains, deferred by the maintainer's explicit choice, not blocking: a live OpenAI
+  smoke test for Milestone 6. The final tag (`v1.1.0-portfolio`) still requires separate
+  explicit confirmation, per the checkpoint execution style approved on 2026-07-18.
 
 ## Purpose and outcome
 
@@ -769,6 +770,25 @@ anticipated by any extension) would use a new forward migration only.
   requirement. A real `gh run list` check confirmed zero CI runs exist for this branch (see
   Current-state findings) — reported honestly rather than worked around; the decision to open
   a PR to close that gap is the maintainer's, deferred per Decision log below.
+- [x] `2026-07-20` — Maintainer approved opening PR #3 (`feat/portfolio-extensions` -> `main`)
+  and, once its `ci.yml`/`codeql.yml` checks passed for real, approved merging it — the real
+  CI evidence this milestone's Current-state findings above reported as absent. Merge commit
+  `c2b8c47`. The merge's own push-to-`main` trigger then ran `security-scan.yml` for the
+  first time ever in this repository's real CI, immediately surfacing a genuine finding no
+  local run had ever caught (see Surprises and discoveries): `postgres:18.4-trixie` had
+  already drifted to a new digest since the risk register's `2026-07-14` acceptance, because
+  local runs all season had been silently using a stale cached image and never re-pulling.
+  A first fix (re-pinning the exception's recorded digest, commit `1b4050a`) was not durable
+  — a fresh registry check showed the tag had drifted to a **third** distinct digest within
+  about a day, faster than a policy-file re-pin can keep up. Fixed at the root instead (commit
+  `a6d06d8`): `compose.yaml` now pins `postgres` by digest directly, making the image Compose
+  actually runs content-addressed and immune to further upstream tag churn. The same push
+  also surfaced an unrelated, independently real CodeQL failure — see Surprises and
+  discoveries — fixed across two more commits (`a6d06d8`'s first attempt was insufficient;
+  `1000564` was the real fix). Final state, confirmed via `gh run list` after the last push:
+  `CI`, `CodeQL`, and `Security scan` all `success` on `main` — the first time all three of
+  this repository's real CI gates have ever passed together. Milestone 7 is now genuinely
+  complete, not merely locally validated.
 
 ## Surprises and discoveries
 
@@ -966,6 +986,30 @@ anticipated by any extension) would use a new forward migration only.
   rather than a broader rewrite, since the rest of that document's MVP-scope claims are still
   accurate and rewriting more than the stale bullet would risk introducing a new inaccuracy
   under a "final polish" banner instead of fixing the one that was actually found.
+- `postgres:18.4-trixie`'s digest is genuinely volatile, not a one-time fluke: three distinct
+  digests were observed across roughly 24 hours (`b913fd56...` recorded 2026-07-14; `d93de426...`
+  resolved 2026-07-19 when the first digest-refresh fix was made; `3a82e1f5...` resolved less
+  than an hour later, catching the second drift before it could cause a third failed CI run).
+  Every local `./scripts/security-scan` run all season had passed cleanly regardless, because
+  the script's `docker image inspect "$image" || docker pull` only pulls when the image is
+  absent locally — a sandbox that already has *any* version cached never re-pulls and never
+  sees drift, no matter how many times the scan is re-run. A fresh GitHub Actions runner has no
+  such cache and pulls the registry's current state every single time, which is exactly why
+  this had been invisible until `security-scan.yml`'s literal first-ever real execution. The
+  general lesson: an exact-digest-pinned exception policy is only as stable as the tag it's
+  pinned against — pinning the *exception record* to a moving tag's digest is a losing race if
+  the tag itself is rebuilt frequently; pinning the *running image* by digest is the only fix
+  that stops the race rather than re-running it.
+- CodeQL's "didn't build any of it" failure needed two attempts to actually fix, and the first
+  attempt's own stated theory was wrong. `clean compileJava` still showed every `compileJava`
+  task as `FROM-CACHE` in the real build log — `clean` deletes the *output directory*, but this
+  project's `org.gradle.caching=true` (`gradle.properties`) means Gradle's build cache restores
+  the previously-cached compiled classes into that now-empty directory without ever invoking
+  `javac` again, which CodeQL's build tracer (which only observes real compiler process
+  invocations) cannot see. Confirmed by reading the actual "Build for analysis" step's own
+  Gradle output line by line rather than assuming the first fix worked — the fix that actually
+  held was `--no-build-cache` on that one invocation, which leaves `actions/setup-java`'s
+  `cache: gradle` (dependency-resolution caching, unaffected by this) fully in place.
 
 ## Decision log
 
@@ -1163,26 +1207,57 @@ anticipated by any extension) would use a new forward migration only.
   fabricated evidence, the one thing this entire plan has avoided from Milestone 1 onward. A
   guide with no images is more honest than a milestone marked incomplete for lacking a display,
   and more honest than fabricating one. No ADR required.
+- 2026-07-20 — Maintainer approved opening PR #3 and, once its checks passed, merging it into
+  `main`. Rationale: the CI-evidence gap this milestone had documented but deliberately not
+  closed unilaterally (see the prior entry above) could only be closed with the maintainer's
+  explicit go-ahead, which was then given directly. No ADR required.
+- 2026-07-20 — When the postgres exception's first digest re-pin proved non-durable (a second
+  drift within the hour), fixed by pinning `compose.yaml`'s image reference by digest directly
+  rather than attempting a second policy-file re-pin. Rationale: re-pinning the *exception
+  record* chases a moving target and had already failed once; pinning the *running image*
+  removes the target from motion entirely — the image Compose runs becomes content-addressed,
+  so no future upstream rebuild of the `18.4-trixie` tag can cause this class of failure again.
+  Upgrading past this pin is now a deliberate, visible maintainer action (editing one line in
+  `compose.yaml`), the same maintenance model already used for every other pinned dependency in
+  this repository. No ADR required.
+- 2026-07-20 — Fixed CodeQL's build-cache interaction with `--no-build-cache` on one workflow
+  step rather than removing `cache: gradle` from the job entirely. Rationale: the actual
+  problem is narrow (a cache-hit `compileJava` producing zero real compiler invocations for
+  CodeQL's tracer to observe) and the fix should be exactly as narrow — `--no-build-cache`
+  forces a real compile for this one step while leaving `cache: gradle`'s dependency-resolution
+  speedup (the larger share of this job's runtime) fully intact. No ADR required.
 
 ## Outcome and follow-up
 
-All seven milestones complete as of 2026-07-19. Two items remain, both deferred by explicit
-maintainer choice rather than blocking any milestone's completion:
+All seven milestones complete as of 2026-07-20, merged into `main` (PR #3, merge commit
+`c2b8c47`), with real CI evidence rather than only local reproduction: `CI` (the full
+`./gradlew clean verify` lifecycle plus an image build/scan), `CodeQL`, and `Security scan`
+(the Docker-socket-privileged Trivy gate) all show `success` on `main` as of commit `1000564`
+— the first time all three of this repository's real CI gates have passed together, since none
+had ever run against this codebase before PR #3 (see Surprises and discoveries).
+
+Getting there required two more real, unplanned fixes after the merge, both committed directly
+to `main` with the maintainer's explicit go-ahead (see Decision log) rather than folded
+silently into Milestone 7's original scope:
+
+- `postgres:18.4-trixie`'s digest drifted twice within about a day; `compose.yaml` now pins it
+  by digest directly (commit `a6d06d8`) instead of chasing the moving tag through the
+  exception policy file.
+- `codeql.yml`'s manual-build-mode step needed `--no-build-cache` (commit `1000564`, after a
+  first attempt with just `clean` proved insufficient) because this repository's
+  `org.gradle.caching=true` meant a cache-hit `compileJava` gave CodeQL's build tracer nothing
+  real to observe.
+
+One item remains, deferred by explicit maintainer choice rather than blocking completion:
 
 - **Milestone 6 follow-up**: a live smoke test against the real OpenAI Responses API, using a
   maintainer-supplied key, to confirm the structured-output wiring
   `test_openai_provider_secrets_never_sent.py` validates against a mocked transport also works
   against the real API end to end. The offline test suite proves request-shape and
   secret-safety properties that don't require a live call; it cannot prove the real API accepts
-  this exact schema/parameter combination. To be run and recorded as a small follow-up commit
-  once the maintainer provides a key.
-- **Milestone 7 follow-up**: whether to open a PR from `feat/portfolio-extensions` into `main`
-  to capture real `ci.yml`/`codeql.yml` evidence (`security-scan.yml` cannot run on a PR by its
-  own design regardless — see Surprises and discoveries). No CI workflow has ever run against
-  this branch, since every milestone pushed directly to it and neither a PR nor a merge to
-  `main` has happened. This is the maintainer's decision, not made unilaterally, per the same
-  "separate explicit confirmation" standard this plan already applies to the final tag and
-  push to `main`.
+  this exact schema/parameter combination. The maintainer confirmed on 2026-07-20 this is not
+  needed now; to be run and recorded as a small follow-up commit if and when a key is provided.
 
-The final tag (`v1.1.0-portfolio`) and push to `main` remain pending separate explicit
-maintainer confirmation, as stated throughout this plan.
+The final tag (`v1.1.0-portfolio`) and push to `main` (the tag itself — `main` already has all
+seven milestones) remain pending separate explicit maintainer confirmation, as stated
+throughout this plan.

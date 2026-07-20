@@ -168,13 +168,24 @@ and "Evaluation fixtures."
 
 ## Hard questions
 
-**What's the weakest part of this project?** Two honest answers. First: the CI pipeline itself
-has limited real-world exercise — `security-scan.yml` has never run in GitHub Actions against
-this branch, because it only triggers on push-to-`main` or schedule, and this branch hasn't been
-merged (see `docs/plans/portfolio-extension-execplan.md`, Milestone 7). Second: the AWS Terraform
-design has never been applied, so however careful the review, there's a real chance a `plan`/
-`apply` would surface something the static tools and manual review both missed — the three
-defects already found are evidence that this class of gap is real, not hypothetical.
+**What's the weakest part of this project?** Two honest answers, and the first one has real
+evidence rather than just a caveat. When this branch was finally merged to `main` — the first
+time any of `ci.yml`/`codeql.yml`/`security-scan.yml` had ever run for real, since every
+milestone before that had only pushed directly to a feature branch — the merge's own push
+immediately found two genuine, previously-invisible bugs: `security-scan.yml` failed because
+the `postgres:18.4-trixie` base image had already drifted to a new digest twice within about a
+day (fixed by pinning it by digest in `compose.yaml` instead of chasing a moving tag), and
+`codeql.yml` failed because Gradle's build cache made `compileJava` a no-op, giving CodeQL's
+build tracer nothing real to observe (fixed with `--no-build-cache` on that one step). Neither
+bug was catchable by local runs — a local sandbox with an already-cached image or a warm build
+cache never re-pulls or recompiles, so both were invisible until a fresh CI runner actually
+exercised the pipeline. The honest lesson: a CI pipeline that's never actually run isn't
+proven, no matter how carefully its YAML was reviewed — see
+`docs/plans/portfolio-extension-execplan.md`, Milestone 7's Surprises and discoveries, for the
+full account, including that both are now fixed and all three gates pass together on `main`.
+Second: the AWS Terraform design has never been applied, so however careful the review, there's
+a real chance a `plan`/`apply` would surface something the static tools and manual review both
+missed — the three defects already found there are evidence that this class of gap is real too.
 
 **What would you not trust in production as-is?** Everything the residual-risk registers say not
 to trust — that's the point of writing them down rather than only writing down what works. Read
