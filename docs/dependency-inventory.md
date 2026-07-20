@@ -56,7 +56,7 @@ Inspect the complete transitive graph with:
 
 | Service | Explicit image |
 | --- | --- |
-| PostgreSQL | `postgres:18.4-trixie` |
+| PostgreSQL | `postgres:18.4-trixie@sha256:3a82e1f56c8f0f5616a11103ac3d47e632c3938698946a7ad26da0df1334744a` (digest-pinned — see [container risk register](security/local-development-container-risk-register.md), `LF-DEV-2026-001`) |
 | Kafka | `apache/kafka-native:4.3.1` |
 | Valkey | `valkey/valkey:9.1.0-alpine3.23` |
 | Keycloak | `quay.io/keycloak/keycloak:26.7.0` |
