@@ -22,7 +22,12 @@ Every record below temporarily accepts risk until `2026-08-13T10:55:00Z`, exactl
 ### LF-DEV-2026-001 — PostgreSQL entrypoint `gosu` Go standard library
 
 - Vulnerability identifier and severity: `CVE-2025-68121` (CRITICAL); `CVE-2025-61726`, `CVE-2025-61729`, `CVE-2026-25679`, `CVE-2026-27145`, `CVE-2026-32280`, `CVE-2026-32281`, `CVE-2026-32283`, `CVE-2026-33811`, `CVE-2026-33814`, `CVE-2026-39820`, `CVE-2026-39822`, `CVE-2026-39836`, `CVE-2026-42499`, and `CVE-2026-42504` (HIGH).
-- Affected image and installed package: `postgres:18.4-trixie` at `postgres@sha256:b913fd5699b8bd23fa4b06d72ecdd939fad43b80fb8651bac06caa0e6d135cac`; `usr/local/bin/gosu`, package `stdlib` `v1.24.6`.
+- Affected image and installed package: `postgres:18.4-trixie` at `postgres@sha256:d93de42662696f278fb34354b06fdaa90ad7ca3106d6f72fbd01d16da006d2cf`; `usr/local/bin/gosu`, package `stdlib` `v1.24.6`.
+  Digest refreshed `2026-07-19` after the official `18.4-trixie` tag was rebuilt upstream
+  (confirmed via `scripts/security-scan`'s first real run in GitHub Actions on `main`, which
+  pulls fresh and caught the drift a locally-cached image did not); the package, installed
+  version, and full CVE set below are unchanged from the original `2026-07-14` acceptance —
+  this is a mechanical re-pin of the same accepted risk, not a new review.
 - Fixed versions: `CVE-2025-68121` — `1.24.13, 1.25.7, 1.26.0-rc.3`; `CVE-2025-61726` — `1.24.12, 1.25.6`; `CVE-2025-61729` — `1.24.11, 1.25.5`; `CVE-2026-25679` — `1.25.8, 1.26.1`; `CVE-2026-27145` and `CVE-2026-42504` — `1.25.11, 1.26.4`; `CVE-2026-32280`, `CVE-2026-32281`, and `CVE-2026-32283` — `1.25.9, 1.26.2`; `CVE-2026-33811`, `CVE-2026-33814`, `CVE-2026-39820`, `CVE-2026-39836`, and `CVE-2026-42499` — `1.25.10, 1.26.3`; `CVE-2026-39822` — `1.25.12, 1.26.5, 1.27.0-rc.2`.
 - Compatible patched official image currently available: No. Both current official PostgreSQL 18.4 variants tested contain the same `gosu` binary; the Debian variant removes the separate Alpine OS finding.
 - Reachability or use: `gosu` executes at container startup to drop privileges. The LedgerFlow flow does not supply untrusted `gosu` arguments or call Go network/protocol APIs through it, but binary-level exploitability has not been disproved.
