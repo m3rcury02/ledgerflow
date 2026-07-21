@@ -214,3 +214,5 @@ ledgerflow:
     point: PAYMENT_PROVIDER
     mode: FAIL
     delay: 100ms
+  api-docs:
+    enabled: ${LEDGERFLOW_API_DOCS_ENABLED:false}

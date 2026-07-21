@@ -24,6 +24,14 @@ val architectureTest =
         runtimeClasspath += output + compileClasspath
     }
 
+sourceSets {
+    main {
+        resources {
+            srcDir("src/main/openapi")
+        }
+    }
+}
+
 configurations[integrationTest.implementationConfigurationName].extendsFrom(
     configurations.testImplementation.get(),
 )
@@ -55,6 +63,7 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-webmvc")
     implementation("io.micrometer:micrometer-registry-prometheus")
+    implementation("org.webjars:swagger-ui:5.25.3")
     implementation(
         platform(
             "io.opentelemetry.instrumentation:opentelemetry-instrumentation-bom-alpha:" +
