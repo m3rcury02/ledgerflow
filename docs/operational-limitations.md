@@ -67,7 +67,7 @@ regulatory, or disaster-recovery claim.
   were added after this document was first written (see
   [`docs/kubernetes-deployment.md`](kubernetes-deployment.md) and
   [`docs/aws-terraform-design.md`](aws-terraform-design.md)). Neither involves a real cloud
-  account, a paid service, a production credential, or a production environment — the Terraform
+  account, a paid service, a production credential, or a production environment. The Terraform
   design is explicitly never applied.
 
 ## Release interpretation
