@@ -7,8 +7,9 @@ structured, human-reviewed incident summary grounded in this repository's own cu
 corpus. It is advisory only — it has no tools, cannot act on LedgerFlow, and never claims to
 have performed remediation. It ships with a deterministic **fake provider as the default**, so
 running it, and every automated test in this milestone, requires no API key, no network access,
-and no cost. An optional OpenAI Responses API provider is available behind explicit
-configuration for anyone who chooses to supply their own key and accept the associated cost.
+and no cost. Two optional real providers are available behind explicit configuration for anyone
+who chooses to supply their own key and accept the associated cost: OpenAI (Responses API) and
+DeepSeek (Chat Completions API).
 
 ## Why a separate service, not a Spring module
 
@@ -37,9 +38,15 @@ IncidentRequest (raw, untrusted)
        +-- FakeProvider (default): templates directly off `retrieved`, no network call
        |
        +-- OpenAIProvider (opt-in): builds a context-separated prompt (prompt.py),
-                                     calls the Responses API with a strict JSON schema,
-                                     grounds any claimed citation against `retrieved`
-                                     (never trusts the model's self-report)
+       |                             calls the Responses API with a strict JSON schema,
+       |                             grounds any claimed citation against `retrieved`
+       |                             (never trusts the model's self-report)
+       |
+       +-- DeepSeekProvider (opt-in): same shared prompt, plus a schema description
+       |                               appended to the system message - DeepSeek's Chat
+       |                               Completions API has no schema parameter, only a
+       |                               schema-less `json_object` mode; same citation
+       |                               grounding as OpenAIProvider
        |
        v
   IncidentSummary (summary, evidence, confidence, uncertainty, suggested_steps,
@@ -57,8 +64,9 @@ directly off retrieved runbook content instead of needing to reason about the in
   (`.env.example`, `config.py:Settings.provider`) is the default; `docker run`/local
   tests/CI never need an OpenAI key. The fake provider makes no network call at all, so it is
   structurally immune to prompt injection (there is no model to inject) and cannot leak a
-  secret to a third party (there is no third party). Switching to the real provider is one
-  environment variable, `AI_ASSISTANT_PROVIDER=openai`, plus `AI_ASSISTANT_OPENAI_API_KEY`.
+  secret to a third party (there is no third party). Switching to a real provider is one
+  environment variable — `AI_ASSISTANT_PROVIDER=openai` plus `AI_ASSISTANT_OPENAI_API_KEY`, or
+  `AI_ASSISTANT_PROVIDER=deepseek` plus `AI_ASSISTANT_DEEPSEEK_API_KEY`.
 - **`SanitizedIncidentRequest` is a distinct type, not a subclass, and is enforced at
   runtime.** Its only intended constructor is `sanitizer.sanitize()`; `Provider.summarize()`
   (`providers/base.py`) checks `isinstance(sanitized, SanitizedIncidentRequest)` before handing
@@ -94,6 +102,32 @@ directly off retrieved runbook content instead of needing to reason about the in
   $1.00/$6.00 per 1M input/output tokens). No offline test in this repository can keep this
   current — verify against OpenAI's own pricing page before relying on it for a real budget,
   the same caveat Milestone 5 already applied to an RDS `engine_version` string.
+- **DeepSeek needed a real API call to design correctly, not just a docs read.** A first pass
+  based on DeepSeek's published docs turned out to disagree with the live API on two load-bearing
+  points, confirmed with a real key on 2026-07-21: `response_format={"type": "json_schema"}` is
+  rejected outright (`"This response_format type is unavailable now"`) — only schema-less
+  `{"type": "json_object"}` works — and a model given the shared `prompt.py` system prompt with
+  no schema description reliably invents its own unrelated JSON shape (OpenAI never hits this
+  because its schema comes from the Responses API's `json_schema` parameter, not prompt text).
+  `DeepSeekProvider` appends an explicit field-list instruction to the system message as a
+  result; this is the one piece of prompt content that is provider-specific rather than shared.
+  Model names (`deepseek-v4-flash`/`deepseek-v4-pro`) were confirmed the same way, via
+  `GET https://api.deepseek.com/models` with a real key, not assumed from the docs. Pricing
+  (`config.py:DEEPSEEK_MODEL_PRICING_PER_MILLION_TOKENS`) carries the same drift caveat as the
+  OpenAI table above — verify against DeepSeek's own pricing page before relying on it for a
+  real budget. Unlike OpenAI, DeepSeek's real `usage` reports separate
+  `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens` counts, so the post-call cost (not the
+  pre-flight worst-case ceiling estimate, which still assumes every token is a miss) uses the
+  cheaper cache-hit rate for whatever portion of the prompt actually hit.
+- **The default model for each real provider is derived as "cheapest in the pricing table",
+  not hardcoded.** `config.py:_cheapest_model()` picks the entry with the lowest worst-case
+  (input + output) price and is used as the `Field(default_factory=...)` for both
+  `openai_model` and `deepseek_model`. An explicit `AI_ASSISTANT_OPENAI_MODEL`/
+  `AI_ASSISTANT_DEEPSEEK_MODEL` still overrides it, same as any other setting — this only
+  changes what happens with no override, so a future entry added to either pricing table
+  automatically becomes the default if it's cheaper, instead of requiring someone to remember
+  to update a separate hardcoded string. `test_config.py` asserts this directly (including that
+  an explicit override still wins) rather than leaving it as an unverified claim.
 
 ## What the sanitizer does and doesn't catch
 
@@ -227,9 +261,9 @@ AI_ASSISTANT_MAX_TELEMETRY_CHARS=4000
 AI_ASSISTANT_MAX_COST_USD_PER_REQUEST=0.05
 ```
 
-The fake provider stays the default unless a maintainer explicitly opts into `openai` and
-supplies a key — no test, script, or default configuration in this milestone triggers real API
-billing.
+The fake provider stays the default unless a maintainer explicitly opts into `openai` or
+`deepseek` and supplies a key — no test, script, or default configuration in this milestone
+triggers real API billing.
 
 ## Running tests and evals
 
@@ -237,27 +271,35 @@ billing.
 cd ai-assistant
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m pytest       # 69 tests
+.venv/bin/python -m pytest       # 79 tests
 .venv/bin/ruff check .
 .venv/bin/ruff format --check .
 ```
 
-Real output from this milestone (2026-07-19):
+Real output (2026-07-21, after adding the DeepSeek provider):
 
 ```
 $ .venv/bin/python -m pytest
-======================== 69 passed, 1 warning in 1.14s =========================
+79 passed, 1 warning in 1.10s
 
 $ .venv/bin/ruff check .
 All checks passed!
 
 $ .venv/bin/ruff format --check .
-20 files already formatted
+22 files already formatted
 ```
 
 Test breakdown: `test_sanitizer.py` (11), `test_runbooks.py` (10), `test_prompt_construction.py`
 (7), `test_fake_provider.py` (8), `test_openai_provider_secrets_never_sent.py` (4),
-`test_main.py` (5), `test_eval_fixtures.py` (24 — 2 meta-checks plus the 22 fixture cases).
+`test_deepseek_provider_secrets_never_sent.py` (5), `test_config.py` (5 — guards the
+"cheapest model by default" property directly), `test_main.py` (5), `test_eval_fixtures.py`
+(24 — 2 meta-checks plus the 22 fixture cases).
+
+The DeepSeek integration was also proven against the real API, not just mocked: the FastAPI
+service was started with `AI_ASSISTANT_PROVIDER=deepseek` and a real key, then sent a live
+`POST /v1/incidents/summarize` request. It returned a correctly-schemed `IncidentSummary` with a
+citation actually grounded in the curated runbook corpus, real `tokens`, and a real
+`estimated_cost_usd` (~$0.00018 for that one call) computed from DeepSeek's own reported usage.
 
 `runbooks.py`'s `E501` (line-too-long) is ignored for that one file only
 (`pyproject.toml:[tool.ruff.lint.per-file-ignores]`), because its corpus strings are
@@ -280,6 +322,14 @@ the installed `openai==2.46.0` SDK's own Pydantic response models by direct intr
 assumed from documentation alone — SDK-internal field names (e.g.
 `usage.input_tokens_details.cache_write_tokens`) are exactly the kind of detail that drifts
 between SDK versions.
+
+`tests/test_deepseek_provider_secrets_never_sent.py` proves the same four properties for
+`DeepSeekProvider` against a Chat-Completions-shaped mock response (`choices[0].message.content`,
+top-level `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens` in `usage`) captured from a real
+`https://api.deepseek.com/chat/completions` call, not the Responses API shape the OpenAI test
+mocks. A fifth test, `test_real_usage_prefers_the_cheaper_cache_hit_rate`, confirms the reported
+cost actually uses the cheaper cache-hit rate for whatever portion of the prompt the provider
+reports as a cache hit, rather than silently falling back to the conservative all-miss estimate.
 
 ## Out of scope
 

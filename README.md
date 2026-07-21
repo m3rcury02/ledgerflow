@@ -122,11 +122,12 @@ teardown instructions are recorded in
 a structured, human-reviewed summary grounded in this repository's own curated runbook corpus
 (`docs/observability-runbook.md`) — advisory only, no tools, never claims to have performed
 remediation. It defaults to a deterministic **fake provider** requiring no API key, no network
-access, and no cost; an OpenAI Responses API provider is available behind explicit
-configuration for anyone who supplies their own key. Untrusted telemetry is regex-sanitized
-before it reaches any provider and is structurally isolated from model instructions in the
-prompt — both are directly tested, including a test that intercepts the real outbound HTTP
-request to confirm a secret never appears in it. 69 tests, `ruff` clean; see
+access, and no cost; two optional real providers are available behind explicit configuration
+for anyone who supplies their own key — OpenAI (Responses API) or DeepSeek (Chat Completions
+API). Untrusted telemetry is regex-sanitized before it reaches any provider and is structurally
+isolated from model instructions in the prompt — both are directly tested, including a test per
+real provider that intercepts the actual outbound HTTP request to confirm a secret never
+appears in it. 79 tests, `ruff` clean; see
 [`docs/ai-operations-assistant.md`](docs/ai-operations-assistant.md) for architecture, what the
 sanitizer does and doesn't catch (stated honestly), and how to run it.
 

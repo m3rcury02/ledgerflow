@@ -16,7 +16,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 Confidence = Literal["low", "medium", "high"]
-ProviderName = Literal["fake", "openai"]
+ProviderName = Literal["fake", "openai", "deepseek"]
 
 
 class IncidentRequest(BaseModel):

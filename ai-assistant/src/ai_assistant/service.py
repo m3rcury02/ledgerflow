@@ -24,8 +24,13 @@ def build_provider(settings: Settings) -> Provider:
         from ai_assistant.providers.openai_provider import OpenAIProvider
 
         return OpenAIProvider(settings)
+    if settings.provider == "deepseek":
+        from ai_assistant.providers.deepseek_provider import DeepSeekProvider
+
+        return DeepSeekProvider(settings)
     raise UnknownProviderError(
-        f"Unknown AI_ASSISTANT_PROVIDER {settings.provider!r}; expected 'fake' or 'openai'."
+        f"Unknown AI_ASSISTANT_PROVIDER {settings.provider!r}; expected 'fake', 'openai', or "
+        "'deepseek'."
     )
 
 
