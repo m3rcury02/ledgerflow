@@ -296,7 +296,6 @@ of it is written to sound better than the evidence supports.
 
 | Document | Purpose |
 | --- | --- |
-| [Demo script](docs/demo-script.md) | A ~10-minute recorded-walkthrough script; every command in it is one already validated elsewhere in this repository. |
 | [Screenshots guide](docs/screenshots-guide.md) | What to capture and why — this is a guide, not a set of captured images; this environment has no display. |
 | [Résumé bullets](docs/resume-bullets.md) | Grounded only in implemented, evidenced work — no unsourced numbers or claims. |
 | [Interview discussion guide](docs/interview-guide.md) | Anticipated questions by topic, plus a "Hard questions" section on weaknesses and residual risk — deliberately the most important part. |
