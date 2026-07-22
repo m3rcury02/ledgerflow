@@ -129,7 +129,7 @@ val openApiValidator =
     }
 
 dependencies {
-    openApiValidator("org.openapitools:openapi-generator-cli:7.23.0")
+    openApiValidator("org.openapitools:openapi-generator-cli:7.24.0")
 }
 
 val test =
