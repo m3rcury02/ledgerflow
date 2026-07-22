@@ -4,10 +4,10 @@
 
 Before changing files:
 
-1. Read `AGENTS.md`, this workflow, relevant architecture documentation, and applicable ADRs.
+1. Read this workflow, relevant architecture documentation, and applicable ADRs.
 2. Inspect the working tree and preserve unrelated changes.
 3. Identify the single approved milestone.
-4. For significant or multi-step work, create or update an ExecPlan following `.agent/PLANS.md` and wait for explicit approval.
+4. For significant or multi-step work, create or update an ExecPlan and wait for explicit approval.
 5. Write observable acceptance criteria before implementation.
 
 A request does not authorize adjacent cleanup, dependency upgrades, speculative abstractions, or later milestones.

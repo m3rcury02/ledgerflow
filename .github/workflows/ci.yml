@@ -34,7 +34,7 @@ jobs:
           java-version: "25"
           cache: gradle
 
-      # AGENTS.md and docs/development-workflow.md require the complete lifecycle
+      # docs/development-workflow.md requires the complete lifecycle
       # (formatting, static analysis, unit, PostgreSQL + Kafka integration, architecture,
       # OpenAPI, Compose, observability, and documentation checks) to run through the
       # committed wrapper. `verify` already depends on every one of these; migration

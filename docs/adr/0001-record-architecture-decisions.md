@@ -8,7 +8,7 @@
 
 LedgerFlow is intended to be a production-grade system developed through multiple milestones. Significant technical choices will accumulate around module boundaries, persistence, API compatibility, security, operations, and dependencies.
 
-Commit messages, pull-request discussion, and agent conversations do not provide a reliable long-term explanation of why a decision was made. Architecture documentation describes the current intended system, but without a decision record it can lose the alternatives, constraints, and consequences that produced that design.
+Commit messages, pull-request discussion, and chat or pairing-session history do not provide a reliable long-term explanation of why a decision was made. Architecture documentation describes the current intended system, but without a decision record it can lose the alternatives, constraints, and consequences that produced that design.
 
 The project needs a lightweight, version-controlled mechanism for durable architectural decisions without requiring an ADR for routine implementation details.
 
@@ -67,7 +67,7 @@ This ADR records the ADR process itself and is accepted when the initial governa
 - Important decisions and their rationale remain available in the repository.
 - Future changes can distinguish intentional architecture from accidental structure.
 - Exceptions and reversals are explicit and reviewable.
-- Agents can plan using durable context rather than relying on prior conversations.
+- Future planning can rely on durable context rather than prior conversations.
 
 ### Costs
 
@@ -83,7 +83,7 @@ Rejected because architecture documentation describes the current state but does
 
 ### Rely on issues, pull requests, or commit messages
 
-Rejected because those records may be unavailable to local agents, mix decisions with implementation discussion, and are harder to discover from the affected architecture.
+Rejected because those records may be scattered or unavailable later, mix decisions with implementation discussion, and are harder to discover from the affected architecture.
 
 ### Require an ADR for every technical choice
 

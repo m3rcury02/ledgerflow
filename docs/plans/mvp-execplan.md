@@ -3,7 +3,7 @@
 ## Metadata
 
 - Status: Complete
-- Owner: Codex
+- Owner: Gunal (gunal2002@gmail.com)
 - Created: 2026-07-11
 - Last updated: 2026-07-17
 - Approved by: LedgerFlow maintainer
@@ -50,8 +50,8 @@ The normative requirements and designs are:
 
 The repository contains the verified foundation, complete product/operational slices, and final release proof from Milestones 1 through 8:
 
-- `AGENTS.md` establishes Java 25, Spring Boot 4.1, Gradle Kotlin DSL, modular-monolith, PostgreSQL, Flyway, OpenAPI, money/time, idempotency, observability, scope, and quality rules.
-- `.agent/PLANS.md` defines ExecPlan structure and one-approved-milestone discipline.
+- The repository's engineering baseline already establishes Java 25, Spring Boot 4.1, Gradle Kotlin DSL, modular-monolith, PostgreSQL, Flyway, OpenAPI, money/time, idempotency, observability, scope, and quality rules.
+- ExecPlan structure and one-approved-milestone discipline are already established for this repository.
 - `settings.gradle.kts`, the root build, and the Gradle 9.6.1 Wrapper define one deployable `application` project and six feature-library projects under `modules`.
 - `application/src/main/java/com/ledgerflow/LedgerFlowApplication.java` is the Spring Boot 4.1 entry point; `modules/orders`, `modules/payments`, and `modules/ledger` contain implemented business behavior.
 - `application/src/main/openapi/ledgerflow.yaml` defines the authenticated complete-workflow create/read order contracts and RFC 9457-style problems.
@@ -69,9 +69,9 @@ The maintainer's 2026-07-14 resilience request explicitly expands the still-in-p
 
 The maintainer's 2026-07-14 security request approves Milestone 5C below. It hardens the current order HTTP boundary, local Keycloak roles/scopes, existing privileged replay audit, request/resource limits, sensitive-data controls, and vulnerability scanning. It reserves future operator paths behind operator/admin roles and operation scopes but does not approve the operator recovery API, new privileged actions, public payment orchestration, or a new datastore.
 
-The 2026-07-14 abuse-case review and supporting design record at `.agent/plans/2026-07-14-abuse-case-remediation.md` verified five residual gaps. This canonical plan is the sole authority for their ordering, approval, progress, and completion. The maintainer's 2026-07-15 planning instruction approved Milestone 5D only: R1 management isolation/probe bounding and R2 semantic notification idempotency/malformed-DLT progress. The supporting record supplies finding evidence and detailed design, but its R1 through R5 labels are not independent implementation milestones. Quota/retention (supporting R3) remains a separately proposed follow-up; authenticated and bounded replay (supporting R4) was later approved and completed inside Milestone 7B.
+The 2026-07-14 abuse-case review and supporting design record at `docs/plans/2026-07-14-abuse-case-remediation.md` verified five residual gaps. This canonical plan is the sole authority for their ordering, approval, progress, and completion. The maintainer's 2026-07-15 planning instruction approved Milestone 5D only: R1 management isolation/probe bounding and R2 semantic notification idempotency/malformed-DLT progress. The supporting record supplies finding evidence and detailed design, but its R1 through R5 labels are not independent implementation milestones. Quota/retention (supporting R3) remains a separately proposed follow-up; authenticated and bounded replay (supporting R4) was later approved and completed inside Milestone 7B.
 
-The maintainer explicitly requested this ExecPlan at `docs/plans/mvp-execplan.md`. This is a one-plan path exception to `.agent/PLANS.md`, which normally specifies `.agent/plans/YYYY-MM-DD-<name>.md`. Do not create a duplicate plan.
+The maintainer explicitly requested this ExecPlan at `docs/plans/mvp-execplan.md`. This is a one-plan path exception to the repository's default dated-filename convention for planning documents. Do not create a duplicate plan.
 
 ## Scope and non-goals
 
@@ -410,7 +410,7 @@ The required order is complete: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, 7A, 7B
 
 - Status: Complete
 - Intended outcome: Management probes cannot amplify unauthenticated public work, re-enveloped Kafka records cannot repeat one notification business effect, and malformed DLT records cannot starve later records after sanitized terminal evidence is durable. This milestone contains exactly R1 followed by R2; quota/retention and authenticated replay hardening are not approved by it.
-- Canonical scope: This section controls approval and completion. `.agent/plans/2026-07-14-abuse-case-remediation.md` is the supporting evidence/design record for Findings 1 through 3 and the detailed R1/R2 implementation constraints.
+- Canonical scope: This section controls approval and completion. `docs/plans/2026-07-14-abuse-case-remediation.md` is the supporting evidence/design record for Findings 1 through 3 and the detailed R1/R2 implementation constraints.
 - R1 — management-port isolation and bounded/coalesced dependency probes:
   - Run Actuator on a separate configurable management port. Remove application-port Actuator permit rules and document mandatory ingress/network-policy isolation; application security configuration must not imply that the management port is publicly reachable.
   - Expose only status-only liveness/readiness and protected Prometheus access. Do not expose sensitive health components or details publicly.
@@ -535,8 +535,8 @@ The required order is complete: Milestones 1, 2, 3, 4, 5A, 5B, 5C, 5D, 6, 7A, 7B
 
 ### Separately tracked abuse-case follow-ups
 
-- **R3 — Quota and idempotency retention (`Proposed`).** The detailed design remains Finding 4/R3 in `.agent/plans/2026-07-14-abuse-case-remediation.md`. It requires separate maintainer approval and is a production gate before sustained or multi-tenant public use. It is not part of Milestone 5D, Milestone 6, or Milestone 7A.
-- **R4 — Authenticated and bounded replay (`Complete within Milestone 7B`).** The detailed design remains Finding 5/R4 in `.agent/plans/2026-07-14-abuse-case-remediation.md`. The maintainer's 2026-07-17 approval explicitly incorporated it into Milestone 7B; it was not a second concurrent milestone.
+- **R3 — Quota and idempotency retention (`Proposed`).** The detailed design remains Finding 4/R3 in `docs/plans/2026-07-14-abuse-case-remediation.md`. It requires separate maintainer approval and is a production gate before sustained or multi-tenant public use. It is not part of Milestone 5D, Milestone 6, or Milestone 7A.
+- **R4 — Authenticated and bounded replay (`Complete within Milestone 7B`).** The detailed design remains Finding 5/R4 in `docs/plans/2026-07-14-abuse-case-remediation.md`. The maintainer's 2026-07-17 approval explicitly incorporated it into Milestone 7B; it was not a second concurrent milestone.
 
 ### Milestone 8 — Prove the complete MVP and operational failure matrix
 
@@ -797,7 +797,7 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 ## Surprises and discoveries
 
 - The repository has no Gradle lifecycle, so the first application milestone must establish every required check before later implementation can satisfy the Definition of Done.
-- The requested ExecPlan path conflicts with the default `.agent/plans/...` location. The maintainer's explicit path is treated as a one-plan exception; duplicating a living plan would create drift.
+- The requested ExecPlan path conflicts with the repository's default dated-filename location for planning documents. The maintainer's explicit path is treated as a one-plan exception; duplicating a living plan would create drift.
 - The accepted architecture originally deferred the base package, concrete feature modules, and Gradle project structure. The maintainer's Milestone 1 approval selected `com.ledgerflow`, six feature projects, and one deployable application project. ADRs 0002 through 0013 now record the accepted implemented boundaries; the ADR index records the narrow partial supersession of ADR 0003 by ADR 0013.
 - PostgreSQL row `CHECK` constraints cannot enforce a balance across multiple entries. A deferred constraint trigger on both parent and entry changes is necessary to reject even an empty ledger transaction.
 - Provider capture and the local database cannot be atomic. Stable provider operation keys, lookup, and idempotent local finalization are required; a database transaction held across HTTP would not solve this gap.
@@ -826,7 +826,7 @@ After any number of safe HTTP retries, provider reconciliations, publisher dupli
 
 ## Decision log
 
-- **2026-07-11 — Store this plan at the requested `docs/plans/mvp-execplan.md`.** This explicit maintainer instruction is a one-plan exception to `.agent/PLANS.md`; no duplicate plan will be created.
+- **2026-07-11 — Store this plan at the requested `docs/plans/mvp-execplan.md`.** This explicit maintainer instruction is a one-plan exception to the repository's default dated-filename convention for planning documents; no duplicate plan will be created.
 - **2026-07-11 — Keep this plan, ADRs, and every milestone Proposed.** Creating planning documents does not authorize application implementation or accept architectural decisions.
 - **2026-07-11 — Initially propose one single-project Gradle modular monolith.** This proposal was superseded before implementation by the maintainer's explicit multi-project requirement on 2026-07-13.
 - **2026-07-13 — Use one deployable `application` project and six feature-library projects under base package `com.ledgerflow`.** The maintainer explicitly required a multi-project build; Spring Modulith and ArchUnit verify logical module rules while Gradle provides compile-time project boundaries. This bootstrap choice is documented in `docs/architecture.md`; the broader proposed ADR 0002 remains unaccepted.

@@ -97,7 +97,6 @@ extensions.configure<SpotlessExtension> {
             ".gitignore",
             ".env.example",
             "*.md",
-            ".agent/**/*.md",
             "docs/**/*.md",
             "**/*.properties",
             "**/*.xml",
@@ -234,8 +233,6 @@ val documentationCheck =
 
         val requiredPaths =
             listOf(
-                "AGENTS.md",
-                ".agent/PLANS.md",
                 "README.md",
                 "docs/architecture.md",
                 "docs/development-workflow.md",
@@ -277,7 +274,7 @@ val documentationCheck =
             )
         val markdownFiles =
             fileTree(rootDir) {
-                include("*.md", ".agent/**/*.md", "docs/**/*.md")
+                include("*.md", "docs/**/*.md")
                 exclude("**/build/**")
             }
         inputs.files(markdownFiles)

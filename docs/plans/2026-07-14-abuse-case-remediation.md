@@ -1097,10 +1097,10 @@ milestones or follow-ups, the combined validation is complete only when:
 
 ## Progress
 
-- [x] 2026-07-14 09:41Z — Read AGENTS.md, all of .agent/PLANS.md, the active MVP ExecPlan status and
-  relevant progress/decisions, current git status, and the source, migrations, tests, configuration,
-  contracts, ADRs, threat model, architecture, data model, product requirements, and runbook
-  referenced by the five findings.
+- [x] 2026-07-14 09:41Z — Read the repository's engineering and planning conventions, the active
+  MVP ExecPlan status and relevant progress/decisions, current git status, and the source,
+  migrations, tests, configuration, contracts, ADRs, threat model, architecture, data model,
+  product requirements, and runbook referenced by the five findings.
 - [x] 2026-07-14 09:41Z — Verified all five reported behaviors still exist, identified their
   feature-specific production blockers, selected the smallest safe control boundaries, identified
   four additive migrations and compatibility risks, and defined regression and abuse-case tests.

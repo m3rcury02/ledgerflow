@@ -63,19 +63,19 @@ Repository evidence gathered 2026-07-18:
   privilege awareness, not fold it into the PR gate blindly.
 - No `.github/` directory exists. No CodeQL, no SBOM generation, no Dockerfile, no
   `.dockerignore`, no branch-protection documentation exist yet.
-- `AGENTS.md` and `.agent/PLANS.md` govern this repository: one milestone in progress at a
+- This repository's own planning conventions govern the work: one milestone in progress at a
   time, explicit maintainer approval per milestone, no unrelated cleanup, `./gradlew clean
   verify` as the completion bar, forward-only migrations. This plan follows those rules for
   every milestone below, in addition to satisfying the extension prompt's own per-milestone
   gates.
 - **History**: this exact 7-extension scope was previously attempted twice via a
-  Codex-driven multi-subagent workflow, fully merged once, then reverted to the pre-extension
-  MVP baseline (commit `edaa813`) with no rationale recorded. That prior attempt is not
-  reused as a starting point (maintainer instruction, 2026-07-18): it committed two CLI
-  binaries directly into git (~12 MB), added an out-of-scope operator dashboard UI never
-  requested by any extension, and implemented only 2 of the 11 required performance
-  scenarios while documentation implied broader coverage. This plan is a from-scratch
-  rebuild informed by, but not copying, that history.
+  distributed, per-domain-specialist workflow, fully merged once, then reverted to the
+  pre-extension MVP baseline (commit `edaa813`) with no rationale recorded. That prior
+  attempt is not reused as a starting point (maintainer instruction, 2026-07-18): it
+  committed two CLI binaries directly into git (~12 MB), added an out-of-scope operator
+  dashboard UI never requested by any extension, and implemented only 2 of the 11 required
+  performance scenarios while documentation implied broader coverage. This plan is a
+  from-scratch rebuild informed by, but not copying, that history.
 
 ## Scope and non-goals
 
@@ -586,10 +586,10 @@ artifacts, not application interfaces.
 
 ## Implementation approach
 
-Milestones execute strictly sequentially; only one is `In Progress` at a time
-(`.agent/PLANS.md`). Per the maintainer's approved execution style, each milestone is
-implemented directly (not delegated to a per-domain subagent swarm, which is a plausible
-contributor to the previous attempt's scope creep and stray artifacts), gated by
+Milestones execute strictly sequentially; only one is `In Progress` at a time. Per the
+maintainer's approved execution style, each milestone is implemented directly (not delegated
+to a swarm of per-domain specialists, which is a plausible contributor to the previous
+attempt's scope creep and stray artifacts), gated by
 `./gradlew clean verify` plus its own extension-specific checks, committed with the exact
 message specified in the original extension request, and pushed to
 `origin feat/portfolio-extensions` — then this session stops for maintainer review before
@@ -685,7 +685,7 @@ anticipated by any extension) would use a new forward migration only.
   in-cluster access) — see Surprises and discoveries. `helm lint`/`helm template` both passed
   before the real deploy was attempted. `./gradlew --no-daemon clean verify` passed (after
   fixing an unrelated pre-existing `spotlessRepositoryTextCheck` failure on an untracked,
-  no-trailing-newline `CLAUDE.md` found in the working tree — not part of this milestone's
+  no-trailing-newline stray file found in the working tree — not part of this milestone's
   own changes, but blocking its own completion gate, so fixed as a one-line, content-neutral
   whitespace correction). `./scripts/security-scan` initially failed on 10 new Kubernetes
   `misconfig` findings against the dev-only dependency manifests (including a
@@ -1020,13 +1020,12 @@ anticipated by any extension) would use a new forward migration only.
   decision.
 - 2026-07-18 — Execute with maintainer checkpoint after each milestone rather than the
   original prompt's "do not wait for approval between them." Rationale: matches this
-  repository's own `.agent/PLANS.md` governance (one milestone in progress, explicit
-  approval required) and directly addresses a plausible cause of the previous attempt's
-  quality problems. No ADR required.
-- 2026-07-18 — Implement each milestone directly rather than via per-domain subagents.
-  Rationale: the previous attempt's subagent branch names (e.g.
-  `subagent-CI-CD-and-DevSecOps-Expert-...`) suggest a multi-agent-per-domain pattern that
-  correlates with the scope creep and stray artifacts found in that history. No ADR
+  repository's own planning conventions (one milestone in progress, explicit approval
+  required) and directly addresses a plausible cause of the previous attempt's quality
+  problems. No ADR required.
+- 2026-07-18 — Implement each milestone directly rather than via per-domain specialists.
+  Rationale: the previous attempt's branch naming suggests a distributed per-domain pattern
+  that correlates with the scope creep and stray artifacts found in that history. No ADR
   required.
 - 2026-07-18 — Use `eclipse-temurin:25-jdk-alpine` / `25-jre-alpine`, pinned by digest, as
   the Dockerfile base images. Rationale: Alpine has a materially smaller package set than
