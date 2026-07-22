@@ -64,7 +64,7 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-webmvc")
     implementation("io.micrometer:micrometer-registry-prometheus")
-    implementation("org.webjars:swagger-ui:5.25.3")
+    implementation("org.webjars:swagger-ui:5.32.11")
     implementation(
         platform(
             "io.opentelemetry.instrumentation:opentelemetry-instrumentation-bom-alpha:" +
