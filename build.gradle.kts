@@ -20,7 +20,7 @@ val resilience4jVersion = "2.4.0"
 val openTelemetryInstrumentationVersion = "2.28.1-alpha"
 // Spring Boot 4.1.0 manages 42.7.11, which is affected by CVE-2026-54291. Remove this narrow
 // override once a compatible Boot BOM manages pgjdbc 42.7.12 or newer.
-val postgresqlDriverVersion = "42.7.12"
+val postgresqlDriverVersion = "42.7.13"
 
 extra["springBootVersion"] = springBootVersion
 extra["springModulithVersion"] = springModulithVersion
