@@ -18,11 +18,15 @@ val springBootVersion = "4.1.0"
 val springModulithVersion = "2.1.0"
 val resilience4jVersion = "2.4.0"
 val openTelemetryInstrumentationVersion = "2.28.1-alpha"
+// Spring Boot 4.1.0 manages 42.7.11, which is affected by CVE-2026-54291. Remove this narrow
+// override once a compatible Boot BOM manages pgjdbc 42.7.12 or newer.
+val postgresqlDriverVersion = "42.7.12"
 
 extra["springBootVersion"] = springBootVersion
 extra["springModulithVersion"] = springModulithVersion
 extra["resilience4jVersion"] = resilience4jVersion
 extra["openTelemetryInstrumentationVersion"] = openTelemetryInstrumentationVersion
+extra["postgresqlDriverVersion"] = postgresqlDriverVersion
 
 configure(subprojects.filter { it.path != ":modules" }) {
     group = rootProject.group
@@ -107,6 +111,7 @@ extensions.configure<SpotlessExtension> {
             "scripts/dev-*",
             "scripts/replay-*",
             "scripts/security-*",
+            "scripts/validate-aws-database-identities",
             "scripts/*observability*",
             "scripts/smoke-test",
             "scripts/demo-mvp",
@@ -255,7 +260,6 @@ val documentationCheck =
                 "docs/security/local-development-container-risk-register.md",
                 "docs/security/mvp-residual-risk-register.md",
                 "docs/sql/ledger-queries.sql",
-                "docs/plans/mvp-execplan.md",
                 "docs/adr/0001-record-architecture-decisions.md",
                 "docs/adr/README.md",
                 "compose.yaml",
@@ -267,6 +271,7 @@ val documentationCheck =
                 "scripts/replay-dead-letter",
                 "scripts/security-scan",
                 "scripts/validate-observability",
+                "scripts/validate-aws-database-identities",
                 "scripts/demo-observability",
                 "scripts/smoke-test",
                 "scripts/demo-mvp",

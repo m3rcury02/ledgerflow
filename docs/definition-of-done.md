@@ -7,7 +7,7 @@ A LedgerFlow task is done only when every applicable item below is true and the 
 - The work belongs to the single approved milestone.
 - Every acceptance criterion has observable evidence.
 - No unrelated refactoring, cleanup, renaming, dependency upgrade, or formatting churn is included.
-- Any required ExecPlan is current, including progress, discoveries, decisions, and outcome.
+- Any required implementation plan is current, including progress, discoveries, decisions, and outcome.
 - Newly discovered follow-up work is recorded separately and is not implemented without approval.
 
 ## Implementation

@@ -5,10 +5,10 @@
 # deliberate, evidence-based choice, not a default: an earlier run of normal-traffic.js
 # through the published port (--network host, http://localhost:18080) measured p(95)
 # latency of ~547ms; the identical scenario run container-to-container on the compose
-# network measured p(95) ~70ms. The ~8x difference is this sandbox's own port-forwarding
-# layer (see docs/plans/portfolio-extension-execplan.md, Surprises and discoveries), not
-# application behavior, so measuring the real request path avoids attributing sandbox
-# artifacts to the application. Every scenario's lib/client.js reads its access tokens from
+# network measured p(95) ~70ms. The ~8x difference is the local environment's port-forwarding
+# layer (see docs/performance-experiments.md), not application behavior, so measuring the real
+# request path avoids attributing environment artifacts to the application. Every scenario's
+# lib/client.js reads its access tokens from
 # performance/scenarios/tokens.json (git-ignored; performance/scripts/run-experiments.sh
 # regenerates it before each scenario), not from an environment variable, since it needs a
 # whole pool of subjects rather than one. Writes a JSON summary to performance/results/.

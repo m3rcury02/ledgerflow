@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# One-command local Kubernetes deploy (docs/plans/portfolio-extension-execplan.md,
-# Milestone 4): creates/reuses a kind cluster, builds and loads both local images, applies
+# One-command local Kubernetes deploy (see docs/kubernetes-deployment.md): creates/reuses a kind
+# cluster, builds and loads both local images, applies
 # the dev-only dependencies (PostgreSQL, Kafka, Keycloak, metrics-server), waits for them,
 # then installs the Helm chart and waits for its rollout. Mirrors the shape of
 # scripts/dev-up.

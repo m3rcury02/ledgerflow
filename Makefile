@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help run dev-up dev-down dev-reset dev-status smoke-test demo-mvp replay-dead-letter security-scan image-scan observability-check demo-observability format check-format static-analysis test integration-test architecture-test openapi-check compose-check docs-check verify clean kind-up kind-down kind-status kind-smoke-test
+.PHONY: help run dev-up dev-down dev-reset dev-status smoke-test demo-mvp replay-dead-letter security-scan image-scan observability-check demo-observability aws-database-identity-check format check-format static-analysis test integration-test architecture-test openapi-check compose-check docs-check ai-assistant-check verify clean kind-up kind-down kind-status kind-smoke-test
 
 help:
 	@echo "LedgerFlow developer commands"
@@ -16,6 +16,7 @@ help:
 	@echo "  make image-scan         Build the app image and generate its SBOM + vulnerability scan"
 	@echo "  make observability-check Validate metrics, traces, logs, rules, and dashboards"
 	@echo "  make demo-observability Create one order and verify its Tempo/Loki trace"
+	@echo "  make aws-database-identity-check Prove migration/runtime PostgreSQL role boundaries"
 	@echo "  make format             Apply formatting"
 	@echo "  make check-format       Check formatting"
 	@echo "  make static-analysis    Run compiler lint and Checkstyle"
@@ -25,6 +26,7 @@ help:
 	@echo "  make openapi-check      Validate OpenAPI"
 	@echo "  make compose-check      Validate Docker Compose configuration"
 	@echo "  make docs-check         Validate documentation"
+	@echo "  make ai-assistant-check Run the optional Python service tests and Ruff gates"
 	@echo "  make verify             Run the complete verification lifecycle"
 	@echo "  make kind-up            Deploy LedgerFlow to a local kind cluster (one command)"
 	@echo "  make kind-down          Delete the local kind cluster"
@@ -67,6 +69,9 @@ observability-check:
 demo-observability:
 	./scripts/demo-observability
 
+aws-database-identity-check:
+	./scripts/validate-aws-database-identities
+
 format:
 	./gradlew spotlessApply
 
@@ -93,6 +98,11 @@ compose-check:
 
 docs-check:
 	./gradlew documentationCheck
+
+ai-assistant-check:
+	ai-assistant/.venv/bin/python -m pytest ai-assistant/tests
+	cd ai-assistant && .venv/bin/python -m ruff check .
+	cd ai-assistant && .venv/bin/python -m ruff format --check .
 
 verify:
 	./gradlew clean verify

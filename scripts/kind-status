@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Shows the local kind cluster's health for the ledgerflow deployment (docs/plans/
-# portfolio-extension-execplan.md, Milestone 4). Mirrors scripts/dev-status.
+# Shows the local kind cluster's health for the deployment documented in
+# docs/kubernetes-deployment.md. Mirrors scripts/dev-status.
 set -euo pipefail
 
 CLUSTER_NAME=ledgerflow-dev

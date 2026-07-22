@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Real end-to-end proof for the Milestone 4 kind deployment (docs/plans/
-# portfolio-extension-execplan.md): mints a token from the in-cluster Keycloak, creates one
+# Real end-to-end proof for the kind deployment documented in docs/kubernetes-deployment.md: mints
+# a token from the in-cluster Keycloak, creates one
 # real order through the port-forwarded ledgerflow-api Service, confirms the durable
 # COMPLETED/CAPTURED result, then polls the outbox table until the ledgerflow-worker
 # Deployment — never the API Deployment — publishes that order's event, proving the two

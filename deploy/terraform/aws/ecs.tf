@@ -25,7 +25,11 @@ locals {
   # Property names verified against application/src/main/resources/application.yaml, not
   # assumed - in particular the datasource takes one LEDGERFLOW_DB_URL (a full JDBC URL),
   # not separate host/port/name properties.
-  shared_environment = [
+  database_environment = [
+    { name = "LEDGERFLOW_DB_URL", value = "jdbc:postgresql://${aws_db_instance.this.address}:${aws_db_instance.this.port}/${aws_db_instance.this.db_name}?sslmode=require" },
+  ]
+
+  shared_environment = concat(local.database_environment, [
     { name = "LEDGERFLOW_MANAGEMENT_PORT", value = "8081" },
     { name = "LEDGERFLOW_DEPLOYMENT_ENVIRONMENT", value = var.environment },
     { name = "LEDGERFLOW_OAUTH2_ISSUER", value = var.oauth2_issuer_uri },
@@ -34,19 +38,25 @@ locals {
     # default and must resolve to something once a real identity provider exists.
     { name = "LEDGERFLOW_OAUTH2_JWK_SET_URI", value = "${var.oauth2_issuer_uri}/protocol/openid-connect/certs" },
     { name = "LEDGERFLOW_KAFKA_BOOTSTRAP_SERVERS", value = var.kafka_bootstrap_servers },
-    { name = "LEDGERFLOW_DB_URL", value = "jdbc:postgresql://${aws_db_instance.this.address}:${aws_db_instance.this.port}/${aws_db_instance.this.db_name}" },
+  ])
+
+  api_database_secrets = [
+    { name = "LEDGERFLOW_DB_USERNAME", valueFrom = "${aws_secretsmanager_secret.api_database.arn}:username::" },
+    { name = "LEDGERFLOW_DB_PASSWORD", valueFrom = "${aws_secretsmanager_secret.api_database.arn}:password::" },
   ]
 
-  # RDS's manage_master_user_password stores the credential as a JSON secret
-  # ({"username":...,"password":...,...}), not a scalar - project the two fields the
-  # application actually reads (LEDGERFLOW_DB_USERNAME / LEDGERFLOW_DB_PASSWORD) individually
-  # via ECS's "secretArn:jsonKey::" syntax rather than injecting the whole JSON blob.
-  db_credential_secrets = [
-    { name = "LEDGERFLOW_DB_USERNAME", valueFrom = "${aws_db_instance.this.master_user_secret[0].secret_arn}:username::" },
-    { name = "LEDGERFLOW_DB_PASSWORD", valueFrom = "${aws_db_instance.this.master_user_secret[0].secret_arn}:password::" },
+  worker_database_secrets = [
+    { name = "LEDGERFLOW_DB_USERNAME", valueFrom = "${aws_secretsmanager_secret.worker_database.arn}:username::" },
+    { name = "LEDGERFLOW_DB_PASSWORD", valueFrom = "${aws_secretsmanager_secret.worker_database.arn}:password::" },
+  ]
+
+  migration_database_secrets = [
+    { name = "LEDGERFLOW_DB_USERNAME", valueFrom = "${aws_secretsmanager_secret.migration_database.arn}:username::" },
+    { name = "LEDGERFLOW_DB_PASSWORD", valueFrom = "${aws_secretsmanager_secret.migration_database.arn}:password::" },
   ]
 
   api_environment = concat(local.shared_environment, [
+    { name = "SPRING_FLYWAY_ENABLED", value = "false" },
     { name = "LEDGERFLOW_RECOVERY_WORKER_ENABLED", value = "false" },
     { name = "LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED", value = "false" },
     { name = "LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED", value = "false" },
@@ -54,13 +64,19 @@ locals {
   ])
 
   worker_environment = concat(local.shared_environment, [
+    { name = "SPRING_FLYWAY_ENABLED", value = "false" },
     { name = "LEDGERFLOW_RECOVERY_WORKER_ENABLED", value = "true" },
     { name = "LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED", value = "true" },
     { name = "LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED", value = "true" },
     { name = "LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED", value = "true" },
   ])
 
-  container_image = "${aws_ecr_repository.app.repository_url}:${var.container_image_tag}"
+  migration_environment = concat(local.database_environment, [
+    { name = "LEDGERFLOW_DEPLOYMENT_ENVIRONMENT", value = var.environment },
+  ])
+
+  container_image           = "${aws_ecr_repository.app.repository_url}:${var.container_image_tag}"
+  migration_container_image = "${aws_ecr_repository.app.repository_url}:${var.migration_image_tag}"
 }
 
 # --- api ---------------------------------------------------------------
@@ -98,7 +114,7 @@ resource "aws_ecs_task_definition" "api" {
       ]
 
       environment = local.api_environment
-      secrets     = local.db_credential_secrets
+      secrets     = local.api_database_secrets
 
       readonlyRootFilesystem = true
       mountPoints = [
@@ -133,7 +149,7 @@ resource "aws_ecs_service" "api" {
   name            = "${var.project_name}-${var.environment}-api"
   cluster         = aws_ecs_cluster.this.id
   task_definition = aws_ecs_task_definition.api.arn
-  desired_count   = var.api_desired_count
+  desired_count   = var.deploy_application_services ? var.api_desired_count : 0
 
   launch_type = "FARGATE"
 
@@ -164,7 +180,7 @@ resource "aws_appautoscaling_target" "api" {
   service_namespace  = "ecs"
   resource_id        = "service/${aws_ecs_cluster.this.name}/${aws_ecs_service.api.name}"
   scalable_dimension = "ecs:service:DesiredCount"
-  min_capacity       = var.api_min_count
+  min_capacity       = var.deploy_application_services ? var.api_min_count : 0
   max_capacity       = var.api_max_count
 }
 
@@ -222,7 +238,7 @@ resource "aws_ecs_task_definition" "worker" {
       ]
 
       environment = local.worker_environment
-      secrets     = local.db_credential_secrets
+      secrets     = local.worker_database_secrets
 
       readonlyRootFilesystem = true
       mountPoints = [
@@ -257,7 +273,7 @@ resource "aws_ecs_service" "worker" {
   name            = "${var.project_name}-${var.environment}-worker"
   cluster         = aws_ecs_cluster.this.id
   task_definition = aws_ecs_task_definition.worker.arn
-  desired_count   = var.worker_desired_count
+  desired_count   = var.deploy_application_services ? var.worker_desired_count : 0
 
   launch_type = "FARGATE"
 
@@ -265,5 +281,61 @@ resource "aws_ecs_service" "worker" {
     subnets          = aws_subnet.private_app[*].id
     security_groups  = [aws_security_group.worker.id]
     assign_public_ip = false
+  }
+}
+
+# --- one-shot database migration task ---------------------------------------
+#
+# This is a task definition, never an ECS service. Deployment automation runs it explicitly and
+# waits for a zero exit code before updating API/worker services. Its command enters the direct
+# Flyway path in LedgerFlowApplication and exits before Spring, HTTP, Kafka, schedulers, or provider
+# clients start. The migration credential is consequently absent from every long-running task.
+
+resource "aws_ecs_task_definition" "migration" {
+  family                   = "${var.project_name}-${var.environment}-migration"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.migration_cpu
+  memory                   = var.migration_memory
+  execution_role_arn       = aws_iam_role.migration_execution.arn
+  task_role_arn            = aws_iam_role.migration_task.arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+
+  volume {
+    name = "tmp"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name      = "ledgerflow-migration"
+      image     = local.migration_container_image
+      essential = true
+      command   = ["--ledgerflow.migration-only=true"]
+
+      environment = local.migration_environment
+      secrets     = local.migration_database_secrets
+
+      readonlyRootFilesystem = true
+      mountPoints = [
+        { sourceVolume = "tmp", containerPath = "/tmp", readOnly = false },
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.migration.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "migration"
+        }
+      }
+    }
+  ])
+
+  tags = {
+    Name = "${var.project_name}-${var.environment}-migration"
   }
 }

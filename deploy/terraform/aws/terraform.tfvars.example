@@ -9,6 +9,12 @@ environment  = "dev"
 # Required: no default. Push a real image to the ECR repository this configuration creates
 # (see the ecr_repository_url output) before setting this, e.g. a git commit SHA.
 container_image_tag = "REPLACE_ME"
+migration_image_tag = "REPLACE_ME"
+
+# Safety gate: leave false during the initial infrastructure/secret-container apply. Bootstrap
+# the three PostgreSQL identities, populate their secret values without Terraform, and run the
+# one-shot migration task successfully before changing this to true.
+deploy_application_services = false
 
 # Optional: leave unset (default "") for HTTP-only. Set to a real ACM certificate ARN in this
 # account/region to enable HTTPS.

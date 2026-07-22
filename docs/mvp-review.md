@@ -38,7 +38,7 @@ in `security/mvp-residual-risk-register.md`.
 | Migration safety | V001–V009 history, compatibility tests, Git diff | No existing migration changed; Milestone 8 needs no migration. |
 | Test realism | PostgreSQL/Kafka/Toxiproxy Testcontainers and real mock HTTP server | Real local protocols and concurrency are exercised; no H2. Not a scale/topology proof. |
 | Documentation accuracy | README, OpenAPI, ADRs, architecture, evidence and limitations | Current behavior separated from historical milestones and future production work. |
-| Security scans | Pinned Trivy process and exact expiring local image policy | Findings remain visible; no application/secret exception path. Final result is recorded in the ExecPlan. |
+| Security scans | Pinned Trivy process and exact expiring local image policy | Findings remain visible; no application/secret exception path. Final results are recorded in `docs/mvp-evidence.md` and the risk registers. |
 | Local dependency health | Compose validation, health checks, dev scripts | Nine services are loopback-bound and health-gated; single-host limits are explicit. |
 
 ## Deliberate non-findings

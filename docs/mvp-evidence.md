@@ -7,7 +7,7 @@
 This is the release evidence index. `scripts/smoke-test` proves one normal public journey;
 `scripts/demo-mvp` exercises the focused failure and recovery scenarios; `./gradlew --no-daemon
 clean verify --console=plain` remains the complete repository gate. Test names below are stable
-evidence identifiers. The final validation evidence is also recorded in the canonical ExecPlan.
+evidence identifiers, and this document is the durable acceptance record.
 
 ## Five-minute interview demonstration
 
@@ -93,7 +93,7 @@ admission and leasing. It does not claim an external Keycloak/browser demonstrat
 | AC-012 idempotent operator retry | `OperatorApiIntegrationTest`, `OperatorPaymentRecoveryIntegrationTest`, and `OperatorRetryIntegrationTest` | Passed |
 | AC-013 trace and correlation propagation | `TracePropagationIntegrationTest` and `ObservabilityIntegrationTest` | Passed by `clean verify` |
 | AC-014 customer/object/operator authorization | `OrderHttpIntegrationTest` and `OperatorApiIntegrationTest` | Passed |
-| AC-015 full quality lifecycle | `./gradlew --no-daemon clean verify --console=plain` | Passed; see ExecPlan evidence |
+| AC-015 full quality lifecycle | `./gradlew --no-daemon clean verify --console=plain` | Passed; see validation evidence below |
 | AC-016 provider protocol failure | `PublicOrderWorkflowIntegrationTest#persistsFailedOrderAndReplaysSanitizedProviderProtocolProblem` | Passed |
 
 ## Manual platform walkthrough

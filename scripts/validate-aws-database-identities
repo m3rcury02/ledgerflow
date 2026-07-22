@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+command -v docker >/dev/null 2>&1 || {
+  echo "Docker is required for the AWS database-identity validation." >&2
+  exit 1
+}
+command -v openssl >/dev/null 2>&1 || {
+  echo "OpenSSL is required to generate disposable test credentials." >&2
+  exit 1
+}
+docker info >/dev/null 2>&1 || {
+  echo "Docker is installed but the engine is unavailable." >&2
+  exit 1
+}
+
+./gradlew --no-daemon :application:bootJar --console=plain
+
+container_name="ledgerflow-db-identity-test-$$"
+temporary_directory="$(mktemp -d)"
+
+cleanup() {
+  docker container stop --time 5 "$container_name" >/dev/null 2>&1 || true
+  rm -rf "$temporary_directory"
+  unset admin_password migration_password api_password worker_password
+}
+trap cleanup EXIT
+
+# All four values are disposable test-only credentials. Keep them out of command output and remove
+# the ephemeral container on every exit path.
+admin_password="$(openssl rand -hex 24)"
+migration_password="$(openssl rand -hex 24)"
+api_password="$(openssl rand -hex 24)"
+worker_password="$(openssl rand -hex 24)"
+
+docker run --detach --rm \
+  --name "$container_name" \
+  --env POSTGRES_PASSWORD="$admin_password" \
+  --env POSTGRES_DB=ledgerflow_test \
+  --publish 127.0.0.1::5432 \
+  --volume "$PWD/deploy/terraform/aws/sql:/bootstrap:ro" \
+  postgres:18.4-alpine >/dev/null
+
+# The image entrypoint briefly starts and then stops a bootstrap server. Require two successful
+# SQL queries around a delay so that transient bootstrap readiness cannot race the real test.
+for attempt in $(seq 1 90); do
+  if docker exec \
+    --env PGPASSWORD="$admin_password" \
+    "$container_name" \
+    psql -X -q -U postgres -d ledgerflow_test -c "SELECT 1" >/dev/null 2>&1; then
+    sleep 2
+    if docker exec \
+      --env PGPASSWORD="$admin_password" \
+      "$container_name" \
+      psql -X -q -U postgres -d ledgerflow_test -c "SELECT 1" >/dev/null 2>&1; then
+      break
+    fi
+  fi
+
+  if [[ "$attempt" == 90 ]]; then
+    echo "Disposable PostgreSQL did not become stably ready." >&2
+    exit 1
+  fi
+  sleep 1
+done
+
+if ! docker exec \
+  --env PGPASSWORD="$admin_password" \
+  --env LEDGERFLOW_MIGRATION_DB_PASSWORD="$migration_password" \
+  --env LEDGERFLOW_API_DB_PASSWORD="$api_password" \
+  --env LEDGERFLOW_WORKER_DB_PASSWORD="$worker_password" \
+  "$container_name" \
+  psql -X -q -v ON_ERROR_STOP=1 -U postgres -d ledgerflow_test \
+  -f /bootstrap/bootstrap-database-identities.sql \
+  >"$temporary_directory/bootstrap.log" 2>&1; then
+  echo "Database identity bootstrap failed; output is withheld because it may contain generated credentials." >&2
+  exit 1
+fi
+
+database_port="$(docker port "$container_name" 5432/tcp | sed 's/.*://')"
+for pass in 1 2; do
+  LEDGERFLOW_DB_URL="jdbc:postgresql://127.0.0.1:${database_port}/ledgerflow_test" \
+    LEDGERFLOW_DB_USERNAME=ledgerflow_migrator \
+    LEDGERFLOW_DB_PASSWORD="$migration_password" \
+    java -jar application/build/libs/ledgerflow.jar \
+      --ledgerflow.migration-only=true \
+      >"$temporary_directory/migration-${pass}.log"
+done
+
+role_assertions="$(
+  docker exec \
+    --env PGPASSWORD="$admin_password" \
+    "$container_name" \
+    psql -X -A -t -v ON_ERROR_STOP=1 -U postgres -d ledgerflow_test -c \
+    "SELECT
+       (SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname=current_database())
+         = 'ledgerflow_migrator'
+       AND (SELECT count(*) = 9 FROM flyway_schema_history WHERE success)
+       AND has_table_privilege('ledgerflow_api', 'orders', 'SELECT')
+       AND has_table_privilege('ledgerflow_api', 'orders', 'INSERT')
+       AND has_table_privilege('ledgerflow_api', 'orders', 'UPDATE')
+       AND NOT has_table_privilege('ledgerflow_api', 'orders', 'DELETE')
+       AND NOT has_schema_privilege('ledgerflow_api', 'public', 'CREATE')
+       AND has_table_privilege('ledgerflow_worker', 'outbox_events', 'SELECT')
+       AND has_table_privilege('ledgerflow_worker', 'outbox_events', 'UPDATE')
+       AND NOT has_table_privilege('ledgerflow_worker', 'outbox_events', 'DELETE');"
+)"
+
+if [[ "$role_assertions" != "t" ]]; then
+  echo "Database ownership, migration history, or runtime privilege assertions failed." >&2
+  exit 1
+fi
+
+if docker exec \
+  --env PGPASSWORD="$api_password" \
+  "$container_name" \
+  psql -X -q -v ON_ERROR_STOP=1 -U ledgerflow_api -d ledgerflow_test \
+  -c "CREATE TABLE privilege_escape_test(id integer)" \
+  >"$temporary_directory/api-denial.log" 2>&1; then
+  echo "The API runtime role unexpectedly created a table." >&2
+  exit 1
+fi
+
+if docker exec \
+  --env PGPASSWORD="$worker_password" \
+  "$container_name" \
+  psql -X -q -v ON_ERROR_STOP=1 -U ledgerflow_worker -d ledgerflow_test \
+  -c "TRUNCATE outbox_events" \
+  >"$temporary_directory/worker-denial.log" 2>&1; then
+  echo "The worker runtime role unexpectedly truncated a table." >&2
+  exit 1
+fi
+
+echo "AWS database identity bootstrap, repeatable migration, and runtime denial checks passed."

@@ -47,7 +47,18 @@ Do not install Gradle separately. The committed Gradle 9.6.1 Wrapper is the supp
 ./gradlew clean verify
 ```
 
-The lifecycle checks formatting, static analysis, unit tests, PostgreSQL Testcontainers repository/HTTP/concurrency tests, Spring Modulith and ArchUnit rules, OpenAPI, and documentation. The equivalent convenience command is `make verify`.
+The Gradle lifecycle checks formatting, static analysis, unit tests, PostgreSQL Testcontainers
+repository/HTTP/concurrency tests, Spring Modulith and ArchUnit rules, OpenAPI, and documentation.
+The equivalent convenience command is `make verify`. The optional Python incident assistant has
+its own pinned environment and gate:
+
+```bash
+cd ai-assistant
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+cd ..
+make ai-assistant-check
+```
 
 Focused release proof commands are:
 
@@ -66,7 +77,18 @@ The command builds the application artifact, scans repository configuration and 
 
 ## Continuous integration
 
-Every pull request runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml) (the full `./gradlew clean verify` lifecycle, then an OCI image build with a CycloneDX SBOM and a Trivy vulnerability scan) and [`.github/workflows/codeql.yml`](.github/workflows/codeql.yml) (CodeQL static analysis). `.github/workflows/security-scan.yml` runs the Docker-socket-privileged `scripts/security-scan` on pushes to `main` and on a schedule, not on pull requests, so a fork-originated PR is never granted that access. Every third-party GitHub Action is pinned to a full commit SHA; [`.github/dependabot.yml`](.github/dependabot.yml) keeps those pins, Gradle dependencies, and the Dockerfile base images current. Recommended `main` branch-protection settings are documented in [`docs/branch-protection.md`](docs/branch-protection.md) — they are recommendations only and are not applied automatically.
+Every pull request runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml) (the full
+`./gradlew clean verify` lifecycle, the Python assistant's 81 tests and Ruff gates, then an OCI
+image build with a CycloneDX SBOM and a Trivy vulnerability scan) and
+[`.github/workflows/codeql.yml`](.github/workflows/codeql.yml) (CodeQL static analysis).
+`.github/workflows/security-scan.yml` runs the Docker-socket-privileged
+`scripts/security-scan` on pushes to `main` and on a schedule, not on pull requests, so a
+fork-originated PR is never granted that access. Every third-party GitHub Action is pinned to a
+full commit SHA; [`.github/dependabot.yml`](.github/dependabot.yml) keeps those pins, Python and
+Gradle dependencies, and the Dockerfile base images current. Recommended `main`
+branch-protection settings are documented in
+[`docs/branch-protection.md`](docs/branch-protection.md) — they are recommendations only and are
+not applied automatically.
 
 ## Container image
 
@@ -106,15 +128,18 @@ actually deploying (not just inspecting manifests) are recorded in
 
 `deploy/terraform/aws/` is a validated, **never-applied** two-AZ reference architecture — VPC
 with no NAT Gateway (VPC interface/gateway endpoints instead), ECS Fargate running the same
-api/worker split as the Kubernetes deployment above, RDS PostgreSQL (Multi-AZ, RDS-managed
-Secrets Manager credential — no password ever appears in a `.tf` file), ECR, and CloudWatch
-Logs. `terraform fmt`/`validate`, `tflint`, and Checkov all pass with zero unaddressed
+api/worker split as the Kubernetes deployment above plus a one-shot migration task, RDS PostgreSQL
+(Multi-AZ, RDS-managed bootstrap credential — no password ever appears in a `.tf` file), ECR, and
+CloudWatch Logs. `terraform fmt`/`validate`, TFLint, and Checkov all pass with zero unaddressed
 findings; every deliberately accepted finding (e.g. the ALB's public internet-facing ingress)
 is suppressed narrowly with a recorded rationale, in both Checkov's and the repository's own
 Trivy scanner's idiom. No `terraform plan`, `apply`, or AWS credentials are used anywhere.
 Architecture, a manually auditable cost estimate, the remote-state bootstrap procedure, and
 teardown instructions are recorded in
-[`docs/aws-terraform-design.md`](docs/aws-terraform-design.md).
+[`docs/aws-terraform-design.md`](docs/aws-terraform-design.md). The RDS master credential is
+bootstrap-only: API, worker, and one-shot Flyway migration paths have distinct database identities,
+secret containers, and IAM boundaries. Run `make aws-database-identity-check` to exercise the role
+bootstrap, repeatable migration, and runtime privilege denials against disposable PostgreSQL 18.
 
 ## AI operations assistant (optional)
 
@@ -127,9 +152,10 @@ for anyone who supplies their own key — OpenAI (Responses API) or DeepSeek (Ch
 API). Untrusted telemetry is regex-sanitized before it reaches any provider and is structurally
 isolated from model instructions in the prompt — both are directly tested, including a test per
 real provider that intercepts the actual outbound HTTP request to confirm a secret never
-appears in it. 79 tests, `ruff` clean; see
+appears in it. 81 tests, `ruff` clean; see
 [`docs/ai-operations-assistant.md`](docs/ai-operations-assistant.md) for architecture, what the
-sanitizer does and doesn't catch (stated honestly), and how to run it.
+sanitizer does and doesn't catch (stated honestly), how to run it, and the precise boundary between
+the maintainer's successful off-laptop DeepSeek smoke test and the reproducible local test suite.
 
 ## Local dependency environment
 
@@ -205,6 +231,12 @@ export LEDGERFLOW_OTLP_LOGS_ENDPOINT=http://localhost:4318/v1/logs
 ```
 
 Flyway applies V001 through `V009__secure_operator_recovery.sql` at startup. The Kafka publisher and notification/DLT consumers are disabled by default; enable them explicitly with `LEDGERFLOW_OUTBOX_PUBLISHER_ENABLED`, `LEDGERFLOW_NOTIFICATION_CONSUMER_ENABLED`, and `LEDGERFLOW_NOTIFICATION_DLT_CONSUMER_ENABLED`. The database-backed recovery worker defaults on and can be disabled with `LEDGERFLOW_RECOVERY_WORKER_ENABLED=false`. No cache integration or direct public payment/ledger route exists.
+
+The checked-in OpenAPI contract can be viewed through Swagger UI for a local demonstration by
+setting `LEDGERFLOW_API_DOCS_ENABLED=true` before starting the application, then opening
+`http://localhost:8080/docs`. The routes are disabled by default and should not be exposed by a
+production ingress; enabling them makes only `/docs/**`, `/openapi/ledgerflow.yaml`, and the pinned
+Swagger UI WebJar assets public. It does not relax authentication on application APIs.
 
 Actuator is not served on application port `8080`. With the local override above, status-only liveness/readiness and Prometheus are available on management port `8082`; aggregate health, details, components, and `info` are unavailable. The management listener must never be public. Production ingress, network-policy, and Kafka ACL requirements are defined in [deployment security](docs/deployment-security.md).
 
@@ -296,11 +328,11 @@ of it is written to sound better than the evidence supports.
 
 | Document | Purpose |
 | --- | --- |
-| [Screenshots guide](docs/screenshots-guide.md) | What to capture and why — this is a guide, not a set of captured images; this environment has no display. |
+| [Screenshots guide](docs/screenshots-guide.md) | What to capture and why; the guide is not itself screenshot evidence. |
 | [Résumé bullets](docs/resume-bullets.md) | Grounded only in implemented, evidenced work — no unsourced numbers or claims. |
 | [Interview discussion guide](docs/interview-guide.md) | Anticipated questions by topic, plus a "Hard questions" section on weaknesses and residual risk — deliberately the most important part. |
-| [Trade-offs and rejected alternatives](docs/trade-offs.md) | A curated index into the ADRs and both plans' Decision logs, not a duplicate of them. |
-| [Final residual risks](docs/residual-risks.md) | The single entry point for what this release does not prove, spanning the MVP and all six extensions. |
+| [Trade-offs and rejected alternatives](docs/trade-offs.md) | A curated index into ADRs and topic-specific engineering documents, not a duplicate of them. |
+| [Final residual risks](docs/residual-risks.md) | The single entry point for what this release does not prove, spanning the MVP and all seven extensions. |
 
 ## Project structure
 
@@ -315,8 +347,8 @@ of it is written to sound better than the evidence supports.
 Each feature is a Gradle library under `com.ledgerflow.<feature>`. Application code remains package-by-feature; repository-wide controller, service, repository, entity, and model packages are forbidden.
 
 See [development workflow](docs/development-workflow.md), [architecture](docs/architecture.md),
-[deployment security](docs/deployment-security.md), and the
-[MVP ExecPlan](docs/plans/mvp-execplan.md) for the governing details. Release inventories are
+[deployment security](docs/deployment-security.md), and
+[MVP acceptance evidence](docs/mvp-evidence.md) for the governing details. Release inventories are
 available for [dependencies and licenses](docs/dependency-inventory.md),
 [Flyway migrations](docs/migration-inventory.md), [ADRs](docs/adr/README.md), and
 [runbooks](docs/runbook-index.md). Failure demonstrations are described in the

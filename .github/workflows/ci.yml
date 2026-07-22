@@ -16,6 +16,48 @@ env:
   TRIVY_IMAGE: "ghcr.io/aquasecurity/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f"
 
 jobs:
+  ai-assistant:
+    name: AI assistant (Python)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ai-assistant/pyproject.toml
+
+      - name: Install pinned development dependencies
+        working-directory: ai-assistant
+        run: python -m pip install --disable-pip-version-check -e ".[dev]"
+
+      # Run pytest from the repository root on purpose. This guards the service-local dotenv
+      # boundary as well as the application behavior; a root Compose .env must never be parsed as
+      # AI-assistant configuration merely because of the caller's working directory.
+      - name: Run tests from the repository root
+        run: python -m pytest ai-assistant/tests --junitxml=ai-assistant/build/test-results/pytest.xml
+
+      - name: Run Ruff lint and format checks
+        working-directory: ai-assistant
+        run: |
+          python -m ruff check .
+          python -m ruff format --check .
+
+      - name: Upload Python test report on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ai-assistant-test-report
+          path: ai-assistant/build/test-results/**
+          retention-days: 14
+
   verify:
     name: Verify
     runs-on: ubuntu-latest
@@ -43,6 +85,9 @@ jobs:
       - name: Run full verification lifecycle
         run: ./gradlew --no-daemon clean verify
 
+      - name: Validate AWS database identity boundaries
+        run: ./scripts/validate-aws-database-identities
+
       - name: Upload test reports on failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -55,7 +100,7 @@ jobs:
 
   image:
     name: Build and scan OCI image
-    needs: verify
+    needs: [ai-assistant, verify]
     runs-on: ubuntu-latest
     permissions:
       contents: read

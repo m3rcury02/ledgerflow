@@ -2,9 +2,8 @@ package com.ledgerflow.testing.payment;
 
 /**
  * Runs {@link MockPaymentProviderServer} as a standalone local process for the performance and
- * failure experiments in {@code performance/} (see docs/plans/portfolio-extension-execplan.md,
- * Milestone 2). The automated test suite never uses this class; it starts the fixture directly per
- * test.
+ * failure experiments in {@code performance/} (see docs/performance-experiments.md). The automated
+ * test suite never uses this class; it starts the fixture directly per test.
  */
 public final class StandaloneMockPaymentProviderServer {
 

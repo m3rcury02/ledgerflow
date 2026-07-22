@@ -4,8 +4,8 @@
 # com/ledgerflow/testing/payment/), test-only and never packaged in the production
 # ledgerflow.jar or image. Used only by the Milestone 4 kind smoke test so the API
 # Deployment's real create-order path has a real payment provider to call — see
-# docs/plans/portfolio-extension-execplan.md, Milestone 4, and
-# performance/compose.perf.yaml, which uses the same fixture over a mounted host classpath
+# docs/kubernetes-deployment.md and performance/compose.perf.yaml, which uses the same fixture over
+# a mounted host classpath
 # for Compose. This image is self-contained instead (no host-path mount), because a kind
 # node's containerd store is separate from the host and does not see host bind mounts by
 # default.

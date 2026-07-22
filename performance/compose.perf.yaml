@@ -2,7 +2,7 @@
 # and the standalone mock payment provider as real containers on the same network as
 # scripts/dev-up's dependencies, so both this host's shell (via published ports, the same
 # mechanism scripts/dev-up already relies on) and other containers (k6, kcat) can reach
-# them consistently. See docs/plans/portfolio-extension-execplan.md, Milestone 2, and
+# them consistently. See docs/performance-experiments.md and
 # performance/scripts/run-experiments.sh.
 #
 # The mock provider shares the application container's network namespace
@@ -18,7 +18,7 @@ services:
     image: ${LEDGERFLOW_IMAGE:-ledgerflow:local}
     networks: [ledgerflow]
     ports:
-      # Host-side 8080 is reserved by this sandbox's own infrastructure; 18080 is used
+      # Host-side 8080 may be reserved by local infrastructure; 18080 is used
       # instead. The container's internal port is still the application's normal 8080.
       - "127.0.0.1:18080:8080"
       - "127.0.0.1:8082:8082"

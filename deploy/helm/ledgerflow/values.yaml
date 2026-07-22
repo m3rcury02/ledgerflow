@@ -1,5 +1,5 @@
-# Default values for the LedgerFlow Helm chart. This chart targets the local kind dev
-# cluster in deploy/kind/ (docs/plans/portfolio-extension-execplan.md, Milestone 4); the
+# Default values for the LedgerFlow Helm chart. This chart targets the local kind development
+# cluster in deploy/kind/ (see docs/kubernetes-deployment.md); the
 # `secrets` block below follows this repository's existing .env.example convention —
 # "placeholders, not production secrets" — and must be overridden with a separate values
 # file (never committed) for any non-local use.

@@ -1,13 +1,12 @@
 # AWS Terraform Design (Milestone 5)
 
-This document records Milestone 5 (AWS Terraform design) of
-`docs/plans/portfolio-extension-execplan.md`: a validated, **never-applied** reference
-architecture under `deploy/terraform/aws/`. Every validation claim below was checked with a
-real command run on 2026-07-19 - `terraform fmt`/`validate`, `tflint`, and Checkov all pass
-cleanly, and the repository's existing Trivy-based `scripts/security-scan` gate was extended
-to scan this Terraform too (not skip-listed, unlike Milestone 4's vendored `kind` dependency
-manifests - see "Validation" below). No `terraform plan`, no `terraform apply`, no cloud
-resources, and no real AWS account IDs are involved anywhere in this milestone.
+This document records the validated, **never-applied** AWS reference architecture under
+`deploy/terraform/aws/`. The original validation evidence was recorded on
+2026-07-19; the database-identity design was hardened and the full static validation repeated on
+2026-07-22. `terraform fmt`/`validate`, TFLint, Checkov, and the repository's Trivy-based
+`scripts/security-scan` gate cover this Terraform (it is not skip-listed, unlike Milestone 4's
+vendored `kind` dependency manifests). No `terraform plan`, `terraform apply`, cloud resource, or
+real AWS account ID is part of this evidence.
 
 ## Architecture
 
@@ -16,7 +15,7 @@ Two-AZ VPC, three subnet tiers, no NAT Gateway:
 | Tier | Subnets | Contents |
 | --- | --- | --- |
 | Public | 2 (one per AZ) | Application Load Balancer only |
-| Private application | 2 (one per AZ) | ECS Fargate tasks (api, worker) |
+| Private application | 2 (one per AZ) | ECS Fargate tasks (api, worker, one-shot migration) |
 | Private data | 2 (one per AZ) | RDS PostgreSQL only - no route beyond the VPC at all |
 
 ```
@@ -31,6 +30,9 @@ Internet
    |  :5432                                  no ALB target, no ingress rule of any kind)
    v                                              |  :5432
 [RDS PostgreSQL, Multi-AZ] (private-data subnets, no route to the internet)  <----------------+
+   ^
+   | :5432
+[one-shot Flyway task] (private-app, migration identity only, exits before runtime startup)
 
 ECR, CloudWatch Logs, Secrets Manager reached via VPC interface endpoints (private-app route
 table); ECR image layers via an S3 gateway endpoint. No NAT Gateway anywhere in this design.
@@ -41,8 +43,10 @@ Same api/worker split Milestone 4's Helm chart already validated against a real 
 `LEDGERFLOW_*_ENABLED` background-job flags. `api` is purely request/response and the only
 service behind the ALB; `worker` is purely background processing, fixed at 2 tasks, and has
 no ALB target group, no Application Auto Scaling target, and no security-group ingress rule
-of any kind - the same "no rule permits inbound traffic at all" property Milestone 4's worker
-`NetworkPolicy` enforced, realized here at the security-group layer instead.
+of any kind - the same "no rule permits inbound traffic at all" property the local worker
+`NetworkPolicy` enforces, realized here at the security-group layer instead. A third task
+definition uses the same immutable image only for forward Flyway migration, with a distinct image
+tag, secret, execution role, and no service or public listener.
 
 ## Design decisions
 
@@ -51,8 +55,8 @@ of any kind - the same "no rule permits inbound traffic at all" property Milesto
   endpoints, and ECR image layers through an S3 gateway endpoint (free, no ENIs) - never
   through a NAT Gateway. The private application and data subnets have no route to the
   internet at all, at any point: there is no egress path to remove later, only one to add if
-  a future requirement genuinely needs it. This is the direct AWS analog of the least-privilege
-  posture already established in Milestone 4 (zero-RBAC ServiceAccounts, deny-by-default
+  a future requirement genuinely needs it. This is the direct AWS analog of the local Kubernetes
+  deployment's least-privilege posture (zero-RBAC ServiceAccounts and deny-by-default
   NetworkPolicies).
 - **Three subnet tiers, not two.** RDS lives in dedicated private-data subnets with their own
   route table (no NAT/endpoint route at all - RDS never needs to reach out), separate from the
@@ -62,38 +66,42 @@ of any kind - the same "no rule permits inbound traffic at all" property Milesto
   INR-only (`docs/operational-limitations.md`); a Mumbai-region default keeps the reference
   architecture consistent with the application's own currency scope, though `aws_region` is a
   variable and any region works.
-- **Kafka and an identity provider are explicitly out of scope.** The extension prompt's
-  service list for this milestone - VPC/ECS Fargate/RDS/ECR/Secrets Manager/CloudWatch - does
-  not include a managed Kafka or identity-provider service, unlike Milestone 4, which deployed
-  both Kafka and Keycloak in-cluster. Following the same reasoning Milestone 4 applied to
-  excluding Valkey, this design's compute/data tier is a **partial** production topology: a
+- **Kafka and an identity provider are explicitly out of scope.** This reference is deliberately
+  bounded to VPC, ECS Fargate, RDS, ECR, Secrets Manager, and CloudWatch, unlike the local
+  Kubernetes environment, which includes Kafka and Keycloak. The AWS compute/data tier is
+  therefore a **partial** production topology: a
   real deployment would add Amazon MSK (or self-managed Kafka on ECS) and either a
   self-hosted Keycloak service or Amazon Cognito. `kafka_bootstrap_servers` and
   `oauth2_issuer_uri` are Terraform variables with placeholder defaults and an explicit
   comment, not fabricated infrastructure standing in for either.
-- **RDS master credential is never a Terraform variable.** `manage_master_user_password = true`
-  makes RDS itself generate, store, and rotate the master password in Secrets Manager - no
-  password ever appears in a `.tf` file, a `terraform.tfvars`, or Terraform state as plaintext.
-  The ECS task definitions reference the resulting secret ARN directly
-  (`aws_db_instance.this.master_user_secret[0].secret_arn`).
-- **Dedicated least-privilege IAM roles per service role, never shared.** Mirrors Milestone
-  4's dedicated `ledgerflow-api`/`ledgerflow-worker` ServiceAccounts: each role's ECS
-  execution role can reach only its own CloudWatch log group, the shared ECR repository, and
-  the shared RDS secret; each role's ECS task role is empty, because the application itself
-  never calls an AWS API.
+- **The RDS master credential is bootstrap-only.** `manage_master_user_password = true` makes RDS
+  generate and store the password in Secrets Manager, so no password appears in a `.tf` file or
+  `terraform.tfvars`. No ECS task receives that secret. A privileged bootstrap procedure creates
+  distinct `ledgerflow_migrator`, `ledgerflow_api`, and `ledgerflow_worker` PostgreSQL identities;
+  their three encrypted secret containers have no Terraform-managed secret versions, keeping
+  database passwords out of Terraform state. The API and worker receive bounded DML privileges and
+  have Flyway disabled. The one-shot migration task alone receives the owning migration identity.
+  The complete sequence, recovery path, and limitations are in
+  [`docs/aws-database-identity-runbook.md`](aws-database-identity-runbook.md). This closes
+  `LF-EXT-R008` without claiming the never-applied AWS path has been executed.
+- **Dedicated least-privilege IAM roles per service role, never shared.** This mirrors the local
+  Kubernetes deployment's dedicated `ledgerflow-api`/`ledgerflow-worker` ServiceAccounts: each ECS
+  execution role can reach only its own CloudWatch log group, the shared ECR repository, and its
+  own database secret; each ECS task role is empty because the application itself never calls an
+  AWS API. The migration role is separate from both long-running roles.
 - **Application Auto Scaling on the api service, not the worker service.** Target-tracking
-  CPU scaling at 50%, min 2 / max 5 - the exact values Milestone 4's Helm chart HPA already
+  CPU scaling at 50%, min 2 / max 5 - the values the local Helm chart HPA already
   validated with a real load burst (`docs/kubernetes-deployment.md`: 2->4 replicas in 27s at
   89% CPU). The worker service has a fixed task count, matching the same "background
-  processing shouldn't autoscale against shared outbox/notification/recovery tables"
-  reasoning Milestone 4 recorded in its Decision log.
-- **One shared customer-managed KMS key, not one per resource.** CloudWatch Logs and the ECR
-  repository share a single CMK. A key per resource would be more granular but disproportionate
-  to a portfolio-scale design; one shared key is still a real, audited, rotating
-  customer-managed key rather than accepting AWS-owned/AWS-managed key defaults everywhere.
+  processing shouldn't autoscale against shared outbox/notification/recovery tables" reasoning.
+- **One shared customer-managed KMS key, not one per resource.** CloudWatch Logs, ECR, and the
+  three application database-secret containers share a single CMK. A key per resource would be
+  more granular but disproportionate to a portfolio-scale design; one shared key is still a real,
+  audited, rotating customer-managed key rather than accepting AWS-owned/AWS-managed key defaults
+  everywhere.
 - **AWS WAFv2 and ALB access logging (to S3) are out of scope.** Both are real, common
-  production additions, but both introduce a materially new AWS service/resource surface not
-  in this milestone's literal service list (WAF is its own service with managed rule groups;
+  production additions, but both introduce a materially new AWS service/resource surface
+  (WAF is its own service with managed rule groups;
   ALB access logs need a dedicated S3 log-delivery bucket, and S3 is not on the list either).
   Documented as accepted, explained gaps (see "Validation" below), not silently dropped.
 - **HTTPS is conditional on `acm_certificate_arn`.** No real domain or ACM certificate exists
@@ -109,12 +117,15 @@ of any kind - the same "no rule permits inbound traffic at all" property Milesto
 - **AWS WAFv2** in front of the ALB.
 - **ALB access logging to S3** (would require a dedicated log-delivery bucket).
 - **Multi-region / cross-region replication** for the Terraform state bucket.
+- **RDS IAM authentication or automatic PostgreSQL-aware rotation for the three application
+  identities.** The runbook defines coordinated manual password rotation; `LF-EXT-R009` prevents
+  that choice from being represented as production-ready token or rotation automation.
 
 ## A note on what "validated" does and doesn't mean here
 
 `terraform validate`, `tflint`, and Checkov/Trivy all operate on the configuration statically
 - none of them execute a plan against real AWS APIs, so none of them can catch a defect that
-only manifests at `RegisterTaskDefinition` or service-stabilization time. Three such defects
+only manifests at `RegisterTaskDefinition` or service-stabilization time. Four such defects
 were found by manual review (not by any tool, and not by applying, since this milestone never
 applies) and fixed before this milestone was considered complete:
 
@@ -143,9 +154,18 @@ applies) and fixed before this milestone was considered complete:
   block, constructing `LEDGERFLOW_DB_URL` from the real RDS attributes, and projecting the
   secret's two individual JSON keys via ECS's `secretArn:jsonKey::` syntax
   (`LEDGERFLOW_DB_USERNAME`, `LEDGERFLOW_DB_PASSWORD`) instead of the whole document.
+- **Long-running services used the RDS master identity and could run Flyway.** IAM was separated,
+  but both task definitions still received the same database-owner credential. A compromised API
+  or worker would therefore have had unnecessary DDL and destructive authority, and multiple
+  service replicas could race startup migrations. Fixed by creating separate API, worker, and
+  migration secret/IAM paths; disabling Flyway in both long-running services; adding a direct
+  migration-only application entry path; gating initial service desired counts at zero; and
+  requiring the one-shot migration to exit successfully before runtime rollout. The bootstrap SQL
+  and all nine migrations are exercised against disposable PostgreSQL 18 by
+  `scripts/validate-aws-database-identities`, including actual DDL/`TRUNCATE` denial checks.
 
-None of these three findings changed a single `fmt`/`validate`/`tflint`/`checkov`/Trivy
-result - all were, and remain, green throughout. That is the point being recorded here:
+None of these four findings was discovered by `fmt`/`validate`/TFLint/Checkov/Trivy; those
+results were, and remain, green throughout. That is the point being recorded here:
 static validation is real evidence of syntactic correctness and scanner-level security
 posture, not of runtime correctness, and a "validated, never-applied" design is only as
 trustworthy as the review that goes beyond what the validators check.
@@ -179,7 +199,7 @@ billing, point-in-time recovery, and server-side encryption.
 
 ## Cost estimate
 
-**No live pricing tool was available in this sandbox** (`infracost` is not installed, and
+**No live pricing tool was available in the validation environment** (`infracost` is not installed, and
 there is no network path to price HCL against a live AWS pricing API here). The table below is
 a manually computed, auditable unit-price x quantity breakdown instead of a single memorized
 number - every row states its assumption so it can be checked or refreshed independently.
@@ -198,10 +218,11 @@ the commonly-cited us-east-1 baseline this estimate is anchored to.
 | RDS `db.t4g.micro`, Multi-AZ | Instance + 20 GiB gp3 storage, both billed 2x under Multi-AZ | ~$38 |
 | ECR storage | <1 GiB image | ~$1 |
 | CloudWatch Logs | Light ingestion/storage at this traffic scale, 400-day retention | ~$8 |
-| KMS | 1 customer-managed key (shared: logs + ECR) | ~$1 |
-| Secrets Manager | 1 secret (RDS-managed master credential) | ~$0.40 |
+| ECS Fargate (migration) | One 0.5 vCPU / 1 GiB task per deployment; normally runs for seconds | <$0.01/run |
+| KMS | 1 customer-managed key (shared: logs + ECR + application database secrets) | ~$1 |
+| Secrets Manager | 4 secrets (RDS bootstrap + migration + API + worker) | ~$1.60 |
 | DynamoDB lock table + S3 state bucket (bootstrap) | On-demand billing, negligible size/request volume | ~$0.20 |
-| **Baseline total** | | **~$232/month** |
+| **Baseline total** | | **~$233/month** |
 
 Explicitly excluded: data transfer (workload-dependent, can dominate at real traffic volumes),
 peak-load Fargate cost above the api service's 2-task baseline (autoscaling to 5 tasks under
@@ -224,8 +245,8 @@ cd deploy/terraform/aws/bootstrap && terraform init -backend=false && terraform 
 ```
 
 Both modules: `Success! The configuration is valid.` `terraform plan`/`apply` are deliberately
-never run (per this milestone's "never applied" constraint and the resulting lack of AWS
-credentials in this sandbox) - `-backend=false` avoids the S3 backend even attempting to
+never run because no AWS credentials or real account are used - `-backend=false` avoids the S3
+backend attempting to
 initialize.
 
 ```bash
@@ -239,17 +260,18 @@ Zero issues in either module (the `aws` and `terraform` rulesets both enabled).
 checkov -d deploy/terraform/aws --compact
 ```
 
-`0` failed checks, `16` explicitly suppressed with an inline `#checkov:skip=<ID>:<rationale>`
+`0` failed checks, `20` explicitly suppressed with an inline `#checkov:skip=<ID>:<rationale>`
 comment (Checkov's Terraform skip comments must be placed **inside** the failing resource
 block, not above it - confirmed empirically in this milestone; a comment placed before the
 `resource` keyword is silently ignored). Every suppressed finding is a real, considered
 trade-off, not a blanket exclusion - e.g. the ALB's internet-facing `0.0.0.0/0` ingress (it is
-a public web application's entry point by design), the RDS-managed-password rotation check
-(superseded by `manage_master_user_password`, a newer and stronger mechanism than the
-customer-managed rotation Lambda the check expects), and the bootstrap module's DynamoDB/S3
+a public web application's entry point by design), the runtime database-authentication and
+rotation gaps tracked by `LF-EXT-R009`, and the bootstrap module's DynamoDB/S3
 customer-managed-key checks (a dedicated KMS key for a lock table and state bucket would be a
 circular bootstrap dependency for a module whose entire purpose is being the minimal
-prerequisite).
+prerequisite). The four post-hardening additions are three exact automatic-rotation checks tied to
+`LF-EXT-R009`, plus the migration security group that is attached only by the documented
+`ecs run-task` invocation rather than an always-running Terraform resource.
 
 **Trivy also scans this Terraform**, via the repository's existing `scripts/security-scan`
 gate (Trivy has its own, independent Terraform misconfig scanner, distinct rule IDs
@@ -295,8 +317,9 @@ Full `./scripts/security-scan` run exited `0`. The only findings present anywher
 are the pre-existing, already-accepted Keycloak/Valkey Compose image risk records Milestones
 1-4 already recorded - nothing new or unaddressed from this milestone's changes.
 
-Final combined state: `terraform fmt`/`validate` clean, `tflint` clean, Checkov `0` failed /
-`16` suppressed-with-rationale, Trivy (via `scripts/security-scan`) `0` findings. No
+Final combined state: `terraform fmt`/`validate` clean, TFLint clean, Checkov `351` passed / `0`
+failed / `20` suppressed-with-rationale, Trivy (via `scripts/security-scan`) has no unaddressed
+Terraform finding. No
 `terraform plan`, `apply`, or cloud credentials were used at any point.
 
 ## Teardown instructions
@@ -336,5 +359,6 @@ cd deploy/terraform/aws/bootstrap && terraform init -backend=false && terraform 
 cd deploy/terraform/aws && tflint --init && tflint
 cd deploy/terraform/aws/bootstrap && tflint --init && tflint
 checkov -d deploy/terraform/aws --compact
+./scripts/validate-aws-database-identities
 ./scripts/security-scan
 ```

@@ -4,9 +4,12 @@ accidentally makes a pricier model win must fail one of these tests."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from ai_assistant.config import (
     DEEPSEEK_MODEL_PRICING_PER_MILLION_TOKENS,
     MODEL_PRICING_PER_MILLION_TOKENS,
+    SERVICE_ENV_FILE,
     Settings,
     _cheapest_model,
 )
@@ -59,3 +62,23 @@ def test_default_deepseek_model_is_the_cheapest_entry_in_the_pricing_table(monke
 def test_explicit_env_override_still_wins_over_the_cheapest_default(monkeypatch):
     monkeypatch.setenv("AI_ASSISTANT_DEEPSEEK_MODEL", "deepseek-v4-pro")
     assert Settings(_env_file=None).deepseek_model == "deepseek-v4-pro"
+
+
+def test_default_dotenv_path_is_service_local_and_not_cwd_relative():
+    configured_path = Path(Settings.model_config["env_file"])
+
+    assert configured_path == SERVICE_ENV_FILE
+    assert configured_path.is_absolute()
+    assert configured_path.parent.name == "ai-assistant"
+
+
+def test_unrelated_dotenv_values_cannot_break_settings(tmp_path):
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "POSTGRES_PORT=5433\nVALKEY_PORT=6380\nAI_ASSISTANT_PROVIDER=fake\n",
+        encoding="utf-8",
+    )
+
+    settings = Settings(_env_file=dotenv)
+
+    assert settings.provider == "fake"

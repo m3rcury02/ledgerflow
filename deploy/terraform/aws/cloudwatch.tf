@@ -1,8 +1,8 @@
-# Single shared CMK for CloudWatch Logs and the ECR repository (ecr.tf) - one key covering
-# this design's at-rest encryption needs rather than a key per resource, deliberately, to
-# keep the KMS footprint proportionate to a portfolio-scale design.
+# Single shared CMK for CloudWatch Logs, ECR, and database-credential secret containers - one key
+# covering this design's application at-rest encryption needs rather than a key per resource,
+# deliberately, to keep the KMS footprint proportionate to a portfolio-scale design.
 resource "aws_kms_key" "logs" {
-  description         = "Encrypts CloudWatch Logs and the ECR repository for ${var.project_name}-${var.environment}."
+  description         = "Encrypts LedgerFlow logs, images, and database secrets for ${var.project_name}-${var.environment}."
   enable_key_rotation = true
 
   policy = data.aws_iam_policy_document.logs_kms_key.json
@@ -82,6 +82,12 @@ resource "aws_cloudwatch_log_group" "api" {
 
 resource "aws_cloudwatch_log_group" "worker" {
   name              = "/ecs/${var.project_name}-${var.environment}/worker"
+  retention_in_days = var.log_retention_days
+  kms_key_id        = aws_kms_key.logs.arn
+}
+
+resource "aws_cloudwatch_log_group" "migration" {
+  name              = "/ecs/${var.project_name}-${var.environment}/migration"
   retention_in_days = var.log_retention_days
   kms_key_id        = aws_kms_key.logs.arn
 }

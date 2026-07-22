@@ -56,7 +56,7 @@ An ADR is required for decisions that materially affect one or more of:
 
 An ADR is not required for routine feature implementation, local refactoring that preserves boundaries and behavior, test additions, or reversible implementation details already covered by accepted guidance.
 
-Proposed ADRs are reviewed with the associated ExecPlan before implementation. Maintainer approval changes their status to `Accepted`. Code, tests, and architecture documentation must reference or reflect accepted decisions where relevant.
+Proposed ADRs are reviewed with the associated implementation proposal before implementation. Maintainer approval changes their status to `Accepted`. Code, tests, and architecture documentation must reference or reflect accepted decisions where relevant.
 
 This ADR records the ADR process itself and is accepted when the initial governance proposal is approved.
 

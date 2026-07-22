@@ -1,6 +1,6 @@
-# Background-processing role only: every background-job flag is on, no public Service
-# targets these pods, and the worker NetworkPolicy denies inbound HTTP traffic outright
-# (Milestone 4 Decision log) — enforced at the network layer, not just by Service omission.
+# Background-processing role only: every background-job flag is on, no public Service targets
+# these pods, and the worker NetworkPolicy denies inbound HTTP traffic outright. The boundary is
+# enforced at the network layer, not just by Service omission.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

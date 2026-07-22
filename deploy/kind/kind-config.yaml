@@ -1,8 +1,8 @@
-# Local-only kind cluster for Milestone 4 (docs/plans/portfolio-extension-execplan.md).
+# Local-only kind cluster documented in docs/kubernetes-deployment.md.
 # Single control-plane node: this demonstrates Helm/Kubernetes deployment shape, not
 # multi-node scheduling or a service mesh (explicitly out of scope). Host access to any
-# in-cluster Service goes through `kubectl port-forward`, not extraPortMappings — see the
-# Milestone 4 Decision log for why NodePort/extraPortMappings is deliberately avoided here.
+# in-cluster Service goes through `kubectl port-forward`, not extraPortMappings. This keeps the
+# local cluster topology portable without reserving host ports in kind configuration.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: ledgerflow-dev

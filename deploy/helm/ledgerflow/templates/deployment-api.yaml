@@ -1,5 +1,5 @@
-# Request/response role only: every background-job flag is off (Milestone 4 Decision log),
-# so autoscaling this Deployment never multiplies lease contention against the
+# Request/response role only: every background-job flag is off, so autoscaling this Deployment
+# never multiplies lease contention against the
 # outbox/notification/recovery tables the worker Deployment owns.
 apiVersion: apps/v1
 kind: Deployment

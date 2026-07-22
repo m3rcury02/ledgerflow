@@ -7,7 +7,7 @@ Before changing files:
 1. Read this workflow, relevant architecture documentation, and applicable ADRs.
 2. Inspect the working tree and preserve unrelated changes.
 3. Identify the single approved milestone.
-4. For significant or multi-step work, create or update an ExecPlan and wait for explicit approval.
+4. For significant or multi-step work, create or update a reviewed implementation plan.
 5. Write observable acceptance criteria before implementation.
 
 A request does not authorize adjacent cleanup, dependency upgrades, speculative abstractions, or later milestones.
@@ -20,7 +20,7 @@ Use repository evidence rather than assumptions:
 - inspect relevant OpenAPI operations and Flyway migrations;
 - identify existing unit, integration, and architecture tests;
 - check callers before changing a shared type or contract; and
-- record important discoveries in the ExecPlan.
+- record important discoveries in the implementation record or relevant design document.
 
 If the requested behavior conflicts with an accepted ADR or repository rule, stop and surface the conflict instead of silently bypassing it.
 
@@ -61,7 +61,7 @@ Before adding a production dependency, record:
 - maintenance, licensing, security, runtime, and operational impact; and
 - how the dependency will be tested and updated.
 
-Put this reasoning in the ExecPlan, ADR, or change description. Prefer Spring Boot-managed versions. Do not add a library merely to avoid a small, clear implementation.
+Put this reasoning in an ADR or change description. Prefer Spring Boot-managed versions. Do not add a library merely to avoid a small, clear implementation.
 
 ## 6. Run focused validation
 
@@ -79,6 +79,7 @@ During development, run the smallest relevant checks:
 ./gradlew composeValidate
 ./gradlew observabilityValidate
 ./gradlew documentationCheck
+make ai-assistant-check
 ./scripts/security-scan
 ./scripts/smoke-test
 ./scripts/demo-mvp
@@ -95,6 +96,13 @@ Expected task responsibilities:
 - `composeValidate`: resolve and validate `compose.yaml` using the non-secret `.env.example` defaults.
 - `observabilityValidate`: validate Collector configuration, Prometheus configuration and rules, all alert/runbook links, Grafana data sources, and all provisioned dashboards with the pinned Compose images.
 - `documentationCheck`: check Markdown formatting, internal links, and required document structure.
+- `make ai-assistant-check`: run the optional Python service's pytest suite from the repository
+  root, then its Ruff lint and format gates; create `ai-assistant/.venv` and install `.[dev]`
+  first as documented in the README.
+- `make aws-database-identity-check`: package the real application, bootstrap separate migration,
+  API, and worker identities in disposable PostgreSQL 18, run all Flyway migrations twice, and
+  prove runtime DDL/destructive-operation denial. Run it for the migration-only entry path,
+  bootstrap SQL, or AWS database identity/IAM wiring changes.
 - `scripts/security-scan`: build the executable artifact and use the pinned container scanner for repository secrets/misconfiguration, packaged Java dependencies, and every Compose image.
 - `scripts/smoke-test`: run one complete public HTTP-to-notification acceptance journey against ephemeral PostgreSQL and Kafka.
 - `scripts/demo-mvp`: run the focused MVP failure/recovery evidence matrix plus graceful-drain proof.
@@ -123,6 +131,20 @@ For a change that affects security controls, dependencies, or container images, 
 ./scripts/security-scan
 ```
 
+For a change to `ai-assistant/`, its dependencies, or its documentation, also run:
+
+```text
+make ai-assistant-check
+```
+
+For a change to the AWS database identity, migration-task, or bootstrap design, also run:
+
+```text
+make aws-database-identity-check
+terraform -chdir=deploy/terraform/aws fmt -check -recursive
+terraform -chdir=deploy/terraform/aws validate
+```
+
 Confirm that:
 
 - Gradle is running through the wrapper on Java 25;
@@ -133,11 +155,11 @@ Confirm that:
 - every acceptance criterion has observable evidence.
 - the applicable supply-chain scan completed with no unapproved finding.
 
-Record the commands and results in the ExecPlan or change summary.
+Record the commands and results in the change summary or release evidence.
 
 For an MVP release candidate, also update `docs/mvp-evidence.md`, run `scripts/smoke-test` and
 `scripts/demo-mvp`, review dependencies/migrations/ADRs/residual risks, and record the exact final
-evidence in the canonical ExecPlan. A tag is created only after every required check passes.
+evidence in `docs/mvp-evidence.md`. A tag is created only after every required check passes.
 
 ## Bootstrap requirement
 

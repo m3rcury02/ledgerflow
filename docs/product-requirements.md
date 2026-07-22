@@ -2,7 +2,7 @@
 
 - Status: MVP workflow, observability, and secured operator recovery implemented
 - Last updated: 2026-07-17
-- Related plan: `docs/plans/mvp-execplan.md`
+- Acceptance evidence: `docs/mvp-evidence.md`
 
 ## Purpose
 

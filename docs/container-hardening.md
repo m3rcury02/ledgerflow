@@ -1,9 +1,7 @@
 # Container Hardening
 
-This document records Milestone 3 (production-oriented containers) of
-`docs/plans/portfolio-extension-execplan.md`. Every claim below was checked with a real
-command against a real build of this branch's `Dockerfile` on 2026-07-18 — nothing here is
-asserted from the Dockerfile's contents alone.
+Every claim below was checked with a real command against a real build of this branch's
+`Dockerfile` on 2026-07-18 — nothing here is asserted from the Dockerfile's contents alone.
 
 ## Multi-stage build, non-root execution
 
@@ -16,17 +14,21 @@ docker inspect ledgerflow:local --format '{{.Config.User}}'
 # ledgerflow:ledgerflow
 ```
 
-## API and worker are the same image, different configuration
+## API, worker, and migration are the same image, different entry paths
 
 There is one build artifact (`application/build/libs/ledgerflow.jar`) and one image. A
 "worker" deployment is the identical image started with
 `LEDGERFLOW_RECOVERY_WORKER_ENABLED=true` (the default) and, where a deployment wants a
 dedicated background-processing replica set that doesn't receive public HTTP traffic, a
-Kubernetes Service that simply doesn't target that replica set's pods (Milestone 4). There
-is no separate "worker" Dockerfile or build target — see
-`docs/plans/portfolio-extension-execplan.md`'s Milestone 2 Current State finding, which
-confirmed the application has no separate worker process today; the outbox publisher and
-operator retry worker are `@Scheduled` tasks in the same Spring context.
+Kubernetes Service that simply doesn't target that replica set's pods. There is no separate
+"worker" Dockerfile or build target: the outbox publisher and operator retry worker are
+`@Scheduled` tasks in the same Spring context.
+
+The AWS design also runs this image as a one-shot migration task with
+`--ledgerflow.migration-only=true`. That entry path invokes Flyway and exits before Spring, HTTP,
+Kafka, schedulers, or provider clients start. It uses a distinct migration identity and immutable
+image tag; long-running API/worker tasks have Flyway disabled. See
+[`docs/aws-database-identity-runbook.md`](aws-database-identity-runbook.md).
 
 ## Read-only root filesystem compatibility
 
@@ -118,7 +120,7 @@ docker inspect ledgerflow:local --format '{{json .Config.Labels}}'
 ```json
 {
   "org.opencontainers.image.created": "2026-07-18T18:22:57Z",
-  "org.opencontainers.image.description": "LedgerFlow deployable application (API; also the worker role via LEDGERFLOW_RECOVERY_WORKER_ENABLED)",
+  "org.opencontainers.image.description": "LedgerFlow API, worker, and one-shot Flyway migration image",
   "org.opencontainers.image.licenses": "NOASSERTION",
   "org.opencontainers.image.revision": "5e4362e64bf2b3c3e0b02d8e5334fe5d935313bc",
   "org.opencontainers.image.source": "https://github.com/m3rcury02/ledgerflow",

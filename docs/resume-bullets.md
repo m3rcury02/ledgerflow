@@ -63,22 +63,22 @@ from one project is its own red flag.
   controller-quorum self-registration deadlock, under-thresholded liveness probes on three
   dependencies, a `tcpSocket` probe that could never pass on a loopback-only sidecar, and a
   Keycloak token-issuer mismatch between port-forwarded and in-cluster access) — recorded with
-  root cause, not just "fixed it"
-  ([`docs/plans/portfolio-extension-execplan.md`](plans/portfolio-extension-execplan.md), Milestone
-  4 Surprises and discoveries).
+  root cause, not just "fixed it" ([`docs/kubernetes-deployment.md`](kubernetes-deployment.md)).
 
 ## Cloud infrastructure-as-code
 
 - Designed a two-AZ AWS reference architecture (VPC, ECS Fargate, RDS Multi-AZ, ECR,
   CloudWatch) in Terraform with zero NAT Gateway — private subnets reach AWS services only
   through VPC endpoints, so there is no internet egress path to misconfigure — validated clean
-  through `terraform validate`, `tflint`, Checkov (0 failed / 16 suppressed-with-rationale), and
+  through `terraform validate`, TFLint, Checkov (0 failed / 20 suppressed-with-rationale), and
   an independent Trivy Terraform scanner ([`docs/aws-terraform-design.md`](aws-terraform-design.md)).
-- Caught 3 real infrastructure defects invisible to 5 passing static-analysis tools (an ALB
+- Caught 4 real infrastructure defects invisible to 5 passing static-analysis tools (an ALB
   health-check port gap that would have hung every rollout, a Fargate-incompatible `tmpfs`
-  configuration, and datasource environment variables that didn't match the application's real
-  configuration) through manual design review — and documented explicitly what "validated"
-  does and doesn't prove without ever running a real `terraform apply`
+  configuration, datasource environment variables that didn't match the application's real
+  configuration, and long-running tasks holding the RDS master/migration identity) through manual
+  design review — then separated bootstrap, migration, API, and worker database authority and
+  documented explicitly what "validated" does and doesn't prove without ever running a real
+  `terraform apply`
   ([`docs/aws-terraform-design.md`](aws-terraform-design.md), "A note on what 'validated' does
   and doesn't mean here").
 

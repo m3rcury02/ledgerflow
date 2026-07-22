@@ -1,6 +1,6 @@
 LedgerFlow deployed to namespace {{ .Values.namespace }}.
 
-Reach the API from this host (ClusterIP only, no NodePort — see Milestone 4's Decision log):
+Reach the API from this host (ClusterIP only, no NodePort):
 
   kubectl --namespace {{ .Values.namespace }} port-forward svc/ledgerflow-api 8080:{{ .Values.api.containerPort }}
   curl --fail http://localhost:8080/api/v1/orders/...

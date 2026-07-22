@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # Orchestrates every performance and failure experiment in performance/ against a real
-# local LedgerFlow stack. See docs/plans/portfolio-extension-execplan.md (Milestone 2) and
-# docs/performance-experiments.md for what each scenario proves.
+# local LedgerFlow stack. See docs/performance-experiments.md for what each scenario proves.
 #
 # Prerequisites (not managed by this script): `scripts/dev-up` dependencies healthy.
 #
 # The application and the mock payment provider run as real containers
-# (performance/compose.perf.yaml), not bare local processes: this sandbox's Docker only
+# (performance/compose.perf.yaml), not bare local processes: this environment's Docker only
 # makes container-published ports reachable consistently from both this shell and other
 # containers (k6, kcat) — a bare `java -jar` process bound directly in this shell is not
 # reachable from a container, and a container's directly-bound port is not reachable from
-# this shell. See that file's comments and the Surprises section of
-# docs/plans/portfolio-extension-execplan.md for the full explanation.
+# this shell. See that file's comments and docs/performance-experiments.md for the full
+# explanation.
 #
 # This script never touches scripts/dev-up's shared dependency containers except to
 # stop/start the kafka service for the Kafka-outage scenario, and it never deletes any

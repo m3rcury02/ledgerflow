@@ -1,8 +1,8 @@
 # Screenshots Guide
 
-This is a guide for what to capture, not a set of captured screenshots. This repository's
-tooling runs in a headless sandbox with no display, so no image in this repository was actually
-taken from a running UI. Follow this guide on a real workstation with the local environment up
+This is a guide for what to capture, not a set of captured screenshots. No image in this
+repository is presented as evidence from a running UI. Follow this guide on a real workstation
+with the local environment up
 (`docker compose --env-file .env.example up -d`, then whichever milestone's stack it names) to
 produce the actual images for a portfolio page or the demo video's B-roll.
 
@@ -54,10 +54,9 @@ interviewer should be able to see the URL bar or shell prompt and believe it's r
 
 ## 7. CI, green, on a real PR
 
-- Once a PR exists for this branch (see the maintainer decision recorded in
-  `docs/plans/portfolio-extension-execplan.md`'s Milestone 7 entry), capture the GitHub Actions
-  checks list showing `ci.yml` and `codeql.yml` passing on the actual PR, not a local terminal
-  substitute. This is the one piece of evidence that only exists on GitHub's UI.
+- Capture the GitHub Actions checks list showing `ci.yml` and `codeql.yml` passing on an actual PR,
+  not a local terminal substitute. This is the one piece of evidence that only exists on GitHub's
+  UI.
 
 ## 8. AWS Terraform: the plan-free validation trio
 

@@ -48,7 +48,7 @@ resource "aws_iam_role_policy_attachment" "rds_enhanced_monitoring" {
 }
 
 resource "aws_db_instance" "this" {
-  #checkov:skip=CKV_AWS_161:manage_master_user_password below is the modern replacement for a customer-managed rotation Lambda - RDS itself creates, stores, and rotates the master credential in Secrets Manager, so no separate rotation resource is needed.
+  #checkov:skip=CKV_AWS_161:LF-EXT-R009 records the password-based runtime identity and missing database-aware rotation; merely enabling IAM auth without implementing token generation and pool refresh would not secure the connections this application actually opens.
   identifier     = "${var.project_name}-${var.environment}"
   engine         = "postgres"
   engine_version = var.db_engine_version

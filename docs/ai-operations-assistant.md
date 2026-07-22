@@ -1,8 +1,7 @@
 # AI Operations Assistant (Milestone 6)
 
-This document records Milestone 6 (optional AI operations assistant) of
-`docs/plans/portfolio-extension-execplan.md`: `ai-assistant/`, a separate Python/FastAPI service
-that turns an incident description (plus optional alert name and telemetry excerpt) into a
+`ai-assistant/` is a separate Python/FastAPI service that turns an incident description (plus
+optional alert name and telemetry excerpt) into a
 structured, human-reviewed incident summary grounded in this repository's own curated runbook
 corpus. It is advisory only — it has no tools, cannot act on LedgerFlow, and never claims to
 have performed remediation. It ships with a deterministic **fake provider as the default**, so
@@ -13,9 +12,9 @@ DeepSeek (Chat Completions API).
 
 ## Why a separate service, not a Spring module
 
-The application's core is deliberately AI-free (`docs/portfolio-extension-execplan.md`'s
-Milestone 6 scope treats this as an optional, isolated add-on, not core payment/ledger logic).
-Keeping it a standalone FastAPI service under `ai-assistant/` means the Java application's
+The application's core is deliberately AI-free; this is an optional, isolated add-on, not core
+payment or ledger logic. Keeping it a standalone FastAPI service under `ai-assistant/` means the
+Java application's
 dependency surface, container image, and Gradle build are entirely unaffected by this milestone
 — see "Confirming the rest of the repository is unaffected" below.
 
@@ -271,7 +270,7 @@ triggers real API billing.
 cd ai-assistant
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m pytest       # 79 tests
+.venv/bin/python -m pytest       # 81 tests
 .venv/bin/ruff check .
 .venv/bin/ruff format --check .
 ```
@@ -280,26 +279,31 @@ Real output (2026-07-21, after adding the DeepSeek provider):
 
 ```
 $ .venv/bin/python -m pytest
-79 passed, 1 warning in 1.10s
+81 passed, 1 warning
 
 $ .venv/bin/ruff check .
 All checks passed!
 
 $ .venv/bin/ruff format --check .
-22 files already formatted
+23 files already formatted
 ```
 
 Test breakdown: `test_sanitizer.py` (11), `test_runbooks.py` (10), `test_prompt_construction.py`
 (7), `test_fake_provider.py` (8), `test_openai_provider_secrets_never_sent.py` (4),
-`test_deepseek_provider_secrets_never_sent.py` (5), `test_config.py` (5 — guards the
-"cheapest model by default" property directly), `test_main.py` (5), `test_eval_fixtures.py`
+`test_deepseek_provider_secrets_never_sent.py` (5), `test_config.py` (7 — guards the
+"cheapest model by default" property and service-local dotenv isolation), `test_main.py` (5),
+`test_eval_fixtures.py`
 (24 — 2 meta-checks plus the 22 fixture cases).
 
-The DeepSeek integration was also proven against the real API, not just mocked: the FastAPI
-service was started with `AI_ASSISTANT_PROVIDER=deepseek` and a real key, then sent a live
-`POST /v1/incidents/summarize` request. It returned a correctly-schemed `IncidentSummary` with a
-citation actually grounded in the curated runbook corpus, real `tokens`, and a real
-`estimated_cost_usd` (~$0.00018 for that one call) computed from DeepSeek's own reported usage.
+The DeepSeek integration was also proven against the real API, not just mocked: the maintainer ran
+the FastAPI service with `AI_ASSISTANT_PROVIDER=deepseek` and a real key on a separate machine and
+network that permitted access to DeepSeek, then sent a live `POST /v1/incidents/summarize` request.
+It returned a correctly-schemed `IncidentSummary` with a citation grounded in the curated runbook
+corpus, real `tokens`, and a real `estimated_cost_usd` (~$0.00018 for that call) computed from
+DeepSeek's reported usage. This is maintainer-attested live evidence, distinct from the locally
+reproducible mocked-transport tests. The current work laptop's organizational firewall blocks the
+DeepSeek endpoint, so the live call was not rerun here on 2026-07-22. No key was supplied to,
+printed in, or stored by this workspace.
 
 `runbooks.py`'s `E501` (line-too-long) is ignored for that one file only
 (`pyproject.toml:[tool.ruff.lint.per-file-ignores]`), because its corpus strings are
@@ -350,9 +354,7 @@ Gradle module, no Java dependency) with its own `.gitignore` entries appended to
 root `.gitignore` (`ai-assistant/.venv/`, `ai-assistant/.env`, `__pycache__/`, `*.pyc`,
 `.pytest_cache/`, `.ruff_cache/`, `*.egg-info/`). `./gradlew clean verify` and
 `./scripts/security-scan`, run from the repository root with `ai-assistant/` present, were
-confirmed to pass and to find nothing new introduced by this milestone — see
-`docs/plans/portfolio-extension-execplan.md`'s Milestone 6 entry for the real command
-transcripts.
+confirmed to pass and to find nothing new introduced by the service.
 
 ## Reproducing this milestone's evidence
 

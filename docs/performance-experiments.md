@@ -1,7 +1,6 @@
 # Performance and Failure Experiments
 
-This document records the 11 performance and resilience experiments required by
-`docs/plans/portfolio-extension-execplan.md` (Milestone 2). Every experiment below was
+This document records 11 performance and resilience experiments. Every experiment below was
 actually executed against a real local LedgerFlow stack (PostgreSQL, Kafka, Keycloak, and
 the application, all from `scripts/dev-up`, plus a standalone instance of the deterministic
 mock payment provider fixture) — no number in this document is invented. Two of the eleven
@@ -25,9 +24,8 @@ A full run takes roughly 5–6 minutes.
 
 ## Environment
 
-- Host: local development machine, Docker Engine with Compose v2. This sandbox's Docker
-  networking is not uniform (see docs/plans/portfolio-extension-execplan.md, Surprises and
-  discoveries) — the application and mock provider run as real containers, not bare
+- Host: local development machine, Docker Engine with Compose v2. This environment's Docker
+  networking is not uniform — the application and mock provider run as real containers, not bare
   processes, specifically so both this host's shell and other containers (k6, kcat) can
   reach them consistently.
 - Dependencies: `scripts/dev-up`'s standard nine services, all `healthy`.
@@ -41,9 +39,7 @@ A full run takes roughly 5–6 minutes.
   Order API") that a single shared load-test identity trips almost immediately — see the
   Normal traffic and Burst traffic sections below.
 - This is a single-instance, single-machine local environment. Results characterize
-  relative behavior and correctness under fault injection, not absolute production
-  capacity — consistent with `docs/plans/mvp-execplan.md`'s "no inflated production scale
-  claims" principle, which this document also follows.
+  relative behavior and correctness under fault injection, not absolute production capacity.
 
 ---
 
@@ -331,8 +327,7 @@ A full run takes roughly 5–6 minutes.
   a 100-row backlog.
 - **Evidence-supported optimization**: not applied — the default configuration already
   clears a 100-row backlog in well under the 60s budget, and this is local-development
-  tooling, not a production capacity target (see `docs/plans/mvp-execplan.md`'s "no
-  inflated production scale claims" principle). Recorded as a real, un-optimized baseline
+  tooling, not a production capacity target. Recorded as a real, un-optimized baseline
   rather than tuned to look better.
 - **Rerun result**: not applicable — no change made.
 
@@ -373,5 +368,4 @@ edited out because they are evidence of the process, not just the result:
    test scripts, not the application, and are recorded so the distinction is auditable
    rather than asserted.
 
-See `docs/plans/portfolio-extension-execplan.md`'s Progress section for the exact commands
-run and their raw output.
+The commands, workloads, thresholds, and observed results are recorded above for reproducibility.

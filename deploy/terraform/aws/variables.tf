@@ -58,7 +58,32 @@ variable "container_image_tag" {
   }
 }
 
+variable "migration_image_tag" {
+  description = <<-EOT
+    Immutable image tag used only by the one-shot Flyway task. Kept separate from
+    container_image_tag so deployment automation can register/run migrations and verify exit code
+    zero before rolling the long-running API/worker task definitions to the same new image.
+  EOT
+  type        = string
+
+  validation {
+    condition     = length(var.migration_image_tag) > 0
+    error_message = "migration_image_tag must be set explicitly to a real, pushed image tag."
+  }
+}
+
 # --- ECS: api service ---------------------------------------------------------
+
+variable "deploy_application_services" {
+  description = <<-EOT
+    Starts long-running API and worker tasks only after database identities are bootstrapped and
+    the one-shot migration task has completed successfully. Defaults false so an initial apply
+    cannot race an empty database or missing secret values. Set true only in the second deployment
+    phase documented in docs/aws-terraform-design.md.
+  EOT
+  type        = bool
+  default     = false
+}
 
 variable "api_cpu" {
   description = "Fargate task CPU units for the api service (256 = 0.25 vCPU)."
@@ -114,6 +139,20 @@ variable "worker_desired_count" {
   description = "Fixed task count for the worker service (no autoscaling: background-job replicas, not request/response capacity)."
   type        = number
   default     = 2
+}
+
+# --- ECS: one-shot Flyway migration task -------------------------------------
+
+variable "migration_cpu" {
+  description = "Fargate CPU units for the one-shot Flyway migration task."
+  type        = number
+  default     = 512
+}
+
+variable "migration_memory" {
+  description = "Fargate memory (MiB) for the one-shot Flyway migration task."
+  type        = number
+  default     = 1024
 }
 
 # --- RDS ------------------------------------------------------------------
@@ -172,9 +211,17 @@ variable "db_name" {
 }
 
 variable "db_username" {
-  description = "RDS master username. The password is never a Terraform variable: it is generated and stored by RDS itself in Secrets Manager (manage_master_user_password)."
+  description = "Bootstrap-only RDS master username. No ECS task receives this identity; RDS generates and stores its password through manage_master_user_password."
   type        = string
   default     = "ledgerflow"
+
+  validation {
+    condition = !contains(
+      ["ledgerflow_migrator", "ledgerflow_api", "ledgerflow_worker"],
+      var.db_username,
+    )
+    error_message = "db_username must not collide with a restricted LedgerFlow database role."
+  }
 }
 
 # --- Observability ----------------------------------------------------------

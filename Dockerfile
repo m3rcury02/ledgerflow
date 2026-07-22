@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
 # Multi-stage build for the LedgerFlow deployable application. There is a single build
-# artifact (application/build/libs/ledgerflow.jar); "worker" deployments run this same
-# image with different configuration (see docs/plans/portfolio-extension-execplan.md),
-# not a separate image.
+# artifact (application/build/libs/ledgerflow.jar); worker deployments and the one-shot Flyway
+# task run this same image with different configuration (see docs/container-hardening.md), not
+# separate images.
 #
 # Hardening properties, each verified with real commands recorded in
 # docs/container-hardening.md: non-root user, read-only root filesystem compatibility
@@ -47,7 +47,7 @@ ARG IMAGE_CREATED=unknown
 ARG IMAGE_VERSION=0.1.0-SNAPSHOT
 
 LABEL org.opencontainers.image.title="ledgerflow" \
-    org.opencontainers.image.description="LedgerFlow deployable application (API; also the worker role via LEDGERFLOW_RECOVERY_WORKER_ENABLED)" \
+    org.opencontainers.image.description="LedgerFlow API, worker, and one-shot Flyway migration image" \
     org.opencontainers.image.source="https://github.com/m3rcury02/ledgerflow" \
     org.opencontainers.image.licenses="NOASSERTION" \
     org.opencontainers.image.version="${IMAGE_VERSION}" \

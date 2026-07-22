@@ -1,6 +1,6 @@
 # LedgerFlow MVP Residual-Risk Register
 
-- Review date: 2026-07-17
+- Review date: 2026-07-22
 - Owner: LedgerFlow maintainer unless reassigned
 - Scope: local portfolio MVP
 
@@ -17,7 +17,7 @@ demonstration may proceed with the recorded mitigation; the item remains a produ
 | LF-MVP-R006 | Medium | Telemetry can be lost during backend failure and local retention/cost is not sized. | Failure-isolated exporters, redaction/cardinality tests, bounded batches, sustained-export alert. | Accepted locally. | Production telemetry capacity, retention, access control, sampling, and outage runbook validation. |
 | LF-MVP-R007 | Medium | Operator retry is powerful and a compromised operator/admin token can trigger bounded recovery. | Separate read/retry/break-glass permissions, JWT-derived identity, mandatory reason, cooldown/caps, one-use approval, immutable audit, safe handlers. | Accepted locally. | MFA/JIT access, approval workflow integration, alert ownership, periodic access review. |
 | LF-MVP-R008 | Medium | The MVP has no formal performance, soak, multi-region, disaster, or chaos qualification. | Deterministic concurrency and failure-path integration tests only. | Accepted locally; claims explicitly limited. | Workload model, SLO calibration, load/soak/failover tests in intended topology. |
-| LF-MVP-R009 | Medium | Current official local Compose images contain exact scanner findings awaiting compatible patches. | Findings remain visible; exact digest/package/CVE/expiry policy; loopback/resource controls. | Temporarily accepted only as recorded. | Follow `local-development-container-risk-register.md`; expiry is 2026-08-13 or fixed image availability, whichever is earlier. |
+| LF-MVP-R009 | Medium | Current official local Compose images contain exact scanner findings awaiting compatible patches. | Findings remain visible; exact digest/package/advisory/expiry policy; loopback/resource controls. | Temporarily accepted only as recorded. | Follow `local-development-container-risk-register.md`; each active record expires on its recorded date (no later than 2026-08-20) or fixed image availability, whichever is earlier. |
 | LF-MVP-R010 | Low | OpenTelemetry Logback instrumentation is an alpha artifact and may change behavior on upgrade. | Version pinned by BOM, seeded redaction tests, exporter failure isolation, no business dependency on telemetry. | Accepted locally. | Re-review on any OTel/Boot/logging upgrade or before production support commitment. |
 
 ## Related exact vulnerability records

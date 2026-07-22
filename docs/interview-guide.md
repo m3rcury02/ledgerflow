@@ -117,8 +117,7 @@ a Kafka controller-quorum self-registration deadlock through its own Service, un
 liveness probes on three dependencies, a `tcpSocket` probe on a loopback-only sidecar that could
 never pass, and a Keycloak token-issuer mismatch between port-forwarded and in-cluster access.
 All four are root-caused, not just patched, in
-[`docs/plans/portfolio-extension-execplan.md`](plans/portfolio-extension-execplan.md), Milestone
-4.
+[`docs/kubernetes-deployment.md`](kubernetes-deployment.md).
 
 **Show me the autoscaler actually working.** A real 150-second, 40-way-concurrent load burst
 against the API's liveness endpoint drove CPU to 89%/50% and the HPA scaled 2→4 replicas within
@@ -177,12 +176,12 @@ the `postgres:18.4-trixie` base image had already drifted to a new digest twice 
 day (fixed by pinning it by digest in `compose.yaml` instead of chasing a moving tag), and
 `codeql.yml` failed because Gradle's build cache made `compileJava` a no-op, giving CodeQL's
 build tracer nothing real to observe (fixed with `--no-build-cache` on that one step). Neither
-bug was catchable by local runs — a local sandbox with an already-cached image or a warm build
+bug was catchable by local runs — a workstation with an already-cached image or a warm build
 cache never re-pulls or recompiles, so both were invisible until a fresh CI runner actually
 exercised the pipeline. The honest lesson: a CI pipeline that's never actually run isn't
-proven, no matter how carefully its YAML was reviewed — see
-`docs/plans/portfolio-extension-execplan.md`, Milestone 7's Surprises and discoveries, for the
-full account, including that both are now fixed and all three gates pass together on `main`.
+proven, no matter how carefully its YAML was reviewed. Both failures are now fixed and all three
+gates pass together on `main`; the branch-protection and CI boundaries are documented in
+[`docs/branch-protection.md`](branch-protection.md).
 Second: the AWS Terraform design has never been applied, so however careful the review, there's
 a real chance a `plan`/`apply` would surface something the static tools and manual review both
 missed — the three defects already found there are evidence that this class of gap is real too.
@@ -201,9 +200,9 @@ Everything else — the database, the message broker, the Kubernetes cluster, th
 scans, the load test, the CI checks that *have* run — is real, not mocked or simulated.
 
 **If you had another two weeks, what would you build next?** A live OpenAI smoke test for the AI
-assistant (currently deferred pending a maintainer-supplied key — the offline suite can't prove
-the real API accepts the exact schema/parameter combination used); opening the PR this branch
-needs to get real `ci.yml`/`codeql.yml` evidence instead of only local reproduction; and, if
-genuinely pursuing a production path, closing the items in `docs/security/mvp-residual-risk-register.md`
-one at a time, starting with backup/restore evidence for PostgreSQL, since that's the
-highest-severity gap with the least work already done toward closing it.
+assistant (currently deferred pending a separately billed API key — the offline suite cannot prove
+the real API accepts the exact schema/parameter combination used); then, if genuinely pursuing a
+production path, execute the now-separated AWS migration/runtime identity design in an authorized
+sandbox, implement and failure-test database-aware credential rotation, and prove PostgreSQL
+backup/restore. The repository validates the design locally but does not represent any of those
+AWS operations as already executed.

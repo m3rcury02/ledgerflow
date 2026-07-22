@@ -15,8 +15,13 @@ same drift caveat as the OpenAI table.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+SERVICE_ROOT = Path(__file__).resolve().parents[2]
+SERVICE_ENV_FILE = SERVICE_ROOT / ".env"
 
 # USD per 1,000,000 tokens: (input, output).
 MODEL_PRICING_PER_MILLION_TOKENS: dict[str, tuple[float, float]] = {
@@ -45,7 +50,16 @@ def _cheapest_model(pricing: dict[str, tuple[float, ...]]) -> str:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="AI_ASSISTANT_", env_file=".env")
+    # Resolve the service-local file once from this module rather than from the process CWD.
+    # That keeps an unrelated repository-root .env (Compose ports, database settings, etc.) from
+    # becoming input merely because the service or its tests were launched from the repository
+    # root. Unknown keys in the dedicated file are ignored so shared local tooling metadata cannot
+    # prevent startup; only AI_ASSISTANT_* fields are candidates for these settings.
+    model_config = SettingsConfigDict(
+        env_prefix="AI_ASSISTANT_",
+        env_file=SERVICE_ENV_FILE,
+        extra="ignore",
+    )
 
     provider: str = "fake"
 

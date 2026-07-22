@@ -137,7 +137,7 @@ When hexagonal architecture is used:
 - domain code does not depend on Spring, HTTP, persistence, or messaging;
 - inbound adapters invoke application use cases;
 - outbound adapters implement ports owned by the application or domain side; and
-- the reason and resulting dependency direction are recorded in the ExecPlan or an ADR.
+- the reason and resulting dependency direction are recorded in an ADR or change description.
 
 Do not introduce interfaces, mapping layers, commands, events, or duplicate models solely to imitate an architectural pattern.
 
@@ -193,7 +193,7 @@ Migration rules:
 - a correction to a merged migration is a new forward migration;
 - application changes and required migrations are delivered together;
 - integration tests start from an empty PostgreSQL database and apply every migration;
-- destructive or long-running migrations require an ExecPlan with compatibility, recovery, and rollout details; and
+- destructive or long-running migrations require a reviewed plan with compatibility, recovery, and rollout details; and
 - a module accesses only tables it owns unless an accepted ADR defines a controlled exception.
 
 The current local, production-design, and integration-test baseline is PostgreSQL 18. Migrations use ordered `VNNN__description.sql` names. V001–V007 own the previously described feature data; V008 adds resumable idempotency shape, final order/payment states, and deferred workflow-finalization invariants; V009 adds secured operator retry, lease, cooldown, approval, and immutable audit state. No merged migration is edited. The release inventory is [migration inventory](migration-inventory.md).

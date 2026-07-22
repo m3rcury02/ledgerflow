@@ -2,7 +2,7 @@
 
 - Status: Milestone 7A Complete
 - Last updated: 2026-07-17
-- Canonical plan: `plans/mvp-execplan.md`
+- Acceptance evidence: `mvp-evidence.md`
 
 ## Signal architecture
 

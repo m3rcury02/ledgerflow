@@ -189,9 +189,69 @@ resource "aws_vpc_security_group_egress_rule" "worker_dns_udp" {
   cidr_ipv4         = var.vpc_cidr
 }
 
+resource "aws_security_group" "migration" {
+  #checkov:skip=CKV2_AWS_5:The group is attached at aws ecs run-task launch time, not by an always-running Terraform resource; migration_task_definition_arn and migration_security_group_id are paired outputs and the runbook supplies both.
+  name_prefix = "${var.project_name}-${var.environment}-migration-"
+  description = "One-shot LedgerFlow Flyway task. No ingress; egress only to RDS and image/log/secret endpoints."
+  vpc_id      = aws_vpc.this.id
+
+  tags = {
+    Name = "${var.project_name}-${var.environment}-migration"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_vpc_security_group_egress_rule" "migration_to_rds" {
+  security_group_id            = aws_security_group.migration.id
+  description                  = "PostgreSQL"
+  from_port                    = 5432
+  to_port                      = 5432
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.rds.id
+}
+
+resource "aws_vpc_security_group_egress_rule" "migration_to_vpc_endpoints" {
+  security_group_id            = aws_security_group.migration.id
+  description                  = "ECR / CloudWatch Logs / Secrets Manager via VPC interface endpoints"
+  from_port                    = 443
+  to_port                      = 443
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.vpc_endpoints.id
+}
+
+resource "aws_vpc_security_group_egress_rule" "migration_to_s3_gateway_endpoint" {
+  security_group_id = aws_security_group.migration.id
+  description       = "ECR image layers via the S3 gateway endpoint"
+  from_port         = 443
+  to_port           = 443
+  ip_protocol       = "tcp"
+  prefix_list_id    = aws_vpc_endpoint.s3.prefix_list_id
+}
+
+resource "aws_vpc_security_group_egress_rule" "migration_dns_tcp" {
+  security_group_id = aws_security_group.migration.id
+  description       = "DNS (TCP)"
+  from_port         = 53
+  to_port           = 53
+  ip_protocol       = "tcp"
+  cidr_ipv4         = var.vpc_cidr
+}
+
+resource "aws_vpc_security_group_egress_rule" "migration_dns_udp" {
+  security_group_id = aws_security_group.migration.id
+  description       = "DNS (UDP)"
+  from_port         = 53
+  to_port           = 53
+  ip_protocol       = "udp"
+  cidr_ipv4         = var.vpc_cidr
+}
+
 resource "aws_security_group" "rds" {
   name_prefix = "${var.project_name}-${var.environment}-rds-"
-  description = "RDS PostgreSQL: reachable only from the api and worker ECS tasks. No egress rule of any kind."
+  description = "RDS PostgreSQL: reachable only from api, worker, and one-shot migration ECS tasks. No egress."
   vpc_id      = aws_vpc.this.id
 
   tags = {
@@ -219,4 +279,13 @@ resource "aws_vpc_security_group_ingress_rule" "rds_from_worker" {
   to_port                      = 5432
   ip_protocol                  = "tcp"
   referenced_security_group_id = aws_security_group.worker.id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "rds_from_migration" {
+  security_group_id            = aws_security_group.rds.id
+  description                  = "PostgreSQL from the one-shot migration task"
+  from_port                    = 5432
+  to_port                      = 5432
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.migration.id
 }

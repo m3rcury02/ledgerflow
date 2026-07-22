@@ -23,7 +23,7 @@ docker compose \
 
 # deploy/kind/dependencies/ is dev-only local-cluster support infrastructure (PostgreSQL,
 # Kafka, Keycloak, and a verbatim-pinned upstream metrics-server manifest — see
-# docs/plans/portfolio-extension-execplan.md, Milestone 4), not the packaged application.
+# docs/kubernetes-deployment.md), not the packaged application.
 # Trivy's Kubernetes misconfig checks (e.g. KSV-0118, missing pod-level securityContext)
 # fire even on the pinned upstream metrics-server.yaml, which is intentionally never edited
 # to satisfy a linter — the same "no code changes to satisfy a scanner on a third-party
@@ -98,7 +98,11 @@ if ! jq --exit-status '
     and (.package | type == "string" and length > 0)
     and (.installedVersion | type == "string" and length > 0)
     and (.vulnerabilityIds | type == "array" and length > 0)
-    and all(.vulnerabilityIds[]; type == "string" and test("^CVE-[0-9]{4}-[0-9]+$"))
+    and all(
+      .vulnerabilityIds[];
+      type == "string"
+      and test("^(CVE-[0-9]{4}-[0-9]+|GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4})$")
+    )
     and (.owner | type == "string" and length > 0)
     and (.acceptedAt | type == "string" and length > 0)
     and (.expiresAt | type == "string" and length > 0)

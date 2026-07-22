@@ -7,6 +7,10 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class LedgerFlowApplication {
 
   public static void main(String[] args) {
+    if (DatabaseMigrationRunner.isRequested(args)) {
+      DatabaseMigrationRunner.migrate(System.getenv());
+      return;
+    }
     SpringApplication.run(LedgerFlowApplication.class, args);
   }
 }

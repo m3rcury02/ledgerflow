@@ -168,7 +168,7 @@ services:
     networks: [ledgerflow]
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.156.0
+    image: otel/opentelemetry-collector-contrib:0.157.0
     command: [--config=/etc/otelcol-contrib/config.yaml]
     ports:
       - "127.0.0.1:${OTEL_GRPC_PORT:-4317}:4317"
@@ -224,7 +224,7 @@ services:
     networks: [ledgerflow]
 
   grafana:
-    image: grafana/grafana:13.1.0-ubuntu
+    image: grafana/grafana:13.1.1-ubuntu
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me-local-grafana-admin}

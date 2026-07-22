@@ -13,6 +13,7 @@ change should alter without a human reviewing the consequences first.
 - Dismiss stale approvals when new commits are pushed.
 - Require status checks to pass before merging, specifically:
   - `Verify` (from `.github/workflows/ci.yml`)
+  - `AI assistant (Python)` (from `.github/workflows/ci.yml`)
   - `Build and scan OCI image` (from `.github/workflows/ci.yml`)
   - `Analyze (java-kotlin)` (from `.github/workflows/codeql.yml`)
 - Require branches to be up to date before merging.
@@ -38,7 +39,6 @@ change should alter without a human reviewing the consequences first.
 
 `gh api` and the GitHub REST/GraphQL APIs can apply every rule above non-interactively.
 This repository's automation intentionally does not do that: branch protection and
-repository security settings are consequential, hard-to-review-at-a-glance changes to
-shared infrastructure, and the extension plan that introduced this document
-(`docs/plans/portfolio-extension-execplan.md`) explicitly excludes destructive or
-irreversible repository configuration changes from automated execution.
+repository security settings are consequential, hard-to-review-at-a-glance changes to shared
+infrastructure. This repository does not perform destructive or irreversible repository
+configuration changes automatically.

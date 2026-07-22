@@ -95,7 +95,7 @@ If one deployable process temporarily shares a Kafka principal, its ACL is the u
 
 ## Secrets and production prerequisites
 
-Credentials, trust material, and tokens come from environment-variable injection or an approved secret store, never committed files. Production also requires TLS policy, separate Flyway-owner and non-owner runtime database roles, backup/restore testing, retention decisions, broker/database hardening, and the unresolved quota/idempotency-retention control tracked in the MVP ExecPlan.
+Credentials, trust material, and tokens come from environment-variable injection or an approved secret store, never committed files. Production also requires TLS policy, separate Flyway-owner and non-owner runtime database roles, backup/restore testing, retention decisions, broker/database hardening, and the unresolved quota/idempotency-retention control tracked in `docs/security/mvp-residual-risk-register.md`.
 
 The Milestone 6 payment adapter is a deterministic demonstration provider, not a production payment integration. If it is enabled, `LEDGERFLOW_PAYMENT_PROVIDER_BASE_URL` must name an allowlisted trusted origin and egress policy must permit only that origin. A production provider requires an approved authentication, TLS, credential-rotation, reconciliation, and data-handling design. Do not place the opaque payment-method reference, idempotency key, bearer token, provider body, or payment credentials in logs or traces.
 

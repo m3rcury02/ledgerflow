@@ -1,8 +1,7 @@
 # Local Kubernetes Deployment
 
-This document records Milestone 4 (local Kubernetes and Helm) of
-`docs/plans/portfolio-extension-execplan.md`. Every claim below was checked with a real
-command against a real `kind` cluster on 2026-07-18 — nothing here is asserted from the
+Every claim below was checked with a real command against a real `kind` cluster on 2026-07-18 —
+nothing here is asserted from the
 manifests' contents alone. Several of the fixes below only surfaced by actually deploying;
 they are recorded rather than smoothed over, per this repository's existing evidence style
 (see `docs/container-hardening.md`).
@@ -24,8 +23,8 @@ Dependencies (PostgreSQL, Kafka KRaft, Keycloak) run as minimal, dev-only plain 
 manifests in the same cluster and namespace (`deploy/kind/dependencies/`) rather than
 bridging the `kind` node's Docker network to the host's `scripts/dev-up` Compose stack — a
 self-contained cluster is reproducible on any machine with `kind` installed. Valkey and the
-observability stack are intentionally not deployed here (see the execplan's Milestone 4
-Current-state findings): the application has no cache integration, and OTLP export failure
+observability stack are intentionally not deployed here: the application has no cache integration,
+and OTLP export failure
 is fire-and-forget and never fails a request.
 
 ## One-command deploy

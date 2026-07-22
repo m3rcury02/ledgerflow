@@ -11,6 +11,7 @@ description = "LedgerFlow deployable application"
 val springModulithVersion = rootProject.extra["springModulithVersion"] as String
 val openTelemetryInstrumentationVersion =
     rootProject.extra["openTelemetryInstrumentationVersion"] as String
+val postgresqlDriverVersion = rootProject.extra["postgresqlDriverVersion"] as String
 
 val integrationTest =
     sourceSets.create("integrationTest") {
@@ -73,7 +74,9 @@ dependencies {
     implementation("io.opentelemetry.instrumentation:opentelemetry-logback-appender-1.0")
 
     runtimeOnly("org.flywaydb:flyway-database-postgresql")
-    runtimeOnly("org.postgresql:postgresql")
+    runtimeOnly("org.postgresql:postgresql:$postgresqlDriverVersion") {
+        because("42.7.12 fixes CVE-2026-54291 while Spring Boot 4.1.0 still manages 42.7.11")
+    }
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.boot:spring-boot-starter-webmvc-test")
@@ -150,7 +153,7 @@ tasks.register<JavaExec>("runMockPaymentProvider") {
     group = "performance"
     description =
         "Runs the deterministic mock payment provider fixture as a standalone local " +
-        "process for performance/scripts (see docs/plans/portfolio-extension-execplan.md)."
+        "process for performance/scripts (see docs/performance-experiments.md)."
     classpath = integrationTest.runtimeClasspath
     mainClass = "com.ledgerflow.testing.payment.StandaloneMockPaymentProviderServer"
 }
