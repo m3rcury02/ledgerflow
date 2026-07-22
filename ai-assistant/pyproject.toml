@@ -8,7 +8,7 @@ dependencies = [
   "uvicorn==0.51.0",
   "pydantic==2.13.4",
   "pydantic-settings==2.14.2",
-  "openai==2.46.0",
+  "openai==2.47.0",
   "httpx==0.28.1",
 ]
 
