@@ -8,7 +8,7 @@ import org.gradle.api.tasks.testing.Test
 plugins {
     base
     id("org.springframework.boot") version "4.1.0" apply false
-    id("com.diffplug.spotless") version "8.8.0"
+    id("com.diffplug.spotless") version "8.9.0"
 }
 
 group = "com.ledgerflow"
