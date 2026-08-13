@@ -124,7 +124,7 @@ dependencies {
     )
     add(
         architectureTest.implementationConfigurationName,
-        "com.tngtech.archunit:archunit-junit5:1.4.2",
+        "com.tngtech.archunit:archunit-junit5:1.5.0",
     )
 }
 
