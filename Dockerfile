@@ -12,7 +12,7 @@
 # (Gradle bootJar strips timestamps and fixes file order), no embedded secrets (all
 # configuration arrives via environment variables at runtime), and OCI metadata below.
 
-FROM eclipse-temurin:25-jdk-alpine@sha256:5ecfde8e5ecde5954ea3721155b345ef56c1d579b940c761318ad4c05959a151 AS builder
+FROM eclipse-temurin:25-jdk-alpine@sha256:09349d79941fd53bb3d487b393ca118d8853c08c09193f416fe6a8718df9e732 AS builder
 WORKDIR /workspace
 
 # Copy build configuration first so dependency resolution is cached independently of
@@ -38,7 +38,7 @@ COPY modules/payments/src modules/payments/src
 
 RUN ./gradlew --no-daemon :application:bootJar
 
-FROM eclipse-temurin:25-jre-alpine@sha256:28db6fdf60e38945e43d840c0333aeaec66c15943070104f7586fd3c9d1665b0 AS runtime
+FROM eclipse-temurin:25-jre-alpine@sha256:3137541deb3cac6626b5d9a4a2187bc0d6a34312f858bd2c67dd01e732e6b682 AS runtime
 
 # Overridden by CI (--build-arg) with the real commit and build time; local builds fall
 # back to honest "unknown" values rather than a fabricated revision/date.
